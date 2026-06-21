@@ -1,0 +1,24 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Serviços em container: APENAS Redis (broker + backend do Celery).
+#
+# O que roda FORA deste compose (no host / venv local):
+#   • Python / FastAPI / Celery workers  →  python -m uvicorn / celery worker
+#   • Ollama (GPU)                        →  ollama serve
+#   • n8n (orquestração visual)           →  docker run -p 5678:5678 n8nio/n8n
+#     (ou compose separado p/ não misturar responsabilidades)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: content-engine-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes   # persistência AOF
+
+volumes:
+  redis_data:
+    driver: local
