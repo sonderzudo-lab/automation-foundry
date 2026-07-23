@@ -32,6 +32,7 @@ def test_upgrade_head_creates_only_platform_kernel_tables(tmp_path: Path) -> Non
     assert {
         "alembic_version",
         "automations",
+        "control_events",
         "runs",
         "run_transitions",
         "step_runs",

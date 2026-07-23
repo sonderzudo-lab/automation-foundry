@@ -21,6 +21,7 @@ target_metadata = platform_models.Base.metadata
 _PLATFORM_TABLES = frozenset(
     {
         "automations",
+        "control_events",
         "runs",
         "run_transitions",
         "step_runs",

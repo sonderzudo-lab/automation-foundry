@@ -45,8 +45,19 @@ class QueueClass(StrEnum):
     IO = "io"
 
 
+class ControlEventType(StrEnum):
+    """Audited operator controls supported by the local run kernel."""
+
+    KILL_SWITCH_ENABLED = "kill_switch_enabled"
+    KILL_SWITCH_DISABLED = "kill_switch_disabled"
+    CANCELLATION_REQUESTED = "cancellation_requested"
+
+
 _RUN_STATUS_SQL = "'queued', 'running', 'succeeded', 'failed', 'cancelled'"
 _QUEUE_CLASS_SQL = "'gpu', 'cpu', 'io'"
+_CONTROL_EVENT_TYPE_SQL = (
+    "'kill_switch_enabled', 'kill_switch_disabled', 'cancellation_requested'"
+)
 
 
 class Automation(Base):
@@ -60,9 +71,24 @@ class Automation(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     owner: Mapped[str] = mapped_column(String(200), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    kill_switch_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+    kill_switch_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kill_switch_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
     runs: Mapped[list[Run]] = relationship("Run", back_populates="automation")
+    control_events: Mapped[list[ControlEvent]] = relationship(
+        "ControlEvent",
+        back_populates="automation",
+        order_by="ControlEvent.id",
+    )
 
 
 class Run(Base):
@@ -94,6 +120,11 @@ class Run(Base):
         default=RunStatus.QUEUED.value,
     )
     error: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    cancellation_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     queued_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -108,6 +139,11 @@ class Run(Base):
         "StepRun",
         back_populates="run",
         order_by="StepRun.ordinal",
+    )
+    control_events: Mapped[list[ControlEvent]] = relationship(
+        "ControlEvent",
+        back_populates="run",
+        order_by="ControlEvent.id",
     )
 
 
@@ -221,3 +257,43 @@ class StepRunTransition(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     step_run: Mapped[StepRun] = relationship("StepRun", back_populates="transitions")
+
+
+class ControlEvent(Base):
+    """Append-only audit evidence for operator safety controls."""
+
+    __tablename__ = "control_events"
+    __table_args__ = (
+        CheckConstraint(
+            f"event_type IN ({_CONTROL_EVENT_TYPE_SQL})",
+            name="ck_control_events_type",
+        ),
+        CheckConstraint(
+            "(automation_id IS NOT NULL AND run_id IS NULL AND "
+            "event_type IN ('kill_switch_enabled', 'kill_switch_disabled')) OR "
+            "(automation_id IS NULL AND run_id IS NOT NULL AND "
+            "event_type = 'cancellation_requested')",
+            name="ck_control_events_target",
+        ),
+        Index("ix_control_events_automation_occurred", "automation_id", "occurred_at"),
+        Index("ix_control_events_run_occurred", "run_id", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    automation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("automations.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    automation: Mapped[Automation | None] = relationship(
+        "Automation",
+        back_populates="control_events",
+    )
+    run: Mapped[Run | None] = relationship("Run", back_populates="control_events")
