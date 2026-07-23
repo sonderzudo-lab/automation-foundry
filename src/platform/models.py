@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -15,17 +16,55 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator, TypeEngine
 
 from src.core.database import Base
 
 
 def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+class _ExactNumeric(TypeDecorator[Decimal]):
+    """Use exact decimal text on SQLite and native NUMERIC elsewhere."""
+
+    impl = Numeric
+    cache_ok = True
+
+    def __init__(self, precision: int, scale: int) -> None:
+        self._precision = precision
+        self._scale = scale
+        super().__init__(precision=precision, scale=scale)
+
+    def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
+        if dialect.name == "sqlite":
+            return dialect.type_descriptor(String(self._precision + 2))
+        return dialect.type_descriptor(Numeric(self._precision, self._scale))
+
+    def process_bind_param(
+        self,
+        value: Decimal | None,
+        dialect: Dialect,
+    ) -> Decimal | str | None:
+        if value is None or dialect.name != "sqlite":
+            return value
+        return format(value, "f")
+
+    def process_result_value(
+        self,
+        value: Decimal | str | None,
+        _dialect: Dialect,
+    ) -> Decimal | None:
+        if value is None or isinstance(value, Decimal):
+            return value
+        return Decimal(value)
 
 
 class RunStatus(StrEnum):
@@ -88,6 +127,16 @@ class ScheduleEventType(StrEnum):
     DISABLED = "disabled"
 
 
+class MetricKind(StrEnum):
+    """Semantic value types supported by durable metric observations."""
+
+    COUNTER = "counter"
+    GAUGE = "gauge"
+    DURATION = "duration"
+    RATIO = "ratio"
+    CURRENCY = "currency"
+
+
 _RUN_STATUS_SQL = (
     "'queued', 'running', 'awaiting_approval', 'succeeded', 'failed', 'cancelled'"
 )
@@ -97,6 +146,7 @@ _APPROVAL_STATUS_SQL = "'pending', 'approved', 'rejected', 'cancelled'"
 _ARTIFACT_SENSITIVITY_SQL = "'public', 'internal', 'confidential', 'restricted'"
 _SCHEDULE_STATUS_SQL = "'disabled', 'enabled'"
 _SCHEDULE_EVENT_TYPE_SQL = "'created', 'enabled', 'disabled'"
+_METRIC_KIND_SQL = "'counter', 'gauge', 'duration', 'ratio', 'currency'"
 _CONTROL_EVENT_TYPE_SQL = (
     "'kill_switch_enabled', 'kill_switch_disabled', 'cancellation_requested'"
 )
@@ -135,6 +185,11 @@ class Automation(Base):
         "Schedule",
         back_populates="automation",
         order_by="Schedule.id",
+    )
+    metric_points: Mapped[list[MetricPoint]] = relationship(
+        "MetricPoint",
+        back_populates="automation",
+        order_by="MetricPoint.id",
     )
 
 
@@ -201,6 +256,11 @@ class Run(Base):
         "Artifact",
         back_populates="run",
         order_by="Artifact.id",
+    )
+    metric_points: Mapped[list[MetricPoint]] = relationship(
+        "MetricPoint",
+        back_populates="run",
+        order_by="MetricPoint.id",
     )
 
 
@@ -295,6 +355,11 @@ class StepRun(Base):
         "Artifact",
         back_populates="step_run",
         order_by="Artifact.id",
+    )
+    metric_points: Mapped[list[MetricPoint]] = relationship(
+        "MetricPoint",
+        back_populates="step_run",
+        order_by="MetricPoint.id",
     )
 
 
@@ -501,6 +566,88 @@ class ScheduleEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
     schedule: Mapped[Schedule] = relationship("Schedule", back_populates="events")
+
+
+class MetricPoint(Base):
+    """One immutable, attributable observation recorded by a local automation."""
+
+    __tablename__ = "metric_points"
+    __table_args__ = (
+        UniqueConstraint(
+            "automation_id",
+            "idempotency_key",
+            name="uq_metric_points_automation_idempotency_key",
+        ),
+        CheckConstraint(
+            f"kind IN ({_METRIC_KIND_SQL})",
+            name="ck_metric_points_kind",
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR "
+            "(CAST(confidence AS NUMERIC) >= 0 AND "
+            "CAST(confidence AS NUMERIC) <= 1)",
+            name="ck_metric_points_confidence_range",
+        ),
+        CheckConstraint(
+            "step_run_id IS NULL OR run_id IS NOT NULL",
+            name="ck_metric_points_step_requires_run",
+        ),
+        CheckConstraint(
+            "kind NOT IN ('counter', 'duration') OR "
+            "CAST(value AS NUMERIC) >= 0",
+            name="ck_metric_points_nonnegative_kind",
+        ),
+        CheckConstraint(
+            "kind != 'ratio' OR (CAST(value AS NUMERIC) >= 0 AND "
+            "CAST(value AS NUMERIC) <= 1)",
+            name="ck_metric_points_ratio_range",
+        ),
+        Index(
+            "ix_metric_points_automation_name_observed",
+            "automation_id",
+            "name",
+            "observed_at",
+        ),
+        Index("ix_metric_points_run_observed", "run_id", "observed_at"),
+        Index("ix_metric_points_step_observed", "step_run_id", "observed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    automation_id: Mapped[int] = mapped_column(
+        ForeignKey("automations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    step_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("step_runs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    value: Mapped[Decimal] = mapped_column(_ExactNumeric(30, 10), nullable=False)
+    unit: Mapped[str] = mapped_column(String(50), nullable=False)
+    source: Mapped[str] = mapped_column(String(200), nullable=False)
+    confidence: Mapped[Decimal | None] = mapped_column(
+        _ExactNumeric(5, 4),
+        nullable=True,
+    )
+    dimensions: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    automation: Mapped[Automation] = relationship(
+        "Automation",
+        back_populates="metric_points",
+    )
+    run: Mapped[Run | None] = relationship("Run", back_populates="metric_points")
+    step_run: Mapped[StepRun | None] = relationship(
+        "StepRun",
+        back_populates="metric_points",
+    )
 
 
 class ControlEvent(Base):
