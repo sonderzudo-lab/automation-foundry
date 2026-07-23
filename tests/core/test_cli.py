@@ -9,6 +9,7 @@ import pytest
 
 from src import cli
 from src.core.config import Settings
+from src.platform.example_run import ExampleRunResult
 
 
 @pytest.fixture
@@ -117,3 +118,46 @@ def test_main_returns_failure_when_local_services_are_unavailable(
     assert exit_code == 1
     assert "Resultado: FAIL" in output
     assert "indisponível em loopback" in output
+
+
+def test_run_example_json_reports_idempotent_result(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def execute(_key: str) -> ExampleRunResult:
+        return ExampleRunResult(
+            automation_id=1,
+            run_id=2,
+            step_run_id=3,
+            run_status="succeeded",
+            step_status="succeeded",
+            created=False,
+            replayed=True,
+        )
+
+    monkeypatch.setattr(cli, "_execute_example_command", execute)
+    exit_code = cli.main(
+        ["run-example", "--idempotency-key", "smoke-001", "--json"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["run_id"] == 2
+    assert payload["replayed"] is True
+
+
+def test_run_example_failure_is_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def fail(_key: str) -> ExampleRunResult:
+        raise RuntimeError("secret database details")
+
+    monkeypatch.setattr(cli, "_execute_example_command", fail)
+    exit_code = cli.main(["run-example", "--idempotency-key", "smoke-002"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "RuntimeError" in output
+    assert "secret database details" not in output

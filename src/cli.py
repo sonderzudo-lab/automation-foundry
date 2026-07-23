@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import ipaddress
 import json
 import socket
@@ -10,10 +11,13 @@ import sys
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from importlib import metadata
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlsplit
 
 from src.core.config import Settings, get_settings
+
+if TYPE_CHECKING:
+    from src.platform.example_run import ExampleRunResult
 
 CheckStatus = Literal["pass", "fail", "skip"]
 _REDIS_SCHEMES = frozenset({"redis", "rediss"})
@@ -216,7 +220,50 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emite resultados estruturados em JSON.",
     )
+    run_example = subparsers.add_parser(
+        "run-example",
+        help="Executa um passo no-op local e persiste seu ciclo de vida.",
+    )
+    run_example.add_argument(
+        "--idempotency-key",
+        required=True,
+        help="Chave estável para impedir execuções duplicadas.",
+    )
+    run_example.add_argument(
+        "--json",
+        action="store_true",
+        help="Emite o resultado estruturado em JSON.",
+    )
     return parser
+
+
+async def _execute_example_command(idempotency_key: str) -> ExampleRunResult:
+    from src.core.database import AsyncSessionLocal
+    from src.platform.example_run import execute_example_run
+
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await execute_example_run(
+                session,
+                idempotency_key=idempotency_key,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return result
+
+
+def _render_example_result(result: ExampleRunResult, *, as_json: bool) -> None:
+    payload = asdict(result)
+    if as_json:
+        print(json.dumps({"ok": True, **payload}, ensure_ascii=False, indent=2))
+        return
+    replay = " (resultado idempotente existente)" if payload["replayed"] else ""
+    print(
+        f"Run {payload['run_id']} {payload['run_status']}; "
+        f"step {payload['step_run_id']} {payload['step_status']}{replay}"
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -242,6 +289,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             _render_text(results)
         return int(any(result.status == "fail" for result in results))
+
+    if args.command == "run-example":
+        try:
+            result = asyncio.run(_execute_example_command(args.idempotency_key))
+        except Exception as exc:
+            detail = f"run-example falhou ({type(exc).__name__})"
+            if args.json:
+                print(json.dumps({"ok": False, "error": detail}, ensure_ascii=False))
+            else:
+                print(detail)
+            return 1
+        _render_example_result(result, as_json=bool(args.json))
+        return 0
 
     return 2
 
