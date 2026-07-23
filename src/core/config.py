@@ -25,6 +25,7 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://127.0.0.1:6379/0"
     database_url: str = "sqlite+aiosqlite:///./automation_foundry.db"
+    storage_root: str = "./storage"
 
     # ── Ollama (LLM local) ────────────────────────────────────────────────────
 

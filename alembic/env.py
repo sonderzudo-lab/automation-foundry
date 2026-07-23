@@ -20,6 +20,7 @@ if config.config_file_name is not None:
 target_metadata = platform_models.Base.metadata
 _PLATFORM_TABLES = frozenset(
     {
+        "artifacts",
         "automations",
         "approval_events",
         "approvals",

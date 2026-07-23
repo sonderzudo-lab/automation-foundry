@@ -42,7 +42,7 @@ htmlcov/
 *.sqlite3
 
 # ── Artefatos gerados (áudios, vídeos, imagens) ───────────────────────────────
-storage/
+storage/*
 !storage/.gitkeep
 
 # ── Alembic (revisions são versionadas; o banco local não) ───────────────────

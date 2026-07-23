@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -63,12 +64,22 @@ class ApprovalStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ArtifactSensitivity(StrEnum):
+    """Operator-visible sensitivity labels for durable local artifacts."""
+
+    PUBLIC = "public"
+    INTERNAL = "internal"
+    CONFIDENTIAL = "confidential"
+    RESTRICTED = "restricted"
+
+
 _RUN_STATUS_SQL = (
     "'queued', 'running', 'awaiting_approval', 'succeeded', 'failed', 'cancelled'"
 )
 _STEP_RUN_STATUS_SQL = "'queued', 'running', 'succeeded', 'failed', 'cancelled'"
 _QUEUE_CLASS_SQL = "'gpu', 'cpu', 'io'"
 _APPROVAL_STATUS_SQL = "'pending', 'approved', 'rejected', 'cancelled'"
+_ARTIFACT_SENSITIVITY_SQL = "'public', 'internal', 'confidential', 'restricted'"
 _CONTROL_EVENT_TYPE_SQL = (
     "'kill_switch_enabled', 'kill_switch_disabled', 'cancellation_requested'"
 )
@@ -164,6 +175,11 @@ class Run(Base):
         back_populates="run",
         order_by="Approval.id",
     )
+    artifacts: Mapped[list[Artifact]] = relationship(
+        "Artifact",
+        back_populates="run",
+        order_by="Artifact.id",
+    )
 
 
 class RunTransition(Base):
@@ -253,6 +269,11 @@ class StepRun(Base):
         back_populates="step_run",
         order_by="StepRunTransition.id",
     )
+    artifacts: Mapped[list[Artifact]] = relationship(
+        "Artifact",
+        back_populates="step_run",
+        order_by="Artifact.id",
+    )
 
 
 class StepRunTransition(Base):
@@ -287,6 +308,62 @@ class StepRunTransition(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     step_run: Mapped[StepRun] = relationship("StepRun", back_populates="transitions")
+
+
+class Artifact(Base):
+    """Verified metadata for one file stored below the configured local root."""
+
+    __tablename__ = "artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "idempotency_key",
+            name="uq_artifacts_run_idempotency_key",
+        ),
+        CheckConstraint("size_bytes >= 0", name="ck_artifacts_size_nonnegative"),
+        CheckConstraint("length(sha256) = 64", name="ck_artifacts_sha256_length"),
+        CheckConstraint(
+            "retention_days IS NULL OR retention_days >= 1",
+            name="ck_artifacts_retention_days_positive",
+        ),
+        CheckConstraint(
+            f"sensitivity IN ({_ARTIFACT_SENSITIVITY_SQL})",
+            name="ck_artifacts_sensitivity",
+        ),
+        Index("ix_artifacts_run_created", "run_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    step_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("step_runs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    artifact_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    relative_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    origin: Mapped[str] = mapped_column(String(200), nullable=False)
+    sensitivity: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default=ArtifactSensitivity.INTERNAL.value,
+    )
+    retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retention_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    verified_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    run: Mapped[Run] = relationship("Run", back_populates="artifacts")
+    step_run: Mapped[StepRun | None] = relationship(
+        "StepRun",
+        back_populates="artifacts",
+    )
 
 
 class ControlEvent(Base):
