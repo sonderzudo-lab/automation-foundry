@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run Project Checkpoint"
+  short_description: "Verify project readiness and report gaps"
+  default_prompt: "Use $run-project-checkpoint to assess Automation Foundry against its roadmap and definition of done."
