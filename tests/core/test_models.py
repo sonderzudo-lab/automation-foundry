@@ -17,8 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import selectinload
 
 from src.core.database import Base
-from src.core.models import Alert, Channel, Job, Metric, Topic, Video
-
+from src.core.models import Alert, Channel, Job, Topic, Video
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

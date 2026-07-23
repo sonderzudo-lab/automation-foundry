@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -26,14 +27,12 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.core.database import Base
-
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 

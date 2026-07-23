@@ -23,7 +23,6 @@ Novos testes (v2):
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -32,16 +31,14 @@ import pytest
 from openai import APITimeoutError
 
 from src.pipeline.script_gen import (
-    EmptyResponseError,
     ScriptResult,
     _call_llm,
     _extract_narration,
-    _strip_think_blocks,       # alias para sanitize_llm_output (compatibilidade)
+    _strip_think_blocks,  # alias para sanitize_llm_output (compatibilidade)
     generate_script,
     sanitize_llm_output,
     save_script,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -257,9 +254,8 @@ def test_retry_exhausted_reraises_timeout() -> None:
     client = MagicMock()
     client.chat.completions.create.side_effect = _timeout_error()
 
-    with patch("time.sleep"):
-        with pytest.raises(APITimeoutError):
-            _call_llm(client, system="sys", user="usr", step="test_exhaust")
+    with patch("time.sleep"), pytest.raises(APITimeoutError):
+        _call_llm(client, system="sys", user="usr", step="test_exhaust")
 
     assert client.chat.completions.create.call_count == 3
 
