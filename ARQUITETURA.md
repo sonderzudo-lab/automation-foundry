@@ -32,11 +32,12 @@ Na data desta versÃ£o:
 - Celery, dashboard e grande parte dos mÃ³dulos planejados permanecem vazios ou incompletos;
 - metadata, defaults locais e nomes de serviÃ§os usam a identidade `automation-foundry`;
 - `src/cli.py` oferece o diagnÃ³stico local `automation-foundry doctor` sem alterar estado;
-- `src/platform/` implementa parcialmente o kernel com `Automation`, `Run`, `StepRun` e histÃ³ricos persistidos de transiÃ§Ãµes;
-- trÃªs migrations Alembic incrementais cobrem somente essas tabelas compartilhadas; o schema legado do Content Engine ainda nÃ£o possui baseline;
+- `src/platform/` implementa parcialmente o kernel com `Automation`, `Run`, `StepRun`, `Approval` e histÃ³ricos persistidos de transiÃ§Ãµes;
+- quatro migrations Alembic incrementais cobrem somente essas tabelas compartilhadas; o schema legado do Content Engine ainda nÃ£o possui baseline;
 - `automation-foundry run-example` executa um Ãºnico passo `io` no-op, idempotente e com checkpoints transacionais, somente em processo local;
 - `src/platform/task_runner.py` aplica timeout assÃ­ncrono, retries limitados e backoff exponencial; pedidos de cancelamento e kill switch sÃ£o consultados antes e depois de cada corrotina e entre tentativas;
 - `control_events` mantÃ©m auditoria append-only de pedidos de cancelamento e mudanÃ§as do kill switch por automaÃ§Ã£o;
+- approvals vinculam run, aÃ§Ã£o e digest do payload; uma decisÃ£o aprovada sÃ³ pode autorizar uma chave idempotente de task;
 - o runtime completo nÃ£o foi validado no computador de casa.
 
 O roadmap deve evoluir essa base sem confundir placeholders com funcionalidades prontas e sem reescrever a parte testada apenas por estÃ©tica arquitetural.
@@ -162,10 +163,10 @@ Estados mÃ­nimos de uma run ou step:
 queued â†’ running â†’ succeeded
                  â†˜ failed â†’ queued (retry limitado)
 queued/running â†’ cancelled
-running â†’ awaiting_approval â†’ running/succeeded/rejected
+running â†’ awaiting_approval â†’ running (approved) / cancelled (rejected ou cancelamento)
 ```
 
-Toda transiÃ§Ã£o Ã© persistida no banco com timestamps, tentativa, erro estruturado e relaÃ§Ã£o com a execuÃ§Ã£o anterior quando houver retry.
+Toda transiÃ§Ã£o Ã© persistida no banco com timestamps, tentativa, erro estruturado e relaÃ§Ã£o com a execuÃ§Ã£o anterior quando houver retry. DecisÃµes de approval sÃ£o imutÃ¡veis, auditadas e vinculadas ao digest do payload protegido. O `actor` informado pela CLI Ã© evidÃªncia operacional local, nÃ£o autenticaÃ§Ã£o forte.
 
 ## 8. ExecuÃ§Ã£o e agendamento
 
