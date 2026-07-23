@@ -312,7 +312,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers.add_parser(
         "dashboard",
-        help="Inicia o dashboard local somente leitura em loopback.",
+        help="Inicia o dashboard operacional local em loopback.",
     )
     run_example = subparsers.add_parser(
         "run-example",
@@ -1192,7 +1192,7 @@ def _render_alert_result(result: AlertCommandResult, *, as_json: bool) -> None:
 
 
 def _serve_dashboard_command() -> None:
-    """Run the read-only dashboard with a validated loopback binding."""
+    """Run the operational dashboard with a validated loopback binding."""
     import uvicorn
 
     settings = get_settings()

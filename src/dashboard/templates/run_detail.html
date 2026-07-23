@@ -30,6 +30,13 @@
       .danger { color: #ff7b72; }
       .empty { padding: 1rem 0; color: #75808d; }
       .note { margin-top: 1rem; font-size: .85rem; }
+      .control { border-color: #5c342f; }
+      label { display: block; color: #b7c0cc; font-size: .85rem; margin-bottom: .5rem; }
+      textarea { box-sizing: border-box; width: 100%; min-height: 5rem; resize: vertical; background: #0b0d10; color: #f2f4f7; border: 1px solid #3b4552; border-radius: 8px; padding: .7rem; font: inherit; }
+      .confirm { display: flex; align-items: center; gap: .5rem; margin: .85rem 0; }
+      .confirm input { margin: 0; }
+      button { border: 1px solid #8e4b43; border-radius: 8px; background: #351916; color: #ffb4aa; padding: .6rem .9rem; font: inherit; font-weight: 650; cursor: pointer; }
+      button:hover { background: #47201c; }
       @media (max-width: 820px) { section { grid-column: 1 / -1; } header { align-items: start; flex-direction: column; } .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     </style>
   </head>
@@ -41,7 +48,7 @@
           <h1>Run #{{ run.id }}</h1>
           <p>{{ run.automation_name }} · <code>{{ run.automation_slug }}</code></p>
         </div>
-        <span class="local">● somente leitura</span>
+        <span class="local">● controle local</span>
       </header>
 
       <div class="grid">
@@ -54,7 +61,22 @@
             <div class="fact"><span>Enfileirada UTC</span>{{ run.queued_at.isoformat() }}Z</div>
           </div>
           {% if run.failure %}<p class="danger note">Falha: <code>{{ run.failure.code }}</code>{% if run.failure.exception_type %} · {{ run.failure.exception_type }}{% endif %}</p>{% endif %}
+          {% if run.cancellation_requested_at %}<p class="danger note">Cancelamento solicitado em {{ run.cancellation_requested_at.isoformat() }}Z. O motivo permanece redigido.</p>{% endif %}
         </section>
+
+        {% if run.can_request_cancellation %}
+        <section class="wide control">
+          <h2>Solicitar cancelamento</h2>
+          <p>O pedido é persistido e auditado. Runs em execução param no próximo checkpoint seguro.</p>
+          <form method="post" action="/runs/{{ run.id }}/cancel">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="reason">Motivo operacional</label>
+            <textarea id="reason" name="reason" minlength="1" maxlength="500" required></textarea>
+            <label class="confirm"><input type="checkbox" name="confirmation" value="cancel-run" required> Confirmo o cancelamento desta run.</label>
+            <button type="submit">Solicitar cancelamento</button>
+          </form>
+        </section>
+        {% endif %}
 
         <section class="wide">
           <h2>Steps e tentativas</h2>

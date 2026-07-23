@@ -9,6 +9,7 @@ from decimal import Decimal
 import pytest
 from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -26,6 +27,8 @@ from src.platform.models import (
     Artifact,
     ArtifactSensitivity,
     Automation,
+    ControlEvent,
+    ControlEventType,
     LedgerEntry,
     LedgerEntryType,
     MetricKind,
@@ -184,6 +187,27 @@ async def _seed_dashboard(factory: async_sessionmaker[AsyncSession]) -> int:
         return run.id
 
 
+async def _seed_cancellable_run(factory: async_sessionmaker[AsyncSession]) -> int:
+    async with factory() as session:
+        automation = Automation(
+            slug="safe-local-control",
+            name="Safe Local Control",
+            owner="private-owner",
+        )
+        session.add(automation)
+        await session.flush()
+        run = Run(
+            automation_id=automation.id,
+            idempotency_key="private-cancellable-run-key",
+            trigger="manual",
+            input_payload={"private": "cancellable-input-secret"},
+            status=RunStatus.QUEUED.value,
+        )
+        session.add(run)
+        await session.commit()
+        return run.id
+
+
 async def test_snapshot_is_bounded_redacted_and_decimal_exact(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -236,7 +260,7 @@ async def test_dashboard_home_renders_read_only_redacted_state(
     application.dependency_overrides[get_session] = override_session
     async with AsyncClient(
         transport=ASGITransport(app=application),
-        base_url="http://test",
+        base_url="http://127.0.0.1",
     ) as client:
         response = await client.get("/")
 
@@ -273,8 +297,10 @@ async def test_dashboard_home_renders_read_only_redacted_state(
     application_routes = [
         route for route in application.routes if isinstance(route, APIRoute)
     ]
-    assert len(application_routes) == 2
-    assert all(route.methods == {"GET"} for route in application_routes)
+    assert len(application_routes) == 3
+    route_methods = [route.methods for route in application_routes]
+    assert route_methods.count({"GET"}) == 2
+    assert route_methods.count({"POST"}) == 1
 
 
 async def test_run_detail_projection_is_ordered_exact_and_redacted(
@@ -333,7 +359,7 @@ async def test_run_detail_renders_linked_evidence_without_mutation_or_private_da
     application.dependency_overrides[get_session] = override_session
     async with AsyncClient(
         transport=ASGITransport(app=application),
-        base_url="http://test",
+        base_url="http://127.0.0.1",
     ) as client:
         response = await client.get(f"/runs/{run_id}")
 
@@ -345,7 +371,7 @@ async def test_run_detail_renders_linked_evidence_without_mutation_or_private_da
     assert "video/mp4" in response.text
     assert "render_duration" in response.text
     assert ">0.1<" in response.text
-    assert "somente leitura" in response.text
+    assert "controle local" in response.text
     assert "<form" not in response.text
     for private_value in (
         "private-run-key",
@@ -379,11 +405,173 @@ async def test_run_detail_returns_not_found_without_database_mutation(
     application.dependency_overrides[get_session] = override_session
     async with AsyncClient(
         transport=ASGITransport(app=application),
-        base_url="http://test",
+        base_url="http://127.0.0.1",
     ) as client:
         response = await client.get("/runs/999")
 
     assert response.status_code == 404
+
+
+async def test_dashboard_cancellation_is_confirmed_idempotent_and_audited(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    run_id = await _seed_cancellable_run(session_factory)
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        detail = await client.get(f"/runs/{run_id}")
+        first = await client.post(
+            f"/runs/{run_id}/cancel",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "cancel-run",
+                "reason": "operator requested a safe local stop",
+            },
+        )
+        duplicate = await client.post(
+            f"/runs/{run_id}/cancel",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "cancel-run",
+                "reason": "duplicate request must not replace the first reason",
+            },
+        )
+        updated_detail = await client.get(f"/runs/{run_id}")
+
+    assert detail.status_code == 200
+    assert f'action="/runs/{run_id}/cancel"' in detail.text
+    assert 'value="test-csrf-token"' in detail.text
+    assert "Confirmo o cancelamento desta run" in detail.text
+    assert first.status_code == 303
+    assert first.headers["location"] == f"/runs/{run_id}"
+    assert duplicate.status_code == 303
+    assert updated_detail.status_code == 200
+    assert "Cancelamento solicitado em" in updated_detail.text
+    assert "operator requested a safe local stop" not in updated_detail.text
+    assert "duplicate request must not replace the first reason" not in updated_detail.text
+    assert "<form" not in updated_detail.text
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        events = list(
+            (
+                await session.scalars(
+                    select(ControlEvent).where(ControlEvent.run_id == run_id)
+                )
+            ).all()
+        )
+
+    assert run is not None
+    assert run.status == RunStatus.CANCELLED.value
+    assert run.cancellation_requested_at is not None
+    assert run.cancellation_reason == "operator requested a safe local stop"
+    assert len(events) == 1
+    assert events[0].event_type == ControlEventType.CANCELLATION_REQUESTED.value
+
+
+@pytest.mark.parametrize(
+    ("csrf_token", "confirmation", "expected_status"),
+    (
+        ("wrong-token", "cancel-run", 403),
+        ("test-csrf-token", "not-confirmed", 400),
+    ),
+)
+async def test_dashboard_cancellation_rejects_untrusted_or_unconfirmed_requests(
+    session_factory: async_sessionmaker[AsyncSession],
+    csrf_token: str,
+    confirmation: str,
+    expected_status: int,
+) -> None:
+    run_id = await _seed_cancellable_run(session_factory)
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.post(
+            f"/runs/{run_id}/cancel",
+            data={
+                "csrf_token": csrf_token,
+                "confirmation": confirmation,
+                "reason": "must not be persisted",
+            },
+        )
+
+    assert response.status_code == expected_status
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        events = list(
+            (
+                await session.scalars(
+                    select(ControlEvent).where(ControlEvent.run_id == run_id)
+                )
+            ).all()
+        )
+    assert run is not None
+    assert run.status == RunStatus.QUEUED.value
+    assert run.cancellation_requested_at is None
+    assert events == []
+
+
+async def test_dashboard_cancellation_rejects_terminal_run_without_audit_event(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    run_id = await _seed_dashboard(session_factory)
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.post(
+            f"/runs/{run_id}/cancel",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "cancel-run",
+                "reason": "too late",
+            },
+        )
+
+    assert response.status_code == 409
+    async with session_factory() as session:
+        events = list(
+            (
+                await session.scalars(
+                    select(ControlEvent).where(ControlEvent.run_id == run_id)
+                )
+            ).all()
+        )
+    assert events == []
+
+
+async def test_dashboard_rejects_non_loopback_host_before_database_access() -> None:
+    application = create_app(csrf_token="test-csrf-token")
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://attacker.example",
+    ) as client:
+        response = await client.get("/")
+
+    assert response.status_code == 400
+    assert response.text == "invalid host"
 
 
 async def test_dashboard_home_handles_empty_database(
@@ -398,7 +586,7 @@ async def test_dashboard_home_handles_empty_database(
     application.dependency_overrides[get_session] = override_session
     async with AsyncClient(
         transport=ASGITransport(app=application),
-        base_url="http://test",
+        base_url="http://127.0.0.1",
     ) as client:
         response = await client.get("/")
 

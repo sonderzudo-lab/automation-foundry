@@ -21,6 +21,7 @@ from src.platform.models import (
     MetricPoint,
     PlatformAlert,
     Run,
+    RunStatus,
     StepRun,
 )
 
@@ -186,12 +187,22 @@ class RunDetail:
     started_at: datetime | None
     finished_at: datetime | None
     duration_seconds: Decimal | None
+    cancellation_requested_at: datetime | None
     failure: FailureSummary | None
     steps: tuple[StepRunSummary, ...]
     approvals: tuple[RunApprovalSummary, ...]
     artifacts: tuple[RunArtifactSummary, ...]
     metrics: tuple[RunMetricSummary, ...]
     ledger_entries: tuple[RunLedgerSummary, ...]
+
+    @property
+    def can_request_cancellation(self) -> bool:
+        """Return whether an operator may request cancellation now."""
+        return self.cancellation_requested_at is None and RunStatus(self.status) not in {
+            RunStatus.SUCCEEDED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        }
 
 
 async def load_dashboard_snapshot(
@@ -424,6 +435,7 @@ async def load_run_detail(session: AsyncSession, *, run_id: int) -> RunDetail | 
         started_at=run.started_at,
         finished_at=run.finished_at,
         duration_seconds=_duration_seconds(run.started_at, run.finished_at),
+        cancellation_requested_at=run.cancellation_requested_at,
         failure=_redacted_failure(run.error),
         steps=steps,
         approvals=approvals,
