@@ -33,12 +33,12 @@ Objetivo: alinhar nome, regras e direÃ§Ã£o sem alterar prematuramente a impl
 
 Objetivo: fazer a base atual representar Automation Foundry e obter um baseline reproduzÃ­vel.
 
-- [ ] Renomear package metadata, comando CLI, banco default, container e variÃ¡veis que ainda usam `content-engine`.
-- [ ] Catalogar arquivos vazios, stubs e implementaÃ§Ã£o real.
-- [ ] Executar testes existentes e registrar o baseline.
-- [ ] Corrigir apenas falhas que bloqueiem o baseline, sem reescrever A1.
-- [ ] Atualizar `.env.example` para defaults locais seguros e loopback.
-- [ ] Definir comandos Ãºnicos para setup, lint, testes e execuÃ§Ã£o.
+- [x] Renomear package metadata, comando CLI, banco default, container e variÃ¡veis que ainda usam `content-engine`.
+- [x] Catalogar arquivos vazios, stubs e implementaÃ§Ã£o real.
+- [x] Executar testes existentes e registrar o baseline.
+- [x] Corrigir apenas falhas que bloqueiem o baseline, sem reescrever A1.
+- [x] Atualizar `.env.example` para defaults locais seguros e loopback.
+- [ ] Definir comandos Ãºnicos para setup, lint, testes e execuÃ§Ã£o. Setup, lint e testes estÃ£o documentados; execuÃ§Ã£o aguarda uma aplicaÃ§Ã£o real na Fase 3.
 - [ ] Confirmar versÃµes e specs no computador de casa. `bloqueado local`
 
 **PortÃ£o:** um checkout limpo instala as dependÃªncias de desenvolvimento, executa os testes existentes e identifica honestamente o que estÃ¡ ou nÃ£o implementado.
