@@ -47,14 +47,15 @@ Objetivo: fazer a base atual representar Automation Foundry e obter um baseline 
 
 Objetivo: executar uma automaÃ§Ã£o mÃ­nima usando contratos genÃ©ricos e estado durÃ¡vel.
 
-- [ ] Introduzir os conceitos `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `Experiment`, `LedgerEntry` e `Alert`. `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint` e `Alert` estÃ£o implementados; `Experiment` e `LedgerEntry` permanecem pendentes.
-- [ ] Criar migrations e separar tabelas compartilhadas das tabelas do Content Engine. Oito migrations incrementais cobrem o kernel compartilhado; o baseline legado permanece pendente.
+- [ ] Introduzir os conceitos `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `Experiment`, `LedgerEntry` e `Alert`. `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `LedgerEntry` e `Alert` estÃ£o implementados; `Experiment` permanece pendente.
+- [ ] Criar migrations e separar tabelas compartilhadas das tabelas do Content Engine. Nove migrations incrementais cobrem o kernel compartilhado; o baseline legado permanece pendente.
 - [ ] Adotar PostgreSQL para o caminho concorrente; manter SQLite nos testes.
 - [ ] Configurar Celery + Redis e filas `gpu`, `cpu`, `io`.
 - [x] Implementar task wrapper idempotente com retries limitados, timeout, backoff exponencial e transiÃ§Ãµes persistidas em processo Ãºnico.
 - [x] Implementar pedidos de cancelamento e kill switch persistentes, auditÃ¡veis e consultados pelo wrapper em processo Ãºnico.
 - [x] Registrar uma automaÃ§Ã£o de exemplo e executar um step manual observÃ¡vel em processo Ãºnico, sem efeito externo.
 - [x] Registrar metric points decimais, idempotentes e atribuÃ­veis, sem coleta ou efeito externo.
+- [x] Registrar ledger entries decimais, append-only, idempotentes e atribuÃ­veis, sem pagamentos ou aÃ§Ãµes financeiras.
 - [x] Registrar alertas locais deduplicados, auditados e sem notificaÃ§Ãµes externas.
 
 **PortÃ£o:** uma run manual percorre `queued â†’ running â†’ succeeded/failed`, sobrevive a retry e deixa evidÃªncia completa no banco.
