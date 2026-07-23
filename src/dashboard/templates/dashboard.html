@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Automation Foundry</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      body { margin: 0; background: #0b0d10; color: #f2f4f7; }
+      main { width: min(1180px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+      header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin-bottom: 1.5rem; }
+      h1, h2 { margin: 0; letter-spacing: -0.03em; }
+      h1 { font-size: clamp(2rem, 5vw, 3.5rem); }
+      h2 { font-size: 1rem; margin-bottom: 1rem; color: #b7c0cc; text-transform: uppercase; letter-spacing: .08em; }
+      p { margin: .35rem 0 0; color: #9ba6b4; }
+      .local { color: #7ee787; font-size: .85rem; }
+      .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 1rem; }
+      section { grid-column: span 6; background: #13171c; border: 1px solid #262d36; border-radius: 14px; padding: 1.15rem; overflow: auto; }
+      section.wide { grid-column: 1 / -1; }
+      table { width: 100%; border-collapse: collapse; min-width: 520px; }
+      th, td { text-align: left; border-bottom: 1px solid #252c34; padding: .7rem .5rem; font-size: .9rem; }
+      th { color: #8995a3; font-weight: 600; }
+      tr:last-child td { border-bottom: 0; }
+      code { color: #d2a8ff; }
+      .badge { display: inline-block; border: 1px solid #3b4552; border-radius: 999px; padding: .15rem .5rem; font-size: .75rem; }
+      .ok { color: #7ee787; } .warn { color: #f2cc60; } .danger { color: #ff7b72; }
+      .empty { padding: 1rem 0; color: #75808d; }
+      @media (max-width: 820px) { section { grid-column: 1 / -1; } header { align-items: start; flex-direction: column; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Automation Foundry</h1>
+          <p>Estado persistido do control plane, em modo somente leitura.</p>
+        </div>
+        <span class="local">● loopback local</span>
+      </header>
+
+      <div class="grid">
+        <section class="wide">
+          <h2>Automações</h2>
+          {% if snapshot.automations %}
+          <table><thead><tr><th>Nome</th><th>Slug</th><th>Estado</th><th>Kill switch</th></tr></thead><tbody>
+          {% for automation in snapshot.automations %}
+            <tr><td>{{ automation.name }}</td><td><code>{{ automation.slug }}</code></td><td>{{ "ativa" if automation.enabled else "pausada" }}</td><td class="{{ 'danger' if automation.kill_switch_active else 'ok' }}">{{ "ativo" if automation.kill_switch_active else "livre" }}</td></tr>
+          {% endfor %}
+          </tbody></table>
+          {% else %}<div class="empty">Nenhuma automação registrada.</div>{% endif %}
+        </section>
+
+        <section class="wide">
+          <h2>Runs recentes</h2>
+          {% if snapshot.recent_runs %}
+          <table><thead><tr><th>ID</th><th>Automação</th><th>Status</th><th>Trigger</th><th>Enfileirada UTC</th></tr></thead><tbody>
+          {% for run in snapshot.recent_runs %}
+            <tr><td>#{{ run.id }}</td><td><code>{{ run.automation_slug }}</code></td><td><span class="badge">{{ run.status }}</span></td><td>{{ run.trigger }}</td><td>{{ run.queued_at.isoformat() }}Z</td></tr>
+          {% endfor %}
+          </tbody></table>
+          {% else %}<div class="empty">Nenhuma run registrada.</div>{% endif %}
+        </section>
+
+        <section>
+          <h2>Approvals pendentes</h2>
+          {% if snapshot.pending_approvals %}
+          <table><thead><tr><th>ID</th><th>Run</th><th>Ação</th><th>Solicitada UTC</th></tr></thead><tbody>
+          {% for approval in snapshot.pending_approvals %}
+            <tr><td>#{{ approval.id }}</td><td>#{{ approval.run_id }} · <code>{{ approval.automation_slug }}</code></td><td>{{ approval.action }}</td><td>{{ approval.requested_at.isoformat() }}Z</td></tr>
+          {% endfor %}
+          </tbody></table>
+          {% else %}<div class="empty">Nenhuma aprovação pendente.</div>{% endif %}
+        </section>
+
+        <section>
+          <h2>Alertas ativos</h2>
+          {% if snapshot.active_alerts %}
+          <table><thead><tr><th>Título</th><th>Status</th><th>Severidade</th><th>Ocorrências</th><th>Última UTC</th></tr></thead><tbody>
+          {% for alert in snapshot.active_alerts %}
+            <tr><td>{{ alert.title }}</td><td>{{ alert.status }}</td><td class="{{ 'danger' if alert.severity in ('error', 'critical') else 'warn' }}">{{ alert.severity }}</td><td>{{ alert.occurrence_count }}</td><td>{{ alert.last_seen_at.isoformat() }}Z</td></tr>
+          {% endfor %}
+          </tbody></table>
+          {% else %}<div class="empty">Nenhum alerta ativo.</div>{% endif %}
+        </section>
+
+        <section class="wide">
+          <h2>Ledger por moeda</h2>
+          {% if snapshot.ledger_totals %}
+          <table><thead><tr><th>Moeda</th><th>Custo</th><th>Receita</th><th>Receita líquida observada</th><th>Valor atribuído</th></tr></thead><tbody>
+          {% for total in snapshot.ledger_totals %}
+            <tr><td><code>{{ total.currency }}</code></td><td>{{ total.cost }}</td><td>{{ total.revenue }}</td><td>{{ total.net_revenue }}</td><td>{{ total.attributed_value }}</td></tr>
+          {% endfor %}
+          </tbody></table>
+          {% else %}<div class="empty">Nenhuma observação financeira registrada.</div>{% endif %}
+          <p>Valores não são convertidos entre moedas e não representam pagamentos ou promessas.</p>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
 from functools import lru_cache
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,6 +28,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
     database_url: str = "sqlite+aiosqlite:///./automation_foundry.db"
     storage_root: str = "./storage"
+    dashboard_host: str = "127.0.0.1"
+    dashboard_port: int = Field(default=8000, ge=1, le=65535)
 
     # ── Ollama (LLM local) ────────────────────────────────────────────────────
 
@@ -89,6 +93,20 @@ class Settings(BaseSettings):
 
     environment: str = "development"
     log_level: str = "INFO"
+
+    @field_validator("dashboard_host")
+    @classmethod
+    def _dashboard_must_use_loopback(cls, value: str) -> str:
+        host = value.strip()
+        if host.casefold() == "localhost":
+            return host
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError as exc:
+            raise ValueError("dashboard_host must be a loopback address") from exc
+        if not address.is_loopback:
+            raise ValueError("dashboard_host must be a loopback address")
+        return host
 
     @property
     def is_development(self) -> bool:
