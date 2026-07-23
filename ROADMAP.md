@@ -66,7 +66,7 @@ Objetivo: controlar a plataforma sem depender do terminal para a operaÃ§Ã£o 
 
 - [x] Criar FastAPI ligado a loopback por configuraÃ§Ã£o validada, com `127.0.0.1` como default.
 - [ ] Construir dashboard Jinja/HTMX para mÃ³dulos, runs, steps e alertas. A visÃ£o read-only mostra automaÃ§Ãµes, runs recentes e alertas ativos; o detalhe de run mostra status, trigger, duraÃ§Ã£o, steps/tentativas/filas e evidÃªncias vinculadas com redaction. InteraÃ§Ãµes HTMX e visÃµes operacionais adicionais permanecem pendentes.
-- [ ] Adicionar fila de aprovaÃ§Ãµes. A primeira pÃ¡gina mostra pendÃªncias redigidas, ainda sem decisÃ£o pela UI.
+- [ ] Adicionar fila de aprovaÃ§Ãµes. A pÃ¡gina inicial liga pendÃªncias redigidas ao detalhe da run, que permite rejeiÃ§Ã£o imutÃ¡vel com actor, motivo, confirmaÃ§Ã£o e proteÃ§Ã£o CSRF. AprovaÃ§Ã£o positiva permanece pendente atÃ© existir contexto seguro para revisar o payload protegido.
 - [ ] Permitir iniciar, cancelar, retentar e acionar kill switch. O detalhe da run jÃ¡ permite solicitar cancelamento com confirmaÃ§Ã£o, motivo, proteÃ§Ã£o CSRF e auditoria; iniciar, retentar e kill switch pela UI permanecem pendentes.
 - [x] Adicionar schedules persistidos, desabilitados por padrÃ£o e com mudanÃ§as auditadas.
 - [ ] Integrar os schedules ao Celery Beat singleton e validar dispatch idempotente. `bloqueado local`

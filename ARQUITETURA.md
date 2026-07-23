@@ -43,7 +43,7 @@ Na data desta versÃ£o:
 - metric points sÃ£o observaÃ§Ãµes decimais append-only, idempotentes e atribuÃ­veis a automation, run e step; unidade, fonte, confianÃ§a opcional e timestamp permanecem explÃ­citos;
 - ledger entries sÃ£o observaÃ§Ãµes financeiras decimais append-only, idempotentes e atribuÃ­veis a automation e, opcionalmente, run, step e metric point; tipo, categoria, moeda, fonte, confianÃ§a opcional e timestamp permanecem explÃ­citos, sem executar pagamentos ou criar promessas;
 - platform alerts deduplicam ocorrÃªncias, escalam severidade enquanto abertos e auditam reconhecimento, resoluÃ§Ã£o e reabertura; nenhuma notificaÃ§Ã£o externa foi implementada;
-- `src/dashboard/` renderiza com FastAPI e Jinja uma visÃ£o geral read-only e detalhe de run com status, trigger, duraÃ§Ã£o, steps ordenados, tentativas, filas e evidÃªncias vinculadas; falhas e campos privados permanecem redigidos; uma run nÃ£o terminal aceita pedido de cancelamento explÃ­cito, protegido por token CSRF por processo e validaÃ§Ã£o de Host loopback, persistido de forma idempotente e auditÃ¡vel pelo kernel;
+- `src/dashboard/` renderiza com FastAPI e Jinja uma visÃ£o geral read-only e detalhe de run com evidÃªncias vinculadas; cancelamento e rejeiÃ§Ã£o de approval usam POST com confirmaÃ§Ã£o, token CSRF por processo, Host loopback e serviÃ§os idempotentes/auditÃ¡veis; approval positiva permanece indisponÃ­vel enquanto o payload protegido nÃ£o possuir uma projeÃ§Ã£o de revisÃ£o segura;
 - o runtime completo nÃ£o foi validado no computador de casa.
 
 O roadmap deve evoluir essa base sem confundir placeholders com funcionalidades prontas e sem reescrever a parte testada apenas por estÃ©tica arquitetural.
