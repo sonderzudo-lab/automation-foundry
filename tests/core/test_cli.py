@@ -20,6 +20,8 @@ from src.platform.models import (
     Automation,
     Run,
     RunStatus,
+    Schedule,
+    ScheduleStatus,
 )
 from src.platform.run_service import (
     get_or_create_automation,
@@ -670,3 +672,167 @@ async def test_register_artifact_helper_persists_real_local_metadata(
     assert stored_artifact is not None
     assert stored_artifact.relative_path == "result.txt"
     assert stored_artifact.size_bytes == len("verified local output")
+
+
+def test_create_schedule_command_starts_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    received: dict[str, object] = {}
+
+    async def create(
+        automation_slug: str,
+        *,
+        name: str,
+        cron_expression: str,
+        timezone_name: str,
+        actor: str,
+        reason: str,
+        allow_overlap: bool,
+        misfire_grace_seconds: int,
+    ) -> cli.ScheduleCommandResult:
+        received.update(
+            automation_slug=automation_slug,
+            name=name,
+            cron_expression=cron_expression,
+            timezone_name=timezone_name,
+            actor=actor,
+            reason=reason,
+            allow_overlap=allow_overlap,
+            misfire_grace_seconds=misfire_grace_seconds,
+        )
+        return cli.ScheduleCommandResult(
+            schedule_id=21,
+            automation_id=7,
+            status="disabled",
+            next_run_at=None,
+            changed=True,
+        )
+
+    monkeypatch.setattr(cli, "_create_schedule_command", create)
+    exit_code = cli.main(
+        [
+            "create-schedule",
+            "--automation-slug",
+            "daily-reports",
+            "--name",
+            "morning-report",
+            "--cron",
+            "0 9 * * *",
+            "--timezone",
+            "America/Sao_Paulo",
+            "--actor",
+            "local-owner",
+            "--reason",
+            "reviewed recurring report",
+            "--misfire-grace-seconds",
+            "120",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert received["cron_expression"] == "0 9 * * *"
+    assert received["timezone_name"] == "America/Sao_Paulo"
+    assert received["allow_overlap"] is False
+    assert received["misfire_grace_seconds"] == 120
+    assert payload["status"] == "disabled"
+    assert payload["next_run_at"] is None
+
+
+def test_set_schedule_command_requires_explicit_state(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def change(
+        schedule_id: int,
+        *,
+        enabled: bool,
+        actor: str,
+        reason: str,
+    ) -> cli.ScheduleCommandResult:
+        assert (schedule_id, enabled, actor, reason) == (
+            21,
+            True,
+            "local-owner",
+            "start reviewed recurring work",
+        )
+        return cli.ScheduleCommandResult(
+            schedule_id=schedule_id,
+            automation_id=7,
+            status="enabled",
+            next_run_at="2026-07-24T12:00:00Z",
+            changed=True,
+        )
+
+    monkeypatch.setattr(cli, "_set_schedule_command", change)
+    exit_code = cli.main(
+        [
+            "set-schedule",
+            "--schedule-id",
+            "21",
+            "--enable",
+            "--actor",
+            "local-owner",
+            "--reason",
+            "start reviewed recurring work",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "enabled" in output
+    assert "2026-07-24T12:00:00Z" in output
+
+
+async def test_schedule_command_helpers_persist_real_local_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "cli-schedules.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        echo=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(database.Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as seed_session:
+        await get_or_create_automation(
+            seed_session,
+            slug="cli-schedule",
+            name="CLI Schedule",
+            owner="local-owner",
+        )
+        await seed_session.commit()
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", factory)
+    created = await cli._create_schedule_command(
+        "cli-schedule",
+        name="morning-report",
+        cron_expression="0 9 * * *",
+        timezone_name="America/Sao_Paulo",
+        actor="local-owner",
+        reason="integration test registration",
+        allow_overlap=False,
+        misfire_grace_seconds=300,
+    )
+    enabled = await cli._set_schedule_command(
+        created.schedule_id,
+        enabled=True,
+        actor="local-owner",
+        reason="integration test enable",
+    )
+
+    async with factory() as observer_session:
+        stored_schedule = await observer_session.get(Schedule, created.schedule_id)
+    await engine.dispose()
+
+    assert created.status == ScheduleStatus.DISABLED.value
+    assert created.next_run_at is None
+    assert enabled.status == ScheduleStatus.ENABLED.value
+    assert enabled.next_run_at is not None
+    assert stored_schedule is not None
+    assert stored_schedule.status == ScheduleStatus.ENABLED.value
+    assert stored_schedule.next_run_at is not None

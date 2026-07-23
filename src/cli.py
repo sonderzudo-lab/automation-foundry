@@ -19,6 +19,7 @@ from src.core.config import Settings, get_settings
 
 if TYPE_CHECKING:
     from src.platform.example_run import ExampleRunResult
+    from src.platform.models import Schedule
 
 CheckStatus = Literal["pass", "fail", "skip"]
 _REDIS_SCHEMES = frozenset({"redis", "rediss"})
@@ -62,6 +63,17 @@ class ArtifactCommandResult:
     sha256: str
     size_bytes: int
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleCommandResult:
+    """Redacted result of one local schedule command."""
+
+    schedule_id: int
+    automation_id: int
+    status: str
+    next_run_at: str | None
+    changed: bool
 
 
 def _is_loopback_host(host: str | None) -> bool:
@@ -329,6 +341,36 @@ def _build_parser() -> argparse.ArgumentParser:
     register_artifact.add_argument("--retention-days", type=int)
     register_artifact.add_argument("--expected-sha256")
     register_artifact.add_argument("--json", action="store_true")
+
+    create_schedule = subparsers.add_parser(
+        "create-schedule",
+        help="Cria uma agenda cron validada, inicialmente desabilitada.",
+    )
+    create_schedule.add_argument("--automation-slug", required=True)
+    create_schedule.add_argument("--name", required=True)
+    create_schedule.add_argument("--cron", required=True)
+    create_schedule.add_argument("--timezone", required=True)
+    create_schedule.add_argument("--actor", required=True)
+    create_schedule.add_argument("--reason", required=True)
+    create_schedule.add_argument("--allow-overlap", action="store_true")
+    create_schedule.add_argument(
+        "--misfire-grace-seconds",
+        type=int,
+        default=300,
+    )
+    create_schedule.add_argument("--json", action="store_true")
+
+    set_schedule = subparsers.add_parser(
+        "set-schedule",
+        help="Habilita ou desabilita uma agenda persistida com auditoria.",
+    )
+    set_schedule.add_argument("--schedule-id", required=True, type=int)
+    schedule_state = set_schedule.add_mutually_exclusive_group(required=True)
+    schedule_state.add_argument("--enable", action="store_true")
+    schedule_state.add_argument("--disable", action="store_true")
+    set_schedule.add_argument("--actor", required=True)
+    set_schedule.add_argument("--reason", required=True)
+    set_schedule.add_argument("--json", action="store_true")
     return parser
 
 
@@ -584,6 +626,110 @@ def _render_artifact_result(result: ArtifactCommandResult, *, as_json: bool) -> 
     )
 
 
+def _schedule_command_result(
+    schedule: Schedule,
+    *,
+    changed: bool,
+) -> ScheduleCommandResult:
+    next_run_at = (
+        f"{schedule.next_run_at.isoformat()}Z"
+        if schedule.next_run_at is not None
+        else None
+    )
+    return ScheduleCommandResult(
+        schedule_id=schedule.id,
+        automation_id=schedule.automation_id,
+        status=schedule.status,
+        next_run_at=next_run_at,
+        changed=changed,
+    )
+
+
+async def _create_schedule_command(
+    automation_slug: str,
+    *,
+    name: str,
+    cron_expression: str,
+    timezone_name: str,
+    actor: str,
+    reason: str,
+    allow_overlap: bool,
+    misfire_grace_seconds: int,
+) -> ScheduleCommandResult:
+    from sqlalchemy import select
+
+    from src.core.database import AsyncSessionLocal
+    from src.platform.models import Automation
+    from src.platform.schedule_service import get_or_create_schedule
+
+    async with AsyncSessionLocal() as session:
+        try:
+            automation = await session.scalar(
+                select(Automation).where(Automation.slug == automation_slug.strip())
+            )
+            if automation is None:
+                raise ValueError("automation does not exist")
+            creation = await get_or_create_schedule(
+                session,
+                automation=automation,
+                name=name,
+                cron_expression=cron_expression,
+                timezone_name=timezone_name,
+                actor=actor,
+                reason=reason,
+                allow_overlap=allow_overlap,
+                misfire_grace_seconds=misfire_grace_seconds,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return _schedule_command_result(creation.schedule, changed=creation.created)
+
+
+async def _set_schedule_command(
+    schedule_id: int,
+    *,
+    enabled: bool,
+    actor: str,
+    reason: str,
+) -> ScheduleCommandResult:
+    from src.core.database import AsyncSessionLocal
+    from src.platform.models import Schedule
+    from src.platform.schedule_service import set_schedule_enabled
+
+    async with AsyncSessionLocal() as session:
+        try:
+            schedule = await session.get(Schedule, schedule_id)
+            if schedule is None:
+                raise ValueError("schedule does not exist")
+            change = await set_schedule_enabled(
+                session,
+                schedule=schedule,
+                enabled=enabled,
+                actor=actor,
+                reason=reason,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return _schedule_command_result(change.schedule, changed=change.changed)
+
+
+def _render_schedule_result(result: ScheduleCommandResult, *, as_json: bool) -> None:
+    payload = asdict(result)
+    if as_json:
+        print(json.dumps({"ok": True, **payload}, ensure_ascii=False, indent=2))
+        return
+    outcome = "alterado" if result.changed else "sem alteração (idempotente)"
+    next_run = result.next_run_at or "nenhuma enquanto desabilitado"
+    print(
+        f"schedule {result.schedule_id}: {result.status} ({outcome}); "
+        f"próxima execução UTC: {next_run}"
+    )
+
+
 def _render_command_failure(command: str, exc: Exception, *, as_json: bool) -> int:
     detail = f"{command} falhou ({type(exc).__name__})"
     if as_json:
@@ -720,6 +866,48 @@ def main(argv: Sequence[str] | None = None) -> int:
                 as_json=bool(args.json),
             )
         _render_artifact_result(artifact_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "create-schedule":
+        try:
+            schedule_result = asyncio.run(
+                _create_schedule_command(
+                    args.automation_slug,
+                    name=args.name,
+                    cron_expression=args.cron,
+                    timezone_name=args.timezone,
+                    actor=args.actor,
+                    reason=args.reason,
+                    allow_overlap=bool(args.allow_overlap),
+                    misfire_grace_seconds=args.misfire_grace_seconds,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "create-schedule",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_schedule_result(schedule_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "set-schedule":
+        try:
+            schedule_change = asyncio.run(
+                _set_schedule_command(
+                    args.schedule_id,
+                    enabled=bool(args.enable),
+                    actor=args.actor,
+                    reason=args.reason,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "set-schedule",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_schedule_result(schedule_change, as_json=bool(args.json))
         return 0
 
     return 2
