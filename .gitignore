@@ -45,8 +45,7 @@ htmlcov/
 storage/
 !storage/.gitkeep
 
-# ── Alembic (versões geradas ficam no repo; o banco não) ─────────────────────
-alembic/versions/
+# ── Alembic (revisions são versionadas; o banco local não) ───────────────────
 
 # ── IDEs e editores ───────────────────────────────────────────────────────────
 .idea/
