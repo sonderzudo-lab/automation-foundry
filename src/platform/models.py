@@ -37,7 +37,16 @@ class RunStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class QueueClass(StrEnum):
+    """Execution queues reserved by the local worker topology."""
+
+    GPU = "gpu"
+    CPU = "cpu"
+    IO = "io"
+
+
 _RUN_STATUS_SQL = "'queued', 'running', 'succeeded', 'failed', 'cancelled'"
+_QUEUE_CLASS_SQL = "'gpu', 'cpu', 'io'"
 
 
 class Automation(Base):
@@ -95,6 +104,11 @@ class Run(Base):
         back_populates="run",
         order_by="RunTransition.id",
     )
+    step_runs: Mapped[list[StepRun]] = relationship(
+        "StepRun",
+        back_populates="run",
+        order_by="StepRun.ordinal",
+    )
 
 
 class RunTransition(Base):
@@ -125,3 +139,85 @@ class RunTransition(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     run: Mapped[Run] = relationship("Run", back_populates="transitions")
+
+
+class StepRun(Base):
+    """One durable, independently observable step inside a run."""
+
+    __tablename__ = "step_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "idempotency_key",
+            "attempt",
+            name="uq_step_runs_run_key_attempt",
+        ),
+        CheckConstraint(f"queue IN ({_QUEUE_CLASS_SQL})", name="ck_step_runs_queue"),
+        CheckConstraint(f"status IN ({_RUN_STATUS_SQL})", name="ck_step_runs_status"),
+        CheckConstraint("ordinal >= 1", name="ck_step_runs_ordinal_positive"),
+        CheckConstraint("attempt >= 1", name="ck_step_runs_attempt_positive"),
+        Index("ix_step_runs_run_status_ordinal", "run_id", "status", "ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    queue: Mapped[str] = mapped_column(String(20), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    input_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    output_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default=RunStatus.QUEUED.value,
+    )
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    queued_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    run: Mapped[Run] = relationship("Run", back_populates="step_runs")
+    transitions: Mapped[list[StepRunTransition]] = relationship(
+        "StepRunTransition",
+        back_populates="step_run",
+        order_by="StepRunTransition.id",
+    )
+
+
+class StepRunTransition(Base):
+    """Append-only evidence of one persisted step state transition."""
+
+    __tablename__ = "step_run_transitions"
+    __table_args__ = (
+        CheckConstraint(
+            f"from_status IS NULL OR from_status IN ({_RUN_STATUS_SQL})",
+            name="ck_step_run_transitions_from_status",
+        ),
+        CheckConstraint(
+            f"to_status IN ({_RUN_STATUS_SQL})",
+            name="ck_step_run_transitions_to_status",
+        ),
+        Index(
+            "ix_step_run_transitions_step_occurred",
+            "step_run_id",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    step_run_id: Mapped[int] = mapped_column(
+        ForeignKey("step_runs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    from_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    step_run: Mapped[StepRun] = relationship("StepRun", back_populates="transitions")
