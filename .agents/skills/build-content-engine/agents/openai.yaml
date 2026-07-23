@@ -1,0 +1,5 @@
+interface:
+  display_name: "Content Engine"
+  short_description: "Build the content pipeline with review gates"
+  default_prompt: "Use $build-content-engine to implement or review a Content Engine pipeline module with human approval and commercial-use safeguards."
+
