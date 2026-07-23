@@ -29,7 +29,7 @@ automação são placeholders ou itens planejados.
 | Content Engine — mídia e publicação | Placeholder | `src/pipeline/tts.py`, `visuals.py`, `captions.py`, `assembly.py` e `upload.py` estão vazios. Nenhuma publicação real foi implementada. |
 | Orquestração e filas | Parcial | `src/platform/task_runner.py` executa corrotinas em processo único com timeout, retries limitados, backoff exponencial e erros redigidos. Controles persistidos são consultados antes e depois da corrotina e entre tentativas; o wrapper não preempta código síncrono bloqueante. `src/core/celery_app.py` e `src/tasks/` continuam vazios. |
 | CLI operacional | Parcial | `src/cli.py` expõe diagnóstico, dashboard read-only, exemplo, controles, approvals, artifacts, schedules, `record-metric`, `record-ledger-entry`, `record-alert` e `set-alert`. O comando `dashboard` usa apenas host validado como loopback. Criação de schedule é sempre desabilitada; habilitar ou desabilitar exige actor e motivo. Métricas e valores financeiros entram como strings decimais. A saída do ledger omite categoria, fonte e chave idempotente; alertas não repetem o summary. A CLI local ainda não autentica criptograficamente o actor e não há comandos de retry ou operação de workers. |
-| Control plane | Parcial | `src/dashboard/main.py`, `service.py` e `templates/dashboard.html` implementam a primeira página FastAPI/Jinja somente leitura. Ela mostra automações, runs recentes, approvals pendentes, alertas ativos e totais exatos do ledger por moeda. Owner, payloads, erros, summaries, fontes financeiras e chaves idempotentes não são projetados para o HTML. Não há formulário, rota mutável, detalhe de run/step, health de serviços nem HTMX interativo. |
+| Control plane | Parcial | `src/dashboard/main.py`, `service.py` e os templates implementam páginas FastAPI/Jinja somente leitura. A visão geral mostra automações, runs recentes, approvals pendentes, alertas ativos e totais exatos do ledger por moeda. O detalhe da run mostra status, trigger, duração, steps/tentativas/filas e approvals, artefatos, métricas e ledger vinculados. Falhas exibem apenas código/tipo em formato estritamente validado; owner, payloads, mensagens de erro, summaries, caminhos, hashes, fontes e chaves idempotentes não são projetados para o HTML. Não há formulário, rota mutável, health de serviços nem HTMX interativo. |
 | Inteligência | Placeholder | `src/intelligence/trends.py`, `competitors.py` e `similarity.py` estão vazios. |
 | Engajamento | Placeholder | `src/engagement/comments.py` está vazio. |
 | Operações | Placeholder | `src/operations/health.py`, `seo.py` e `repurpose.py` estão vazios. |
@@ -37,7 +37,7 @@ automação são placeholders ou itens planejados.
 | Extras e ações externas | Placeholder | `src/extras/affiliate.py`, `outreach.py` e `x_bot.py` estão vazios. Não há envio, gasto ou ação externa implementada. |
 | Trading Research Lab | Planejado | O domínio aparece em `ARQUITETURA.md` e `ROADMAP.md`, mas não possui implementação. Trading com dinheiro real permanece fora do escopo. |
 | Infraestrutura local | Parcial | `docker-compose.yml` define somente Redis com AOF. PostgreSQL, workers e health checks ainda não estão definidos. Ollama é esperado no host, fora do Compose. |
-| Testes | Parcial | Há 183 testes para modelos legados, A1, CLI, lifecycles, task wrapper, controles, approval gates, artifacts, schedules com timezone/DST, métricas, ledger financeiro observacional, alertas deduplicados/auditados, dashboard read-only, integração SQLite e smoke/roundtrip das migrations. Não há testes de Celery, PostgreSQL, integrações reais, restart ou hardware. |
+| Testes | Parcial | Há 186 testes para modelos legados, A1, CLI, lifecycles, task wrapper, controles, approval gates, artifacts, schedules com timezone/DST, métricas, ledger financeiro observacional, alertas deduplicados/auditados, dashboard read-only e detalhe redigido de run, integração SQLite e smoke/roundtrip das migrations. Não há testes de Celery, PostgreSQL, integrações reais, restart ou hardware. |
 
 Arquivos `__init__.py` vazios são marcadores de pacote e não contam como funcionalidade.
 
@@ -173,8 +173,8 @@ Depois de `alembic upgrade head`, a primeira visão do control plane é iniciada
 .venv\Scripts\automation-foundry dashboard
 ```
 
-O host default é `127.0.0.1` e qualquer configuração de host não-loopback é rejeitada. A página
-consulta somente o banco, não possui rotas mutáveis e não depende de Redis, Ollama, Celery ou GPU.
+O host default é `127.0.0.1` e qualquer configuração de host não-loopback é rejeitada. As páginas
+consultam somente o banco, não possuem rotas mutáveis e não dependem de Redis, Ollama, Celery ou GPU.
 Totais financeiros são calculados com `Decimal` em Python para preservar a precisão do SQLite e
 permanecem separados por moeda, sem conversão cambial.
 
@@ -191,7 +191,7 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 - `python -m pip install -e ".[dev]"`: concluído; a primeira tentativa foi bloqueada pela rede da
   sandbox e a repetição com acesso autorizado concluiu a instalação;
-- `python -m pytest -q`: **183 passed**;
+- `python -m pytest -q`: **186 passed**;
 - `python -m ruff check .`: encontrou 7 ocorrências mecânicas preexistentes; o autofix removeu
   imports não usados, ordenou imports e simplificou um context manager; a repetição terminou com
   **All checks passed**;
@@ -223,7 +223,7 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 ## Próxima fatia recomendada
 
-Adicionar detalhe read-only de run e step ao dashboard, preservando redaction, é a próxima fatia
-local verificável. `Experiment`, o dispatcher de schedules e o caminho PostgreSQL concorrente
-permanecem pendentes; concorrência, Redis, Celery Beat e hard time limits continuam dependentes
-do computador de casa.
+Adicionar a primeira ação operacional explícita e auditável ao dashboard, preservando os gates
+humanos e a proteção contra replay, é a próxima fatia local verificável. `Experiment`, o dispatcher
+de schedules e o caminho PostgreSQL concorrente permanecem pendentes; concorrência, Redis, Celery
+Beat e hard time limits continuam dependentes do computador de casa.

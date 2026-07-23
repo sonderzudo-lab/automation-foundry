@@ -29,7 +29,7 @@ Na data desta versÃ£o:
 - `src/core/config.py`, `database.py` e modelos SQLAlchemy formam a base inicial;
 - `src/pipeline/script_gen.py` implementa a geraÃ§Ã£o de roteiro do Content Engine e possui cobertura de testes relevante;
 - o schema atual ainda Ã© orientado a conteÃºdo;
-- Celery e grande parte dos mÃ³dulos planejados permanecem vazios ou incompletos; o dashboard possui somente a primeira visÃ£o read-only;
+- Celery e grande parte dos mÃ³dulos planejados permanecem vazios ou incompletos; o dashboard cobre somente visÃµes read-only iniciais;
 - metadata, defaults locais e nomes de serviÃ§os usam a identidade `automation-foundry`;
 - `src/cli.py` oferece o diagnÃ³stico local `automation-foundry doctor` e inicia o dashboard read-only com binding validado em loopback;
 - `src/platform/` implementa parcialmente o kernel com `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `LedgerEntry`, `Alert` e histÃ³ricos persistidos de transiÃ§Ãµes;
@@ -43,7 +43,7 @@ Na data desta versÃ£o:
 - metric points sÃ£o observaÃ§Ãµes decimais append-only, idempotentes e atribuÃ­veis a automation, run e step; unidade, fonte, confianÃ§a opcional e timestamp permanecem explÃ­citos;
 - ledger entries sÃ£o observaÃ§Ãµes financeiras decimais append-only, idempotentes e atribuÃ­veis a automation e, opcionalmente, run, step e metric point; tipo, categoria, moeda, fonte, confianÃ§a opcional e timestamp permanecem explÃ­citos, sem executar pagamentos ou criar promessas;
 - platform alerts deduplicam ocorrÃªncias, escalam severidade enquanto abertos e auditam reconhecimento, resoluÃ§Ã£o e reabertura; nenhuma notificaÃ§Ã£o externa foi implementada;
-- `src/dashboard/` renderiza com FastAPI e Jinja uma visÃ£o read-only de automaÃ§Ãµes, runs recentes, approvals pendentes, alertas ativos e totais exatos do ledger por moeda; payloads, erros, summaries e chaves idempotentes nÃ£o sÃ£o exibidos;
+- `src/dashboard/` renderiza com FastAPI e Jinja uma visÃ£o read-only de automaÃ§Ãµes, runs recentes, approvals pendentes, alertas ativos e totais exatos do ledger por moeda; cada run possui detalhe com status, trigger, duraÃ§Ã£o, steps ordenados, tentativas, filas e evidÃªncias vinculadas de approvals, artefatos, mÃ©tricas e ledger; falhas sÃ£o reduzidas a cÃ³digo/tipo estritamente validados, e payloads, mensagens, caminhos, hashes, summaries, fontes e chaves idempotentes nÃ£o sÃ£o exibidos;
 - o runtime completo nÃ£o foi validado no computador de casa.
 
 O roadmap deve evoluir essa base sem confundir placeholders com funcionalidades prontas e sem reescrever a parte testada apenas por estÃ©tica arquitetural.
