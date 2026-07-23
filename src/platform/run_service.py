@@ -14,7 +14,15 @@ from src.platform.models import Automation, Run, RunStatus, RunTransition
 _ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.QUEUED: frozenset({RunStatus.RUNNING, RunStatus.CANCELLED}),
     RunStatus.RUNNING: frozenset(
-        {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}
+        {
+            RunStatus.AWAITING_APPROVAL,
+            RunStatus.SUCCEEDED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        }
+    ),
+    RunStatus.AWAITING_APPROVAL: frozenset(
+        {RunStatus.RUNNING, RunStatus.CANCELLED}
     ),
     RunStatus.SUCCEEDED: frozenset(),
     RunStatus.FAILED: frozenset(),

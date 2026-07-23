@@ -32,6 +32,7 @@ class RunStatus(StrEnum):
 
     QUEUED = "queued"
     RUNNING = "running"
+    AWAITING_APPROVAL = "awaiting_approval"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -53,8 +54,21 @@ class ControlEventType(StrEnum):
     CANCELLATION_REQUESTED = "cancellation_requested"
 
 
-_RUN_STATUS_SQL = "'queued', 'running', 'succeeded', 'failed', 'cancelled'"
+class ApprovalStatus(StrEnum):
+    """Immutable decision states for a human approval gate."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+_RUN_STATUS_SQL = (
+    "'queued', 'running', 'awaiting_approval', 'succeeded', 'failed', 'cancelled'"
+)
+_STEP_RUN_STATUS_SQL = "'queued', 'running', 'succeeded', 'failed', 'cancelled'"
 _QUEUE_CLASS_SQL = "'gpu', 'cpu', 'io'"
+_APPROVAL_STATUS_SQL = "'pending', 'approved', 'rejected', 'cancelled'"
 _CONTROL_EVENT_TYPE_SQL = (
     "'kill_switch_enabled', 'kill_switch_disabled', 'cancellation_requested'"
 )
@@ -145,6 +159,11 @@ class Run(Base):
         back_populates="run",
         order_by="ControlEvent.id",
     )
+    approvals: Mapped[list[Approval]] = relationship(
+        "Approval",
+        back_populates="run",
+        order_by="Approval.id",
+    )
 
 
 class RunTransition(Base):
@@ -189,7 +208,10 @@ class StepRun(Base):
             name="uq_step_runs_run_key_attempt",
         ),
         CheckConstraint(f"queue IN ({_QUEUE_CLASS_SQL})", name="ck_step_runs_queue"),
-        CheckConstraint(f"status IN ({_RUN_STATUS_SQL})", name="ck_step_runs_status"),
+        CheckConstraint(
+            f"status IN ({_STEP_RUN_STATUS_SQL})",
+            name="ck_step_runs_status",
+        ),
         CheckConstraint("ordinal >= 1", name="ck_step_runs_ordinal_positive"),
         CheckConstraint("attempt >= 1", name="ck_step_runs_attempt_positive"),
         Index("ix_step_runs_run_status_ordinal", "run_id", "status", "ordinal"),
@@ -199,6 +221,10 @@ class StepRun(Base):
     run_id: Mapped[int] = mapped_column(
         ForeignKey("runs.id", ondelete="RESTRICT"),
         nullable=False,
+    )
+    approval_id: Mapped[int | None] = mapped_column(
+        ForeignKey("approvals.id", ondelete="RESTRICT"),
+        nullable=True,
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     queue: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -218,6 +244,10 @@ class StepRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     run: Mapped[Run] = relationship("Run", back_populates="step_runs")
+    approval: Mapped[Approval | None] = relationship(
+        "Approval",
+        back_populates="step_runs",
+    )
     transitions: Mapped[list[StepRunTransition]] = relationship(
         "StepRunTransition",
         back_populates="step_run",
@@ -231,11 +261,11 @@ class StepRunTransition(Base):
     __tablename__ = "step_run_transitions"
     __table_args__ = (
         CheckConstraint(
-            f"from_status IS NULL OR from_status IN ({_RUN_STATUS_SQL})",
+            f"from_status IS NULL OR from_status IN ({_STEP_RUN_STATUS_SQL})",
             name="ck_step_run_transitions_from_status",
         ),
         CheckConstraint(
-            f"to_status IN ({_RUN_STATUS_SQL})",
+            f"to_status IN ({_STEP_RUN_STATUS_SQL})",
             name="ck_step_run_transitions_to_status",
         ),
         Index(
@@ -297,3 +327,86 @@ class ControlEvent(Base):
         back_populates="control_events",
     )
     run: Mapped[Run | None] = relationship("Run", back_populates="control_events")
+
+
+class Approval(Base):
+    """One immutable human decision gate for a protected run action."""
+
+    __tablename__ = "approvals"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "idempotency_key",
+            name="uq_approvals_run_idempotency_key",
+        ),
+        CheckConstraint(
+            f"status IN ({_APPROVAL_STATUS_SQL})",
+            name="ck_approvals_status",
+        ),
+        Index("ix_approvals_status_requested", "status", "requested_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default=ApprovalStatus.PENDING.value,
+    )
+    requested_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    run: Mapped[Run] = relationship("Run", back_populates="approvals")
+    events: Mapped[list[ApprovalEvent]] = relationship(
+        "ApprovalEvent",
+        back_populates="approval",
+        order_by="ApprovalEvent.id",
+    )
+    step_runs: Mapped[list[StepRun]] = relationship(
+        "StepRun",
+        back_populates="approval",
+        order_by="StepRun.id",
+    )
+
+
+class ApprovalEvent(Base):
+    """Append-only evidence for approval creation and final decision."""
+
+    __tablename__ = "approval_events"
+    __table_args__ = (
+        CheckConstraint(
+            f"from_status IS NULL OR from_status IN ({_APPROVAL_STATUS_SQL})",
+            name="ck_approval_events_from_status",
+        ),
+        CheckConstraint(
+            f"to_status IN ({_APPROVAL_STATUS_SQL})",
+            name="ck_approval_events_to_status",
+        ),
+        Index(
+            "ix_approval_events_approval_occurred",
+            "approval_id",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    approval_id: Mapped[int] = mapped_column(
+        ForeignKey("approvals.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    from_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    approval: Mapped[Approval] = relationship("Approval", back_populates="events")

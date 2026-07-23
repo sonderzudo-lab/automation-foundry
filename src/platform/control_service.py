@@ -9,6 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.platform.models import (
+    Approval,
+    ApprovalEvent,
+    ApprovalStatus,
     Automation,
     ControlEvent,
     ControlEventType,
@@ -126,7 +129,36 @@ async def request_run_cancellation(
     )
     session.add(event)
     await session.flush()
-    if RunStatus(run.status) is RunStatus.QUEUED:
+    if RunStatus(run.status) is RunStatus.AWAITING_APPROVAL:
+        pending_approvals = list(
+            (
+                await session.scalars(
+                    select(Approval).where(
+                        Approval.run_id == run.id,
+                        Approval.status == ApprovalStatus.PENDING.value,
+                    )
+                )
+            ).all()
+        )
+        now = _utcnow()
+        for approval in pending_approvals:
+            approval.status = ApprovalStatus.CANCELLED.value
+            approval.decided_at = now
+            approval.decided_by = "system"
+            approval.decision_reason = reason
+            session.add(
+                ApprovalEvent(
+                    approval_id=approval.id,
+                    from_status=ApprovalStatus.PENDING.value,
+                    to_status=ApprovalStatus.CANCELLED.value,
+                    actor="system",
+                    reason=reason,
+                )
+            )
+    if RunStatus(run.status) in {
+        RunStatus.QUEUED,
+        RunStatus.AWAITING_APPROVAL,
+    }:
         await transition_run(
             session,
             run,

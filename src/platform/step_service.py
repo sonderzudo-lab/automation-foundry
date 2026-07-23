@@ -17,6 +17,7 @@ _ALLOWED_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     RunStatus.RUNNING: frozenset(
         {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}
     ),
+    RunStatus.AWAITING_APPROVAL: frozenset(),
     RunStatus.SUCCEEDED: frozenset(),
     RunStatus.FAILED: frozenset(),
     RunStatus.CANCELLED: frozenset(),
@@ -49,6 +50,7 @@ async def get_or_create_step_run(
     ordinal: int,
     idempotency_key: str,
     attempt: int = 1,
+    approval_id: int | None = None,
     input_payload: dict[str, Any] | None = None,
 ) -> StepRunCreationResult:
     """Create a queued step with initial evidence, or return its exact match."""
@@ -72,11 +74,12 @@ async def get_or_create_step_run(
         )
     )
     if existing is not None:
-        expected = (name, queue.value, ordinal, payload)
+        expected = (name, queue.value, ordinal, approval_id, payload)
         actual = (
             existing.name,
             existing.queue,
             existing.ordinal,
+            existing.approval_id,
             existing.input_payload,
         )
         if actual != expected:
@@ -91,6 +94,7 @@ async def get_or_create_step_run(
         queue=queue.value,
         ordinal=ordinal,
         attempt=attempt,
+        approval_id=approval_id,
         idempotency_key=idempotency_key,
         input_payload=payload,
         status=RunStatus.QUEUED.value,
