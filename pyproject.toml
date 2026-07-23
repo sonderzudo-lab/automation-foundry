@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "content-engine"
+name = "automation-foundry"
 version = "0.1.0"
-description = "Plataforma de automação de conteúdo com IA local (RTX 3090)"
+description = "Plataforma local-first para automações modulares com controle humano"
 requires-python = ">=3.12"
 
 # ── Dependências de produção ────────────────────────────────────────────────
@@ -68,14 +68,14 @@ dev = [
 ]
 
 # ── Hatchling: localização dos pacotes ───────────────────────────────────────
-# O código está em src/ (não numa pasta content_engine/), então precisamos
+# O código está em src/ (não numa pasta de pacote com o nome do projeto), então precisamos
 # dizer ao hatchling explicitamente onde estão os pacotes Python a empacotar.
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 
 # ── Ferramentas de linha de comando ─────────────────────────────────────────
 [project.scripts]
-content-engine = "src.dashboard.main:app"
+automation-foundry = "src.dashboard.main:app"
 
 # ── Ruff (linter/formatter) ──────────────────────────────────────────────────
 [tool.ruff]

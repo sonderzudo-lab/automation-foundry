@@ -30,7 +30,7 @@ Na data desta versÃ£o:
 - `src/pipeline/script_gen.py` implementa a geraÃ§Ã£o de roteiro do Content Engine e possui cobertura de testes relevante;
 - o schema atual ainda Ã© orientado a conteÃºdo;
 - Celery, dashboard e grande parte dos mÃ³dulos planejados permanecem vazios ou incompletos;
-- `pyproject.toml`, variÃ¡veis e nomes de serviÃ§os ainda contÃªm referÃªncias a `content-engine`;
+- metadata, defaults locais e nomes de serviÃ§os usam a identidade `automation-foundry`;
 - o runtime completo nÃ£o foi validado no computador de casa.
 
 O roadmap deve evoluir essa base sem confundir placeholders com funcionalidades prontas e sem reescrever a parte testada apenas por estÃ©tica arquitetural.

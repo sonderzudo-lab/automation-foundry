@@ -4,14 +4,13 @@
 # O que roda FORA deste compose (no host / venv local):
 #   • Python / FastAPI / Celery workers  →  python -m uvicorn / celery worker
 #   • Ollama (GPU)                        →  ollama serve
-#   • n8n (orquestração visual)           →  docker run -p 5678:5678 n8nio/n8n
-#     (ou compose separado p/ não misturar responsabilidades)
+#   • n8n permanece adiado; não faz parte do runtime atual.
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
   redis:
     image: redis:7-alpine
-    container_name: content-engine-redis
+    container_name: automation-foundry-redis
     restart: unless-stopped
     ports:
       - "6379:6379"

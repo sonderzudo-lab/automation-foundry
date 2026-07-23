@@ -23,12 +23,12 @@ class Settings(BaseSettings):
 
     # ── Infra ─────────────────────────────────────────────────────────────────
 
-    redis_url: str = "redis://localhost:6379/0"
-    database_url: str = "sqlite+aiosqlite:///./content_engine.db"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    database_url: str = "sqlite+aiosqlite:///./automation_foundry.db"
 
     # ── Ollama (LLM local) ────────────────────────────────────────────────────
 
-    ollama_base_url: str = "http://localhost:11434/v1"
+    ollama_base_url: str = "http://127.0.0.1:11434/v1"
     ollama_model: str = "qwen3:14b"
     ollama_timeout: int = 120
 
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     reddit_client_id: str | None = None
     reddit_client_secret: str | None = None
-    reddit_user_agent: str = "content-engine/0.1"
+    reddit_user_agent: str = "automation-foundry/0.1"
 
     # ── Stock de imagens/vídeo ────────────────────────────────────────────────
 
