@@ -13,7 +13,14 @@ from src import cli
 from src.core import database
 from src.core.config import Settings
 from src.platform.example_run import ExampleRunResult
-from src.platform.models import Approval, ApprovalStatus, Automation, Run, RunStatus
+from src.platform.models import (
+    Approval,
+    ApprovalStatus,
+    Artifact,
+    Automation,
+    Run,
+    RunStatus,
+)
 from src.platform.run_service import (
     get_or_create_automation,
     get_or_create_run,
@@ -100,7 +107,8 @@ def test_main_json_output_is_structured_and_redacted(
     monkeypatch.setattr(cli.metadata, "version", lambda _name: "0.1.0")
 
     exit_code = cli.main(["doctor", "--json"])
-    payload = json.loads(capsys.readouterr().out)
+    output = capsys.readouterr().out
+    payload = json.loads(output)
 
     assert exit_code == 0
     assert payload["ok"] is True
@@ -484,3 +492,181 @@ async def test_approval_command_helpers_persist_real_decision(
     assert stored_run.status == RunStatus.RUNNING.value
     assert stored_approval is not None
     assert stored_approval.decided_by == "local-owner"
+
+
+def test_register_artifact_command_renders_redacted_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    received: dict[str, object] = {}
+
+    async def register(
+        run_id: int,
+        *,
+        step_run_id: int | None,
+        idempotency_key: str,
+        artifact_type: str,
+        file_path: str,
+        media_type: str,
+        origin: str,
+        sensitivity: str,
+        retention_days: int | None,
+        expected_sha256: str | None,
+    ) -> cli.ArtifactCommandResult:
+        received.update(
+            run_id=run_id,
+            step_run_id=step_run_id,
+            idempotency_key=idempotency_key,
+            artifact_type=artifact_type,
+            file_path=file_path,
+            media_type=media_type,
+            origin=origin,
+            sensitivity=sensitivity,
+            retention_days=retention_days,
+            expected_sha256=expected_sha256,
+        )
+        return cli.ArtifactCommandResult(
+            artifact_id=17,
+            run_id=run_id,
+            sha256="a" * 64,
+            size_bytes=42,
+            created=True,
+        )
+
+    monkeypatch.setattr(cli, "_register_artifact_command", register)
+    exit_code = cli.main(
+        [
+            "register-artifact",
+            "--run-id",
+            "9",
+            "--idempotency-key",
+            "run-9:script",
+            "--artifact-type",
+            "script",
+            "--path",
+            "run-9/script.json",
+            "--media-type",
+            "application/json",
+            "--origin",
+            "content-engine",
+            "--sensitivity",
+            "confidential",
+            "--retention-days",
+            "30",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert exit_code == 0
+    assert received["file_path"] == "run-9/script.json"
+    assert received["sensitivity"] == "confidential"
+    assert received["retention_days"] == 30
+    assert payload == {
+        "ok": True,
+        "artifact_id": 17,
+        "run_id": 9,
+        "sha256": "a" * 64,
+        "size_bytes": 42,
+        "created": True,
+    }
+    assert "run-9/script.json" not in output
+
+
+def test_register_artifact_failure_does_not_echo_private_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    private_path = "C:/private/customer-name/secret.txt"
+
+    async def fail(*_args: object, **_kwargs: object) -> cli.ArtifactCommandResult:
+        raise RuntimeError(private_path)
+
+    monkeypatch.setattr(cli, "_register_artifact_command", fail)
+    exit_code = cli.main(
+        [
+            "register-artifact",
+            "--run-id",
+            "9",
+            "--idempotency-key",
+            "run-9:secret",
+            "--artifact-type",
+            "secret",
+            "--path",
+            private_path,
+            "--media-type",
+            "text/plain",
+            "--origin",
+            "local",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "RuntimeError" in output
+    assert private_path not in output
+
+
+async def test_register_artifact_helper_persists_real_local_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "cli-artifacts.db"
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+    artifact_path = storage_root / "result.txt"
+    artifact_path.write_text("verified local output", encoding="utf-8")
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        echo=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(database.Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as seed_session:
+        automation = (
+            await get_or_create_automation(
+                seed_session,
+                slug="cli-artifact",
+                name="CLI Artifact",
+                owner="local-owner",
+            )
+        ).automation
+        run = (
+            await get_or_create_run(
+                seed_session,
+                automation=automation,
+                idempotency_key="cli-artifact:run",
+            )
+        ).run
+        await seed_session.commit()
+        run_id = run.id
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: Settings(_env_file=None, storage_root=str(storage_root)),
+    )
+    result = await cli._register_artifact_command(
+        run_id,
+        step_run_id=None,
+        idempotency_key="cli-artifact:result",
+        artifact_type="result",
+        file_path="result.txt",
+        media_type="text/plain",
+        origin="local-cli-test",
+        sensitivity="internal",
+        retention_days=None,
+        expected_sha256=None,
+    )
+
+    async with factory() as observer_session:
+        stored_artifact = await observer_session.get(Artifact, result.artifact_id)
+    await engine.dispose()
+
+    assert result.created is True
+    assert stored_artifact is not None
+    assert stored_artifact.relative_path == "result.txt"
+    assert stored_artifact.size_bytes == len("verified local output")

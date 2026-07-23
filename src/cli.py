@@ -11,6 +11,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from importlib import metadata
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlsplit
 
@@ -50,6 +51,17 @@ class ApprovalCommandResult:
     run_id: int
     status: str
     changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactCommandResult:
+    """Redacted result of one local artifact registration command."""
+
+    artifact_id: int
+    run_id: int
+    sha256: str
+    size_bytes: int
+    created: bool
 
 
 def _is_loopback_host(host: str | None) -> bool:
@@ -293,6 +305,30 @@ def _build_parser() -> argparse.ArgumentParser:
     decide_gate.add_argument("--actor", required=True)
     decide_gate.add_argument("--reason", required=True)
     decide_gate.add_argument("--json", action="store_true")
+
+    register_artifact = subparsers.add_parser(
+        "register-artifact",
+        help="Registra metadados verificados de um arquivo no storage local.",
+    )
+    register_artifact.add_argument("--run-id", required=True, type=int)
+    register_artifact.add_argument("--step-run-id", type=int)
+    register_artifact.add_argument("--idempotency-key", required=True)
+    register_artifact.add_argument("--artifact-type", required=True)
+    register_artifact.add_argument(
+        "--path",
+        required=True,
+        help="Caminho absoluto ou relativo a STORAGE_ROOT.",
+    )
+    register_artifact.add_argument("--media-type", required=True)
+    register_artifact.add_argument("--origin", required=True)
+    register_artifact.add_argument(
+        "--sensitivity",
+        choices=("public", "internal", "confidential", "restricted"),
+        default="internal",
+    )
+    register_artifact.add_argument("--retention-days", type=int)
+    register_artifact.add_argument("--expected-sha256")
+    register_artifact.add_argument("--json", action="store_true")
     return parser
 
 
@@ -481,6 +517,73 @@ def _render_approval_result(result: ApprovalCommandResult, *, as_json: bool) -> 
     )
 
 
+async def _register_artifact_command(
+    run_id: int,
+    *,
+    step_run_id: int | None,
+    idempotency_key: str,
+    artifact_type: str,
+    file_path: str,
+    media_type: str,
+    origin: str,
+    sensitivity: str,
+    retention_days: int | None,
+    expected_sha256: str | None,
+) -> ArtifactCommandResult:
+    from src.core.database import AsyncSessionLocal
+    from src.platform.artifact_service import register_local_artifact
+    from src.platform.models import ArtifactSensitivity, Run, StepRun
+
+    settings = get_settings()
+    async with AsyncSessionLocal() as session:
+        try:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise ValueError("run does not exist")
+            step_run = None
+            if step_run_id is not None:
+                step_run = await session.get(StepRun, step_run_id)
+                if step_run is None:
+                    raise ValueError("step run does not exist")
+            registration = await register_local_artifact(
+                session,
+                run=run,
+                step_run=step_run,
+                storage_root=Path(settings.storage_root),
+                file_path=Path(file_path),
+                idempotency_key=idempotency_key,
+                artifact_type=artifact_type,
+                media_type=media_type,
+                origin=origin,
+                sensitivity=ArtifactSensitivity(sensitivity),
+                retention_days=retention_days,
+                expected_sha256=expected_sha256,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return ArtifactCommandResult(
+        artifact_id=registration.artifact.id,
+        run_id=registration.artifact.run_id,
+        sha256=registration.artifact.sha256,
+        size_bytes=registration.artifact.size_bytes,
+        created=registration.created,
+    )
+
+
+def _render_artifact_result(result: ArtifactCommandResult, *, as_json: bool) -> None:
+    payload = asdict(result)
+    if as_json:
+        print(json.dumps({"ok": True, **payload}, ensure_ascii=False, indent=2))
+        return
+    outcome = "registrado" if result.created else "existente (idempotente)"
+    print(
+        f"artifact {result.artifact_id} da run {result.run_id}: {outcome}; "
+        f"{result.size_bytes} bytes; sha256={result.sha256}"
+    )
+
+
 def _render_command_failure(command: str, exc: Exception, *, as_json: bool) -> int:
     detail = f"{command} falhou ({type(exc).__name__})"
     if as_json:
@@ -592,6 +695,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 as_json=bool(args.json),
             )
         _render_approval_result(decision_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "register-artifact":
+        try:
+            artifact_result = asyncio.run(
+                _register_artifact_command(
+                    args.run_id,
+                    step_run_id=args.step_run_id,
+                    idempotency_key=args.idempotency_key,
+                    artifact_type=args.artifact_type,
+                    file_path=args.path,
+                    media_type=args.media_type,
+                    origin=args.origin,
+                    sensitivity=args.sensitivity,
+                    retention_days=args.retention_days,
+                    expected_sha256=args.expected_sha256,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "register-artifact",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_artifact_result(artifact_result, as_json=bool(args.json))
         return 0
 
     return 2
