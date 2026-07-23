@@ -13,7 +13,12 @@ from src.platform.run_service import (
     get_or_create_run,
     transition_run,
 )
-from src.platform.step_service import get_or_create_step_run, transition_step_run
+from src.platform.task_runner import (
+    RetryPolicy,
+    TaskAttemptContext,
+    TaskStepSpec,
+    execute_task_step,
+)
 
 _AUTOMATION_SLUG = "platform-smoke"
 _STEP_NAME = "noop"
@@ -58,13 +63,15 @@ async def execute_example_run(
 
     if RunStatus(run.status) is RunStatus.SUCCEEDED:
         existing_step = await session.scalar(
-            select(StepRun).where(
+            select(StepRun)
+            .where(
                 StepRun.run_id == run.id,
                 StepRun.idempotency_key == step_key,
-                StepRun.attempt == 1,
+                StepRun.status == RunStatus.SUCCEEDED.value,
             )
+            .order_by(StepRun.attempt.desc())
         )
-        if existing_step is None or existing_step.status != RunStatus.SUCCEEDED.value:
+        if existing_step is None:
             raise ExampleRunNotRunnableError(
                 "succeeded example run is missing its succeeded step"
             )
@@ -77,36 +84,26 @@ async def execute_example_run(
     if RunStatus(run.status) is RunStatus.QUEUED:
         await transition_run(session, run, RunStatus.RUNNING, note="manual smoke started")
 
-    step_result = await get_or_create_step_run(
+    task_result = await execute_task_step(
         session,
         run=run,
-        name=_STEP_NAME,
-        queue=QueueClass.IO,
-        ordinal=1,
-        idempotency_key=step_key,
-        input_payload={"operation": _STEP_NAME},
+        spec=TaskStepSpec(
+            name=_STEP_NAME,
+            queue=QueueClass.IO,
+            ordinal=1,
+            idempotency_key=step_key,
+            input_payload={"operation": _STEP_NAME},
+        ),
+        policy=RetryPolicy(),
+        operation=_noop_operation,
     )
-    step_run = step_result.step_run
-    step_status = RunStatus(step_run.status)
-    if step_status in {RunStatus.FAILED, RunStatus.CANCELLED}:
+    if task_result.status is not RunStatus.SUCCEEDED:
         raise ExampleRunNotRunnableError(
-            f"existing example step is terminal with status {step_run.status}"
+            f"example step ended with status {task_result.status.value}"
         )
-    if step_status is RunStatus.QUEUED:
-        await transition_step_run(
-            session,
-            step_run,
-            RunStatus.RUNNING,
-            note="local no-op started",
-        )
-    if RunStatus(step_run.status) is RunStatus.RUNNING:
-        await transition_step_run(
-            session,
-            step_run,
-            RunStatus.SUCCEEDED,
-            output_payload={"message": "ok"},
-            note="local no-op completed",
-        )
+    step_run = await session.get(StepRun, task_result.step_run_ids[-1])
+    if step_run is None:
+        raise ExampleRunNotRunnableError("example step result was not persisted")
 
     await transition_run(
         session,
@@ -116,6 +113,10 @@ async def execute_example_run(
         note="manual smoke completed",
     )
     return _result(run, step_run, created=run_result.created, replayed=False)
+
+
+async def _noop_operation(_context: TaskAttemptContext) -> dict[str, str]:
+    return {"message": "ok"}
 
 
 def _result(
