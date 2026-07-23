@@ -1,0 +1,5 @@
+interface:
+  display_name: "Control Plane"
+  short_description: "Build dashboard and orchestration safely"
+  default_prompt: "Use $build-control-plane to implement or review the local dashboard, scheduler, queues, and run tracking."
+
