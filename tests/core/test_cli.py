@@ -18,6 +18,7 @@ from src.platform.models import (
     ApprovalStatus,
     Artifact,
     Automation,
+    MetricPoint,
     Run,
     RunStatus,
     Schedule,
@@ -836,3 +837,146 @@ async def test_schedule_command_helpers_persist_real_local_state(
     assert stored_schedule is not None
     assert stored_schedule.status == ScheduleStatus.ENABLED.value
     assert stored_schedule.next_run_at is not None
+
+
+def test_record_metric_command_is_structured_and_precise(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    received: dict[str, object] = {}
+
+    async def record(
+        automation_slug: str,
+        *,
+        run_id: int | None,
+        step_run_id: int | None,
+        idempotency_key: str,
+        name: str,
+        kind: str,
+        value: str,
+        unit: str,
+        source: str,
+        confidence: str | None,
+        observed_at: str | None,
+    ) -> cli.MetricCommandResult:
+        received.update(
+            automation_slug=automation_slug,
+            run_id=run_id,
+            step_run_id=step_run_id,
+            idempotency_key=idempotency_key,
+            name=name,
+            kind=kind,
+            value=value,
+            unit=unit,
+            source=source,
+            confidence=confidence,
+            observed_at=observed_at,
+        )
+        return cli.MetricCommandResult(
+            metric_point_id=31,
+            automation_id=7,
+            run_id=9,
+            step_run_id=11,
+            name="step.duration",
+            kind="duration",
+            value="12.345",
+            unit="s",
+            observed_at="2026-07-23T12:30:00Z",
+            created=True,
+        )
+
+    monkeypatch.setattr(cli, "_record_metric_command", record)
+    exit_code = cli.main(
+        [
+            "record-metric",
+            "--automation-slug",
+            "content-engine",
+            "--run-id",
+            "9",
+            "--step-run-id",
+            "11",
+            "--idempotency-key",
+            "run-9:step-11:duration",
+            "--name",
+            "step.duration",
+            "--kind",
+            "duration",
+            "--value",
+            "12.345",
+            "--unit",
+            "s",
+            "--source",
+            "task-runner",
+            "--confidence",
+            "0.99",
+            "--observed-at",
+            "2026-07-23T09:30:00-03:00",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert received["value"] == "12.345"
+    assert received["observed_at"] == "2026-07-23T09:30:00-03:00"
+    assert payload == {
+        "ok": True,
+        "metric_point_id": 31,
+        "automation_id": 7,
+        "run_id": 9,
+        "step_run_id": 11,
+        "name": "step.duration",
+        "kind": "duration",
+        "value": "12.345",
+        "unit": "s",
+        "observed_at": "2026-07-23T12:30:00Z",
+        "created": True,
+    }
+
+
+async def test_record_metric_helper_persists_real_local_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "cli-metrics.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        echo=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(database.Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as seed_session:
+        await get_or_create_automation(
+            seed_session,
+            slug="cli-metric",
+            name="CLI Metric",
+            owner="local-owner",
+        )
+        await seed_session.commit()
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", factory)
+    result = await cli._record_metric_command(
+        "cli-metric",
+        run_id=None,
+        step_run_id=None,
+        idempotency_key="cli-metric:queue-depth:1",
+        name="queue.depth",
+        kind="gauge",
+        value="3.250",
+        unit="tasks",
+        source="local-control-plane",
+        confidence=None,
+        observed_at="2026-07-23T09:30:00-03:00",
+    )
+
+    async with factory() as observer_session:
+        stored_metric = await observer_session.get(MetricPoint, result.metric_point_id)
+    await engine.dispose()
+
+    assert result.created is True
+    assert result.value == "3.25"
+    assert result.observed_at == "2026-07-23T12:30:00Z"
+    assert stored_metric is not None
+    assert stored_metric.name == "queue.depth"
+    assert stored_metric.source == "local-control-plane"

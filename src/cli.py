@@ -10,6 +10,8 @@ import socket
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from datetime import datetime
+from decimal import Decimal
 from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -74,6 +76,22 @@ class ScheduleCommandResult:
     status: str
     next_run_at: str | None
     changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class MetricCommandResult:
+    """Redacted result of one local metric observation command."""
+
+    metric_point_id: int
+    automation_id: int
+    run_id: int | None
+    step_run_id: int | None
+    name: str
+    kind: str
+    value: str
+    unit: str
+    observed_at: str
+    created: bool
 
 
 def _is_loopback_host(host: str | None) -> bool:
@@ -371,6 +389,34 @@ def _build_parser() -> argparse.ArgumentParser:
     set_schedule.add_argument("--actor", required=True)
     set_schedule.add_argument("--reason", required=True)
     set_schedule.add_argument("--json", action="store_true")
+
+    record_metric = subparsers.add_parser(
+        "record-metric",
+        help="Registra uma observacao numerica imutavel no banco local.",
+    )
+    record_metric.add_argument("--automation-slug", required=True)
+    record_metric.add_argument("--run-id", type=int)
+    record_metric.add_argument("--step-run-id", type=int)
+    record_metric.add_argument("--idempotency-key", required=True)
+    record_metric.add_argument("--name", required=True)
+    record_metric.add_argument(
+        "--kind",
+        choices=("counter", "gauge", "duration", "ratio", "currency"),
+        required=True,
+    )
+    record_metric.add_argument(
+        "--value",
+        required=True,
+        help="Valor decimal; use ponto como separador.",
+    )
+    record_metric.add_argument("--unit", required=True)
+    record_metric.add_argument("--source", required=True)
+    record_metric.add_argument("--confidence")
+    record_metric.add_argument(
+        "--observed-at",
+        help="Timestamp ISO 8601 com timezone; default e o instante do registro.",
+    )
+    record_metric.add_argument("--json", action="store_true")
     return parser
 
 
@@ -730,6 +776,102 @@ def _render_schedule_result(result: ScheduleCommandResult, *, as_json: bool) -> 
     )
 
 
+def _parse_observed_at(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("observed_at must be a valid ISO 8601 timestamp") from exc
+
+
+def _decimal_text(value: Decimal) -> str:
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered or "0"
+
+
+async def _record_metric_command(
+    automation_slug: str,
+    *,
+    run_id: int | None,
+    step_run_id: int | None,
+    idempotency_key: str,
+    name: str,
+    kind: str,
+    value: str,
+    unit: str,
+    source: str,
+    confidence: str | None,
+    observed_at: str | None,
+) -> MetricCommandResult:
+    from sqlalchemy import select
+
+    from src.core.database import AsyncSessionLocal
+    from src.platform.metric_service import record_metric_point
+    from src.platform.models import Automation, MetricKind, Run, StepRun
+
+    async with AsyncSessionLocal() as session:
+        try:
+            automation = await session.scalar(
+                select(Automation).where(Automation.slug == automation_slug.strip())
+            )
+            if automation is None:
+                raise ValueError("automation does not exist")
+            run = None if run_id is None else await session.get(Run, run_id)
+            if run_id is not None and run is None:
+                raise ValueError("run does not exist")
+            step_run = (
+                None if step_run_id is None else await session.get(StepRun, step_run_id)
+            )
+            if step_run_id is not None and step_run is None:
+                raise ValueError("step run does not exist")
+            creation = await record_metric_point(
+                session,
+                automation=automation,
+                run=run,
+                step_run=step_run,
+                idempotency_key=idempotency_key,
+                name=name,
+                kind=MetricKind(kind),
+                value=value,
+                unit=unit,
+                source=source,
+                confidence=confidence,
+                observed_at=_parse_observed_at(observed_at),
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    metric_point = creation.metric_point
+    return MetricCommandResult(
+        metric_point_id=metric_point.id,
+        automation_id=metric_point.automation_id,
+        run_id=metric_point.run_id,
+        step_run_id=metric_point.step_run_id,
+        name=metric_point.name,
+        kind=metric_point.kind,
+        value=_decimal_text(metric_point.value),
+        unit=metric_point.unit,
+        observed_at=f"{metric_point.observed_at.isoformat()}Z",
+        created=creation.created,
+    )
+
+
+def _render_metric_result(result: MetricCommandResult, *, as_json: bool) -> None:
+    payload = asdict(result)
+    if as_json:
+        print(json.dumps({"ok": True, **payload}, ensure_ascii=False, indent=2))
+        return
+    outcome = "registrada" if result.created else "existente (idempotente)"
+    print(
+        f"metric {result.metric_point_id} {result.name}: {result.value} {result.unit} "
+        f"({result.kind}, {outcome}) em {result.observed_at}"
+    )
+
+
 def _render_command_failure(command: str, exc: Exception, *, as_json: bool) -> int:
     detail = f"{command} falhou ({type(exc).__name__})"
     if as_json:
@@ -908,6 +1050,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 as_json=bool(args.json),
             )
         _render_schedule_result(schedule_change, as_json=bool(args.json))
+        return 0
+
+    if args.command == "record-metric":
+        try:
+            metric_result = asyncio.run(
+                _record_metric_command(
+                    args.automation_slug,
+                    run_id=args.run_id,
+                    step_run_id=args.step_run_id,
+                    idempotency_key=args.idempotency_key,
+                    name=args.name,
+                    kind=args.kind,
+                    value=args.value,
+                    unit=args.unit,
+                    source=args.source,
+                    confidence=args.confidence,
+                    observed_at=args.observed_at,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "record-metric",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_metric_result(metric_result, as_json=bool(args.json))
         return 0
 
     return 2
