@@ -11,7 +11,7 @@
 O repositório possui uma base parcial e testável do Content Engine, mas ainda não possui o
 runtime completo da plataforma. A geração de roteiro A1, a configuração, a sessão de banco e os
 modelos SQLAlchemy orientados a conteúdo têm código real. O kernel compartilhado persiste
-`Automation`, `Run`, `StepRun`, `Approval`, controles de execução e cada transição de estado, e
+`Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, controles de execução e cada transição de estado, e
 executa um único exemplo no-op em processo local. Celery, control plane e as demais etapas de
 automação são placeholders ou itens planejados.
 
@@ -23,12 +23,12 @@ automação são placeholders ou itens planejados.
 | Configuração | Parcial | `src/core/config.py` implementa settings tipados, leitura de `.env` e defaults locais. Campos de credenciais existem, mas criptografia, validação operacional e adapters consumidores ainda não existem. |
 | Banco e sessão | Parcial | `src/core/database.py` cria engine e sessão async com commit/rollback. O default de processo único é SQLite; o caminho PostgreSQL concorrente ainda não foi implementado nem validado. |
 | Modelos de domínio | Parcial | `src/core/models.py` implementa `Channel`, `Video`, `Job`, `Metric`, `Cost`, `Topic`, `Alert` e `ABVariant`. O schema é específico do Content Engine e não contém os contratos genéricos da Fase 2. |
-| Kernel compartilhado | Parcial | `src/platform/models.py` implementa `Automation`, `Run`, `StepRun`, `Approval`, controles persistidos e históricos append-only. Approval liga run, ação e digest do payload, tem decisão imutável e só autoriza uma chave idempotente de task. Proteção de corrida entre workers concorrentes ainda não existe. |
-| Migrations | Parcial | `alembic.ini`, `alembic/env.py` e quatro revisions incrementais formam um caminho verificável para as oito tabelas compartilhadas. As tabelas legadas do Content Engine permanecem deliberadamente fora dessa baseline. |
+| Kernel compartilhado | Parcial | `src/platform/models.py` implementa `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, controles persistidos e históricos append-only. Approval liga run, ação e digest do payload, tem decisão imutável e só autoriza uma chave idempotente de task. Artifact registra metadados verificados de arquivos confinados ao storage local; retenção ainda não executa exclusão. Proteção de corrida entre workers concorrentes ainda não existe. |
+| Migrations | Parcial | `alembic.ini`, `alembic/env.py` e cinco revisions incrementais formam um caminho verificável para as nove tabelas compartilhadas. As tabelas legadas do Content Engine permanecem deliberadamente fora dessa baseline. |
 | Content Engine — A1 | Implementado | `src/pipeline/script_gen.py` contém geração em quatro chamadas, retry limitado, saneamento de saída e persistência local de roteiro/narração. `tests/pipeline/test_script_gen.py` cobre o comportamento com Ollama mockado. |
 | Content Engine — mídia e publicação | Placeholder | `src/pipeline/tts.py`, `visuals.py`, `captions.py`, `assembly.py` e `upload.py` estão vazios. Nenhuma publicação real foi implementada. |
 | Orquestração e filas | Parcial | `src/platform/task_runner.py` executa corrotinas em processo único com timeout, retries limitados, backoff exponencial e erros redigidos. Controles persistidos são consultados antes e depois da corrotina e entre tentativas; o wrapper não preempta código síncrono bloqueante. `src/core/celery_app.py` e `src/tasks/` continuam vazios. |
-| CLI operacional | Parcial | `src/cli.py` expõe diagnóstico, exemplo, controles e os comandos `request-approval`/`decide-approval`. Decisões exigem actor e motivo, mas a CLI local ainda não autentica criptograficamente o actor. Não há comandos de retry ou operação de workers. |
+| CLI operacional | Parcial | `src/cli.py` expõe diagnóstico, exemplo, controles, approvals e `register-artifact`. O registro calcula tamanho e SHA-256 sem exibir o caminho local na saída; decisões exigem actor e motivo, mas a CLI local ainda não autentica criptograficamente o actor. Não há comandos de retry ou operação de workers. |
 | Control plane | Placeholder | `src/dashboard/main.py`, `src/dashboard/routers/__init__.py` e `src/dashboard/templates/.gitkeep` estão vazios. A CLI de diagnóstico não inicia nem antecipa a aplicação FastAPI da Fase 3. |
 | Inteligência | Placeholder | `src/intelligence/trends.py`, `competitors.py` e `similarity.py` estão vazios. |
 | Engajamento | Placeholder | `src/engagement/comments.py` está vazio. |
@@ -37,7 +37,7 @@ automação são placeholders ou itens planejados.
 | Extras e ações externas | Placeholder | `src/extras/affiliate.py`, `outreach.py` e `x_bot.py` estão vazios. Não há envio, gasto ou ação externa implementada. |
 | Trading Research Lab | Planejado | O domínio aparece em `ARQUITETURA.md` e `ROADMAP.md`, mas não possui implementação. Trading com dinheiro real permanece fora do escopo. |
 | Infraestrutura local | Parcial | `docker-compose.yml` define somente Redis com AOF. PostgreSQL, workers e health checks ainda não estão definidos. Ollama é esperado no host, fora do Compose. |
-| Testes | Parcial | Há 107 testes para modelos legados, A1, CLI, lifecycles, task wrapper, controles, approval gates, integração SQLite e smoke/roundtrip das migrations. Não há testes de Celery, dashboard, PostgreSQL, integrações reais, restart ou hardware. |
+| Testes | Parcial | Há 115 testes para modelos legados, A1, CLI, lifecycles, task wrapper, controles, approval gates, artifact registry, integração SQLite e smoke/roundtrip das migrations. Não há testes de Celery, dashboard, PostgreSQL, integrações reais, restart ou hardware. |
 
 Arquivos `__init__.py` vazios são marcadores de pacote e não contam como funcionalidade.
 
@@ -62,8 +62,9 @@ O schema compartilhado da Fase 2 é atualizado explicitamente com:
 .venv\Scripts\python -m alembic check
 ```
 
-Esses comandos gerenciam somente `automations`, `runs`, `run_transitions`, `step_runs` e
-`step_run_transitions`; não criam nem alteram as tabelas legadas do Content Engine.
+Esses comandos gerenciam somente as nove tabelas compartilhadas: `automations`, `runs`,
+`run_transitions`, `step_runs`, `step_run_transitions`, `control_events`, `approvals`,
+`approval_events` e `artifacts`; não criam nem alteram as tabelas legadas do Content Engine.
 
 Depois da migration, a execução manual observável e sem efeito externo usa:
 
@@ -95,6 +96,18 @@ Um gate para o payload atual da run usa:
 Rejeitar usa `--reject`. O actor é registrado para auditoria local, mas não representa autenticação
 forte nesta fase.
 
+Depois que um worker ou operador criar um arquivo abaixo de `STORAGE_ROOT` (default `./storage`),
+seus metadados podem ser registrados sem copiar ou alterar o conteúdo:
+
+```powershell
+.venv\Scripts\automation-foundry register-artifact --run-id 1 --idempotency-key "run:1:script" --artifact-type script --path "content-engine/1/script/script.json" --media-type application/json --origin content-engine --sensitivity internal --retention-days 30
+```
+
+O caminho pode ser absoluto ou relativo ao storage, mas precisa resolver dentro da raiz configurada.
+O comando calcula tamanho e SHA-256 do arquivo real, persiste somente o caminho relativo e aceita
+`--expected-sha256` quando o produtor já conhece o digest. A política de retenção é apenas
+metadado: esta fatia não apaga arquivos.
+
 `automation-foundry doctor` é a execução canônica e sem efeitos colaterais da Fase 1. Use
 `doctor --json` para saída estruturada e `doctor --services` somente quando Redis e Ollama locais
 devem estar ativos. O Redis pode ser iniciado com `docker compose up -d redis`. A CLI não inicia
@@ -113,11 +126,11 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 - `python -m pip install -e ".[dev]"`: concluído; a primeira tentativa foi bloqueada pela rede da
   sandbox e a repetição com acesso autorizado concluiu a instalação;
-- `python -m pytest -q`: **107 passed**;
+- `python -m pytest -q`: **115 passed**;
 - `python -m ruff check .`: encontrou 7 ocorrências mecânicas preexistentes; o autofix removeu
   imports não usados, ordenou imports e simplificou um context manager; a repetição terminou com
   **All checks passed**;
-- `python -m mypy src`: **Success: no issues found in 39 source files**;
+- `python -m mypy src`: **Success: no issues found in 45 source files**;
 - validação estrutural de `pyproject.toml` e `docker-compose.yml` por `tomllib` e YAML:
   concluída, incluindo metadata, entry point `src.cli:main` e nome do container;
 - `automation-foundry doctor`: concluído sem serviços externos, com checks estáticos aprovados e
@@ -127,8 +140,8 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
   Ollama reportados como indisponíveis em loopback;
 - `docker compose config`: bloqueado porque o executável Docker não está disponível neste
   ambiente.
-- migrations Alembic em SQLite temporário: `upgrade head` e `alembic check` concluídos; somente as
-  oito tabelas compartilhadas e `alembic_version` foram criadas.
+- migrations Alembic em SQLite temporário: `upgrade head`, `alembic check` e roundtrip da revision
+  de artifacts concluídos; somente as nove tabelas compartilhadas e `alembic_version` foram criadas.
 
 ## Verificações bloqueadas ou adiadas
 
@@ -143,6 +156,6 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 ## Próxima fatia recomendada
 
-Adicionar `Artifact` persistente com caminho local, checksum, tamanho, tipo, sensibilidade e
-retenção, ligando resultados de steps a evidências verificáveis. Concorrência, Redis, Celery e
-hard time limits continuam dependentes do computador de casa.
+Adicionar `Schedule` persistente com timezone, expressão validada, estado habilitado/desabilitado
+e cálculo auditável da próxima execução, sem iniciar workers nesta etapa. Concorrência, Redis,
+Celery Beat e hard time limits continuam dependentes do computador de casa.
