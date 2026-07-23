@@ -1,8 +1,8 @@
 # Estado real da implementação
 
-**Checkpoint:** 2026-07-22
+**Checkpoint:** 2026-07-23
 
-**Escopo:** Fase 1 — baseline e identidade técnica
+**Escopo:** Fase 1 e primeira fatia da Fase 2
 
 **Branch:** `chore/project-skills`
 
@@ -10,8 +10,9 @@
 
 O repositório possui uma base parcial e testável do Content Engine, mas ainda não possui o
 runtime da plataforma. A geração de roteiro A1, a configuração, a sessão de banco e os modelos
-SQLAlchemy orientados a conteúdo têm código real. Celery, control plane e as demais etapas de
-automação são placeholders ou itens planejados.
+SQLAlchemy orientados a conteúdo têm código real. O primeiro kernel compartilhado persiste
+`Automation`, `Run` e cada transição de estado, mas ainda não executa steps. Celery, control plane
+e as demais etapas de automação são placeholders ou itens planejados.
 
 ## Classificação por área
 
@@ -21,7 +22,8 @@ automação são placeholders ou itens planejados.
 | Configuração | Parcial | `src/core/config.py` implementa settings tipados, leitura de `.env` e defaults locais. Campos de credenciais existem, mas criptografia, validação operacional e adapters consumidores ainda não existem. |
 | Banco e sessão | Parcial | `src/core/database.py` cria engine e sessão async com commit/rollback. O default de processo único é SQLite; o caminho PostgreSQL concorrente ainda não foi implementado nem validado. |
 | Modelos de domínio | Parcial | `src/core/models.py` implementa `Channel`, `Video`, `Job`, `Metric`, `Cost`, `Topic`, `Alert` e `ABVariant`. O schema é específico do Content Engine e não contém os contratos genéricos da Fase 2. |
-| Migrations | Placeholder | `alembic/.gitkeep` é o único arquivo da área; não há configuração ou revisions Alembic. |
+| Kernel compartilhado | Parcial | `src/platform/models.py` implementa `Automation`, `Run` e `RunTransition`. `src/platform/run_service.py` oferece criação idempotente e as transições `queued → running → succeeded/failed/cancelled`, além de cancelamento em fila. `StepRun`, approval, retry e proteção de corrida entre workers concorrentes ainda não existem. |
+| Migrations | Parcial | `alembic.ini`, `alembic/env.py` e `alembic/versions/20260723_0001_platform_run_kernel.py` formam um caminho verificável apenas para as três tabelas compartilhadas. As tabelas legadas do Content Engine permanecem deliberadamente fora dessa baseline. |
 | Content Engine — A1 | Implementado | `src/pipeline/script_gen.py` contém geração em quatro chamadas, retry limitado, saneamento de saída e persistência local de roteiro/narração. `tests/pipeline/test_script_gen.py` cobre o comportamento com Ollama mockado. |
 | Content Engine — mídia e publicação | Placeholder | `src/pipeline/tts.py`, `visuals.py`, `captions.py`, `assembly.py` e `upload.py` estão vazios. Nenhuma publicação real foi implementada. |
 | Orquestração e filas | Placeholder | `src/core/celery_app.py` está vazio e `src/tasks/` contém somente `__init__.py` vazio. Não há workers, Beat, retries persistidos ou separação executável das filas `gpu`, `cpu` e `io`. |
@@ -34,7 +36,7 @@ automação são placeholders ou itens planejados.
 | Extras e ações externas | Placeholder | `src/extras/affiliate.py`, `outreach.py` e `x_bot.py` estão vazios. Não há envio, gasto ou ação externa implementada. |
 | Trading Research Lab | Planejado | O domínio aparece em `ARQUITETURA.md` e `ROADMAP.md`, mas não possui implementação. Trading com dinheiro real permanece fora do escopo. |
 | Infraestrutura local | Parcial | `docker-compose.yml` define somente Redis com AOF. PostgreSQL, workers e health checks ainda não estão definidos. Ollama é esperado no host, fora do Compose. |
-| Testes | Parcial | Há testes unitários para modelos e A1, incluindo falhas e retries mockados. Não há testes de Celery, dashboard, PostgreSQL, integrações reais, restart ou hardware. |
+| Testes | Parcial | Há 72 testes para modelos legados, A1, CLI, lifecycle de runs e smoke da migration. Não há testes de Celery, dashboard, PostgreSQL, integrações reais, restart ou hardware. |
 
 Arquivos `__init__.py` vazios são marcadores de pacote e não contam como funcionalidade.
 
@@ -51,6 +53,16 @@ py -3.12 -m venv .venv
 .venv\Scripts\automation-foundry doctor
 docker compose config
 ```
+
+O schema compartilhado da Fase 2 é atualizado explicitamente com:
+
+```powershell
+.venv\Scripts\python -m alembic upgrade head
+.venv\Scripts\python -m alembic check
+```
+
+Esses comandos gerenciam somente `automations`, `runs` e `run_transitions`; não criam nem alteram
+as tabelas legadas do Content Engine.
 
 `automation-foundry doctor` é a execução canônica e sem efeitos colaterais da Fase 1. Use
 `doctor --json` para saída estruturada e `doctor --services` somente quando Redis e Ollama locais
@@ -70,11 +82,11 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 - `python -m pip install -e ".[dev]"`: concluído; a primeira tentativa foi bloqueada pela rede da
   sandbox e a repetição com acesso autorizado concluiu a instalação;
-- `python -m pytest -q`: **65 passed**;
+- `python -m pytest -q`: **72 passed**;
 - `python -m ruff check .`: encontrou 7 ocorrências mecânicas preexistentes; o autofix removeu
   imports não usados, ordenou imports e simplificou um context manager; a repetição terminou com
   **All checks passed**;
-- `python -m mypy src`: **Success: no issues found in 36 source files**;
+- `python -m mypy src`: **Success: no issues found in 39 source files**;
 - validação estrutural de `pyproject.toml` e `docker-compose.yml` por `tomllib` e YAML:
   concluída, incluindo metadata, entry point `src.cli:main` e nome do container;
 - `automation-foundry doctor`: concluído sem serviços externos, com checks estáticos aprovados e
@@ -84,6 +96,8 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
   Ollama reportados como indisponíveis em loopback;
 - `docker compose config`: bloqueado porque o executável Docker não está disponível neste
   ambiente.
+- migration Alembic em SQLite temporário: `upgrade head` e `alembic check` concluídos; somente as
+  tabelas compartilhadas e `alembic_version` foram criadas.
 
 ## Verificações bloqueadas ou adiadas
 
@@ -97,6 +111,6 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 ## Próxima fatia recomendada
 
-No computador de casa, executar `automation-foundry doctor --services` após iniciar Redis e
-Ollama e registrar o resultado como validação local. Em paralelo, o menor passo da Fase 2 é uma
-run manual persistida com estados explícitos, sem dashboard e sem efeito externo.
+Adicionar `StepRun` e uma execução manual local que percorra um step sem efeito externo, usando a
+mesma idempotência e o mesmo histórico append-only. No computador de casa, executar também
+`automation-foundry doctor --services` após iniciar Redis e Ollama.

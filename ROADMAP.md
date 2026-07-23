@@ -47,8 +47,8 @@ Objetivo: fazer a base atual representar Automation Foundry e obter um baseline 
 
 Objetivo: executar uma automaÃ§Ã£o mÃ­nima usando contratos genÃ©ricos e estado durÃ¡vel.
 
-- [ ] Introduzir os conceitos `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `Experiment`, `LedgerEntry` e `Alert`.
-- [ ] Criar migrations e separar tabelas compartilhadas das tabelas do Content Engine.
+- [ ] Introduzir os conceitos `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `Experiment`, `LedgerEntry` e `Alert`. `Automation` e `Run` estÃ£o implementados; os demais permanecem pendentes.
+- [ ] Criar migrations e separar tabelas compartilhadas das tabelas do Content Engine. A migration inicial cobre o kernel compartilhado; o baseline legado permanece pendente.
 - [ ] Adotar PostgreSQL para o caminho concorrente; manter SQLite nos testes.
 - [ ] Configurar Celery + Redis e filas `gpu`, `cpu`, `io`.
 - [ ] Implementar task wrapper idempotente com retries, timeouts e transiÃ§Ãµes persistidas.
