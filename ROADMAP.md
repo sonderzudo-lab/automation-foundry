@@ -51,7 +51,7 @@ Objetivo: executar uma automaÃ§Ã£o mÃ­nima usando contratos genÃ©ricos e
 - [ ] Criar migrations e separar tabelas compartilhadas das tabelas do Content Engine. Duas migrations incrementais cobrem o kernel compartilhado; o baseline legado permanece pendente.
 - [ ] Adotar PostgreSQL para o caminho concorrente; manter SQLite nos testes.
 - [ ] Configurar Celery + Redis e filas `gpu`, `cpu`, `io`.
-- [ ] Implementar task wrapper idempotente com retries, timeouts e transiÃ§Ãµes persistidas.
+- [x] Implementar task wrapper idempotente com retries limitados, timeout, backoff exponencial e transiÃ§Ãµes persistidas em processo Ãºnico.
 - [ ] Implementar cancelamento e kill switch.
 - [x] Registrar uma automaÃ§Ã£o de exemplo e executar um step manual observÃ¡vel em processo Ãºnico, sem efeito externo.
 

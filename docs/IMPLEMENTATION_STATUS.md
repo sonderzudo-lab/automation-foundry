@@ -23,12 +23,12 @@ planejados.
 | Configuração | Parcial | `src/core/config.py` implementa settings tipados, leitura de `.env` e defaults locais. Campos de credenciais existem, mas criptografia, validação operacional e adapters consumidores ainda não existem. |
 | Banco e sessão | Parcial | `src/core/database.py` cria engine e sessão async com commit/rollback. O default de processo único é SQLite; o caminho PostgreSQL concorrente ainda não foi implementado nem validado. |
 | Modelos de domínio | Parcial | `src/core/models.py` implementa `Channel`, `Video`, `Job`, `Metric`, `Cost`, `Topic`, `Alert` e `ABVariant`. O schema é específico do Content Engine e não contém os contratos genéricos da Fase 2. |
-| Kernel compartilhado | Parcial | `src/platform/models.py` implementa `Automation`, `Run`, `StepRun` e históricos append-only. Os serviços oferecem criação idempotente e as transições `queued → running → succeeded/failed/cancelled`; cada step registra fila, ordem, tentativa, timestamps, payloads e erro estruturado. Approval, retry e proteção de corrida entre workers concorrentes ainda não existem. |
+| Kernel compartilhado | Parcial | `src/platform/models.py` implementa `Automation`, `Run`, `StepRun` e históricos append-only. Os serviços oferecem criação idempotente e as transições `queued → running → succeeded/failed/cancelled`; cada step registra fila, ordem, tentativa, timestamps, payloads e erro estruturado. Approval e proteção de corrida entre workers concorrentes ainda não existem. |
 | Migrations | Parcial | `alembic.ini`, `alembic/env.py` e duas revisions incrementais formam um caminho verificável para as cinco tabelas compartilhadas. As tabelas legadas do Content Engine permanecem deliberadamente fora dessa baseline. |
 | Content Engine — A1 | Implementado | `src/pipeline/script_gen.py` contém geração em quatro chamadas, retry limitado, saneamento de saída e persistência local de roteiro/narração. `tests/pipeline/test_script_gen.py` cobre o comportamento com Ollama mockado. |
 | Content Engine — mídia e publicação | Placeholder | `src/pipeline/tts.py`, `visuals.py`, `captions.py`, `assembly.py` e `upload.py` estão vazios. Nenhuma publicação real foi implementada. |
-| Orquestração e filas | Placeholder | `src/core/celery_app.py` está vazio e `src/tasks/` contém somente `__init__.py` vazio. Não há workers, Beat, retries persistidos ou separação executável das filas `gpu`, `cpu` e `io`. |
-| CLI operacional | Parcial | `src/cli.py` expõe `automation-foundry doctor` para diagnóstico sem alteração de estado e `automation-foundry run-example` para uma execução no-op local, explícita, transacional e idempotente. Não há ainda comandos de cancelamento, retry ou operação de workers. |
+| Orquestração e filas | Parcial | `src/platform/task_runner.py` executa corrotinas em processo único com timeout, retries limitados, backoff exponencial, erros redigidos e cancelamento entre tentativas; cada tentativa é persistida como `StepRun`. `src/core/celery_app.py` e `src/tasks/` continuam vazios: não há workers, Beat, concorrência, hard time limits ou separação executável das filas. |
+| CLI operacional | Parcial | `src/cli.py` expõe `automation-foundry doctor` para diagnóstico sem alteração de estado e `automation-foundry run-example` para uma execução no-op local, explícita, idempotente e com checkpoints transacionais. Não há ainda comandos de cancelamento, retry ou operação de workers. |
 | Control plane | Placeholder | `src/dashboard/main.py`, `src/dashboard/routers/__init__.py` e `src/dashboard/templates/.gitkeep` estão vazios. A CLI de diagnóstico não inicia nem antecipa a aplicação FastAPI da Fase 3. |
 | Inteligência | Placeholder | `src/intelligence/trends.py`, `competitors.py` e `similarity.py` estão vazios. |
 | Engajamento | Placeholder | `src/engagement/comments.py` está vazio. |
@@ -37,7 +37,7 @@ planejados.
 | Extras e ações externas | Placeholder | `src/extras/affiliate.py`, `outreach.py` e `x_bot.py` estão vazios. Não há envio, gasto ou ação externa implementada. |
 | Trading Research Lab | Planejado | O domínio aparece em `ARQUITETURA.md` e `ROADMAP.md`, mas não possui implementação. Trading com dinheiro real permanece fora do escopo. |
 | Infraestrutura local | Parcial | `docker-compose.yml` define somente Redis com AOF. PostgreSQL, workers e health checks ainda não estão definidos. Ollama é esperado no host, fora do Compose. |
-| Testes | Parcial | Há 78 testes para modelos legados, A1, CLI, lifecycles de runs/steps, idempotência do exemplo e smoke das migrations. Não há testes de Celery, dashboard, PostgreSQL, integrações reais, restart ou hardware. |
+| Testes | Parcial | Há 86 testes para modelos legados, A1, CLI, lifecycles de runs/steps, retry/backoff/timeout/cancelamento e durabilidade transacional do wrapper, idempotência do exemplo e smoke das migrations. Não há testes de Celery, dashboard, PostgreSQL, integrações reais, restart ou hardware. |
 
 Arquivos `__init__.py` vazios são marcadores de pacote e não contam como funcionalidade.
 
@@ -71,8 +71,10 @@ Depois da migration, a execução manual observável e sem efeito externo usa:
 .venv\Scripts\automation-foundry run-example --idempotency-key smoke-001
 ```
 
-O comando persiste uma automação fixa, uma run e um step `io` no-op em uma única transação.
-Repetir a mesma chave retorna o resultado concluído sem criar novas transições. Este caminho é
+O comando persiste uma automação fixa, uma run e um step `io` no-op. O wrapper confirma o estado
+`running` antes da operação e confirma o resultado antes de encerrar a run, permitindo observar
+e recuperar tentativas interrompidas. Repetir a mesma chave retorna o resultado concluído sem
+criar novas transições. Este caminho é
 deliberadamente de processo único e não valida concorrência, Redis, Celery ou GPU.
 
 `automation-foundry doctor` é a execução canônica e sem efeitos colaterais da Fase 1. Use
@@ -93,7 +95,7 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 - `python -m pip install -e ".[dev]"`: concluído; a primeira tentativa foi bloqueada pela rede da
   sandbox e a repetição com acesso autorizado concluiu a instalação;
-- `python -m pytest -q`: **78 passed**;
+- `python -m pytest -q`: **86 passed**;
 - `python -m ruff check .`: encontrou 7 ocorrências mecânicas preexistentes; o autofix removeu
   imports não usados, ordenou imports e simplificou um context manager; a repetição terminou com
   **All checks passed**;
@@ -122,6 +124,6 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 ## Próxima fatia recomendada
 
-Adicionar o task wrapper idempotente com timeout, retry limitado e backoff, preservando cada
-tentativa como `StepRun` e sem introduzir ainda concorrência distribuída. No computador de casa,
-executar também `automation-foundry doctor --services` após iniciar Redis e Ollama.
+Persistir pedidos de cancelamento e um kill switch por automação, fazendo o wrapper consultar
+esses estados antes de cada tentativa. A interrupção de trabalho concorrente, Redis, Celery e os
+limites hard continuam dependentes da próxima etapa e da validação no computador de casa.
