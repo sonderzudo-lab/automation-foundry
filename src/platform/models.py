@@ -137,6 +137,14 @@ class MetricKind(StrEnum):
     CURRENCY = "currency"
 
 
+class LedgerEntryType(StrEnum):
+    """Financial observation types supported by the shared ledger."""
+
+    COST = "cost"
+    REVENUE = "revenue"
+    ATTRIBUTED_VALUE = "attributed_value"
+
+
 class AlertSeverity(StrEnum):
     """Operator-visible impact levels for platform alerts."""
 
@@ -174,6 +182,7 @@ _ARTIFACT_SENSITIVITY_SQL = "'public', 'internal', 'confidential', 'restricted'"
 _SCHEDULE_STATUS_SQL = "'disabled', 'enabled'"
 _SCHEDULE_EVENT_TYPE_SQL = "'created', 'enabled', 'disabled'"
 _METRIC_KIND_SQL = "'counter', 'gauge', 'duration', 'ratio', 'currency'"
+_LEDGER_ENTRY_TYPE_SQL = "'cost', 'revenue', 'attributed_value'"
 _ALERT_SEVERITY_SQL = "'info', 'warning', 'error', 'critical'"
 _ALERT_STATUS_SQL = "'open', 'acknowledged', 'resolved'"
 _ALERT_EVENT_TYPE_SQL = (
@@ -222,6 +231,11 @@ class Automation(Base):
         "MetricPoint",
         back_populates="automation",
         order_by="MetricPoint.id",
+    )
+    ledger_entries: Mapped[list[LedgerEntry]] = relationship(
+        "LedgerEntry",
+        back_populates="automation",
+        order_by="LedgerEntry.id",
     )
     alerts: Mapped[list[PlatformAlert]] = relationship(
         "PlatformAlert",
@@ -298,6 +312,11 @@ class Run(Base):
         "MetricPoint",
         back_populates="run",
         order_by="MetricPoint.id",
+    )
+    ledger_entries: Mapped[list[LedgerEntry]] = relationship(
+        "LedgerEntry",
+        back_populates="run",
+        order_by="LedgerEntry.id",
     )
     alerts: Mapped[list[PlatformAlert]] = relationship(
         "PlatformAlert",
@@ -402,6 +421,11 @@ class StepRun(Base):
         "MetricPoint",
         back_populates="step_run",
         order_by="MetricPoint.id",
+    )
+    ledger_entries: Mapped[list[LedgerEntry]] = relationship(
+        "LedgerEntry",
+        back_populates="step_run",
+        order_by="LedgerEntry.id",
     )
     alerts: Mapped[list[PlatformAlert]] = relationship(
         "PlatformAlert",
@@ -699,6 +723,95 @@ class MetricPoint(Base):
         "PlatformAlert",
         back_populates="metric_point",
         order_by="PlatformAlert.id",
+    )
+    ledger_entries: Mapped[list[LedgerEntry]] = relationship(
+        "LedgerEntry",
+        back_populates="metric_point",
+        order_by="LedgerEntry.id",
+    )
+
+
+class LedgerEntry(Base):
+    """One immutable financial observation with explicit attribution."""
+
+    __tablename__ = "ledger_entries"
+    __table_args__ = (
+        UniqueConstraint(
+            "automation_id",
+            "idempotency_key",
+            name="uq_ledger_entries_automation_idempotency_key",
+        ),
+        CheckConstraint(
+            f"entry_type IN ({_LEDGER_ENTRY_TYPE_SQL})",
+            name="ck_ledger_entries_type",
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR "
+            "(CAST(confidence AS NUMERIC) >= 0 AND "
+            "CAST(confidence AS NUMERIC) <= 1)",
+            name="ck_ledger_entries_confidence_range",
+        ),
+        CheckConstraint(
+            "step_run_id IS NULL OR run_id IS NOT NULL",
+            name="ck_ledger_entries_step_requires_run",
+        ),
+        CheckConstraint(
+            "LENGTH(currency) = 3 AND currency = UPPER(currency)",
+            name="ck_ledger_entries_currency",
+        ),
+        Index(
+            "ix_ledger_entries_automation_type_observed",
+            "automation_id",
+            "entry_type",
+            "observed_at",
+        ),
+        Index("ix_ledger_entries_run_observed", "run_id", "observed_at"),
+        Index("ix_ledger_entries_step_observed", "step_run_id", "observed_at"),
+        Index("ix_ledger_entries_metric", "metric_point_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    automation_id: Mapped[int] = mapped_column(
+        ForeignKey("automations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    step_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("step_runs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    metric_point_id: Mapped[int | None] = mapped_column(
+        ForeignKey("metric_points.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    entry_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    category: Mapped[str] = mapped_column(String(100), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(_ExactNumeric(30, 10), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    source: Mapped[str] = mapped_column(String(200), nullable=False)
+    confidence: Mapped[Decimal | None] = mapped_column(
+        _ExactNumeric(5, 4),
+        nullable=True,
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    automation: Mapped[Automation] = relationship(
+        "Automation",
+        back_populates="ledger_entries",
+    )
+    run: Mapped[Run | None] = relationship("Run", back_populates="ledger_entries")
+    step_run: Mapped[StepRun | None] = relationship(
+        "StepRun",
+        back_populates="ledger_entries",
+    )
+    metric_point: Mapped[MetricPoint | None] = relationship(
+        "MetricPoint",
+        back_populates="ledger_entries",
     )
 
 
