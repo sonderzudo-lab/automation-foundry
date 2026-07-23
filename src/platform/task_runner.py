@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.platform.approval_service import assert_approval_granted
 from src.platform.control_service import get_execution_control_state
 from src.platform.models import QueueClass, Run, RunStatus, StepRun
 from src.platform.run_service import (
@@ -84,6 +85,7 @@ class TaskStepSpec:
     ordinal: int
     idempotency_key: str
     input_payload: dict[str, Any]
+    required_approval_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +124,15 @@ async def execute_task_step(
         raise ValueError("run must be persisted before task execution")
     if RunStatus(run.status) is not RunStatus.RUNNING:
         raise InvalidRunTransitionError("tasks can only execute for a running run")
+    if spec.required_approval_id is not None:
+        await assert_approval_granted(
+            session,
+            approval_id=spec.required_approval_id,
+            run_id=run.id,
+            action=spec.name,
+            step_idempotency_key=spec.idempotency_key,
+            input_payload=spec.input_payload,
+        )
 
     attempts = list(
         (
@@ -178,6 +189,7 @@ async def execute_task_step(
             ordinal=spec.ordinal,
             idempotency_key=spec.idempotency_key,
             attempt=next_attempt,
+            approval_id=spec.required_approval_id,
             input_payload=spec.input_payload,
         )
         step_run = creation.step_run
@@ -311,12 +323,19 @@ async def _execution_block_code(
 
 
 def _validate_existing_attempts(attempts: list[StepRun], spec: TaskStepSpec) -> None:
-    expected = (spec.name.strip(), spec.queue.value, spec.ordinal, spec.input_payload)
+    expected = (
+        spec.name.strip(),
+        spec.queue.value,
+        spec.ordinal,
+        spec.required_approval_id,
+        spec.input_payload,
+    )
     for attempt in attempts:
         actual = (
             attempt.name,
             attempt.queue,
             attempt.ordinal,
+            attempt.approval_id,
             attempt.input_payload,
         )
         if actual != expected:

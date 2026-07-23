@@ -12,11 +12,23 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import selectinload
 
 from src.core.database import Base
+from src.platform.approval_service import (
+    ApprovalGateError,
+    decide_approval,
+    request_approval,
+)
 from src.platform.control_service import (
     request_run_cancellation,
     set_automation_kill_switch,
 )
-from src.platform.models import Automation, QueueClass, Run, RunStatus, StepRun
+from src.platform.models import (
+    ApprovalStatus,
+    Automation,
+    QueueClass,
+    Run,
+    RunStatus,
+    StepRun,
+)
 from src.platform.run_service import (
     get_or_create_automation,
     get_or_create_run,
@@ -444,3 +456,82 @@ def test_retry_policy_rejects_unbounded_or_invalid_values() -> None:
         RetryPolicy(timeout_seconds=0)
     with pytest.raises(ValueError, match="backoff_multiplier"):
         RetryPolicy(backoff_multiplier=0.5)
+
+
+async def test_protected_task_requires_exact_approved_payload(
+    session: AsyncSession,
+) -> None:
+    run = await _running_run(session)
+    payload = {"safe": True}
+    approval = (
+        await request_approval(
+            session,
+            run=run,
+            idempotency_key="task-runner:approval",
+            action="local-task",
+            summary="Execute protected local task",
+            input_payload=payload,
+        )
+    ).approval
+    await decide_approval(
+        session,
+        approval=approval,
+        decision=ApprovalStatus.APPROVED,
+        actor="local-owner",
+        reason="review passed",
+    )
+
+    async def operation(_context: TaskAttemptContext) -> dict[str, bool]:
+        return {"protected": True}
+
+    result = await execute_task_step(
+        session,
+        run=run,
+        spec=TaskStepSpec(
+            name="local-task",
+            queue=QueueClass.IO,
+            ordinal=1,
+            idempotency_key="task-runner:test:approved-task",
+            input_payload=payload,
+            required_approval_id=approval.id,
+        ),
+        policy=RetryPolicy(),
+        operation=operation,
+    )
+    step_run = await session.get(StepRun, result.step_run_ids[-1])
+
+    assert result.status is RunStatus.SUCCEEDED
+    assert step_run is not None
+    assert step_run.approval_id == approval.id
+
+    with pytest.raises(ApprovalGateError, match="different task"):
+        await execute_task_step(
+            session,
+            run=run,
+            spec=TaskStepSpec(
+                name="local-task",
+                queue=QueueClass.IO,
+                ordinal=2,
+                idempotency_key="task-runner:test:second-approved-task",
+                input_payload=payload,
+                required_approval_id=approval.id,
+            ),
+            policy=RetryPolicy(),
+            operation=operation,
+        )
+
+    with pytest.raises(ApprovalGateError, match="payload"):
+        await execute_task_step(
+            session,
+            run=run,
+            spec=TaskStepSpec(
+                name="local-task",
+                queue=QueueClass.IO,
+                ordinal=2,
+                idempotency_key="task-runner:test:tampered-task",
+                input_payload={"safe": False},
+                required_approval_id=approval.id,
+            ),
+            policy=RetryPolicy(),
+            operation=operation,
+        )
