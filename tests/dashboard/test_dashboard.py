@@ -23,6 +23,7 @@ from src.platform.models import (
     AlertSeverity,
     AlertStatus,
     Approval,
+    ApprovalEvent,
     ApprovalStatus,
     Artifact,
     ArtifactSensitivity,
@@ -208,6 +209,39 @@ async def _seed_cancellable_run(factory: async_sessionmaker[AsyncSession]) -> in
         return run.id
 
 
+async def _seed_pending_approval(
+    factory: async_sessionmaker[AsyncSession],
+) -> tuple[int, int]:
+    async with factory() as session:
+        automation = Automation(
+            slug="approval-control",
+            name="Approval Control",
+            owner="private-owner",
+        )
+        session.add(automation)
+        await session.flush()
+        run = Run(
+            automation_id=automation.id,
+            idempotency_key="private-approval-run-key",
+            trigger="manual",
+            input_payload={"private": "protected-payload-secret"},
+            status=RunStatus.AWAITING_APPROVAL.value,
+        )
+        session.add(run)
+        await session.flush()
+        approval = Approval(
+            run_id=run.id,
+            idempotency_key="private-pending-approval-key",
+            action="publish",
+            summary="private protected approval summary",
+            payload_digest="c" * 64,
+            status=ApprovalStatus.PENDING.value,
+        )
+        session.add(approval)
+        await session.commit()
+        return run.id, approval.id
+
+
 async def test_snapshot_is_bounded_redacted_and_decimal_exact(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -297,10 +331,10 @@ async def test_dashboard_home_renders_read_only_redacted_state(
     application_routes = [
         route for route in application.routes if isinstance(route, APIRoute)
     ]
-    assert len(application_routes) == 3
+    assert len(application_routes) == 4
     route_methods = [route.methods for route in application_routes]
     assert route_methods.count({"GET"}) == 2
-    assert route_methods.count({"POST"}) == 1
+    assert route_methods.count({"POST"}) == 2
 
 
 async def test_run_detail_projection_is_ordered_exact_and_redacted(
@@ -572,6 +606,193 @@ async def test_dashboard_rejects_non_loopback_host_before_database_access() -> N
 
     assert response.status_code == 400
     assert response.text == "invalid host"
+
+
+async def test_dashboard_approval_rejection_is_confirmed_immutable_and_audited(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    run_id, approval_id = await _seed_pending_approval(session_factory)
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        detail = await client.get(f"/runs/{run_id}")
+        first = await client.post(
+            f"/approvals/{approval_id}/reject",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "reject-approval",
+                "actor": "local-owner",
+                "reason": "protected action must not proceed",
+            },
+        )
+        duplicate = await client.post(
+            f"/approvals/{approval_id}/reject",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "reject-approval",
+                "actor": "different-actor",
+                "reason": "duplicate must not replace immutable evidence",
+            },
+        )
+        updated_detail = await client.get(f"/runs/{run_id}")
+
+    assert detail.status_code == 200
+    assert f'action="/approvals/{approval_id}/reject"' in detail.text
+    assert "Confirmo a rejeição definitiva" in detail.text
+    assert "Aprovar approval" not in detail.text
+    assert "/approve" not in detail.text
+    assert "private protected approval summary" not in detail.text
+    assert "protected-payload-secret" not in detail.text
+    assert first.status_code == 303
+    assert first.headers["location"] == f"/runs/{run_id}"
+    assert duplicate.status_code == 303
+    assert updated_detail.status_code == 200
+    assert "rejected" in updated_detail.text
+    assert "<form" not in updated_detail.text
+    for private_value in (
+        "private protected approval summary",
+        "protected-payload-secret",
+        "local-owner",
+        "protected action must not proceed",
+        "different-actor",
+        "duplicate must not replace immutable evidence",
+    ):
+        assert private_value not in updated_detail.text
+
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        approval = await session.get(Approval, approval_id)
+        events = list(
+            (
+                await session.scalars(
+                    select(ApprovalEvent).where(
+                        ApprovalEvent.approval_id == approval_id
+                    )
+                )
+            ).all()
+        )
+
+    assert run is not None
+    assert run.status == RunStatus.CANCELLED.value
+    assert approval is not None
+    assert approval.status == ApprovalStatus.REJECTED.value
+    assert approval.decided_by == "local-owner"
+    assert approval.decision_reason == "protected action must not proceed"
+    assert len(events) == 1
+    assert events[0].to_status == ApprovalStatus.REJECTED.value
+    assert events[0].actor == "local-owner"
+
+
+@pytest.mark.parametrize(
+    ("csrf_token", "confirmation", "actor", "expected_status"),
+    (
+        ("wrong-token", "reject-approval", "local-owner", 403),
+        ("test-csrf-token", "not-confirmed", "local-owner", 400),
+        ("test-csrf-token", "reject-approval", "", 400),
+    ),
+)
+async def test_dashboard_approval_rejection_fails_closed_for_invalid_requests(
+    session_factory: async_sessionmaker[AsyncSession],
+    csrf_token: str,
+    confirmation: str,
+    actor: str,
+    expected_status: int,
+) -> None:
+    run_id, approval_id = await _seed_pending_approval(session_factory)
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.post(
+            f"/approvals/{approval_id}/reject",
+            data={
+                "csrf_token": csrf_token,
+                "confirmation": confirmation,
+                "actor": actor,
+                "reason": "must not be persisted",
+            },
+        )
+
+    assert response.status_code == expected_status
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        approval = await session.get(Approval, approval_id)
+        events = list(
+            (
+                await session.scalars(
+                    select(ApprovalEvent).where(
+                        ApprovalEvent.approval_id == approval_id
+                    )
+                )
+            ).all()
+        )
+    assert run is not None
+    assert run.status == RunStatus.AWAITING_APPROVAL.value
+    assert approval is not None
+    assert approval.status == ApprovalStatus.PENDING.value
+    assert events == []
+
+
+async def test_dashboard_approval_rejection_conflicts_with_invalid_run_state(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    run_id = await _seed_dashboard(session_factory)
+    async with session_factory() as session:
+        approval = await session.scalar(
+            select(Approval).where(Approval.run_id == run_id)
+        )
+    assert approval is not None
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.post(
+            f"/approvals/{approval.id}/reject",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "reject-approval",
+                "actor": "local-owner",
+                "reason": "run is already terminal",
+            },
+        )
+
+    assert response.status_code == 409
+    async with session_factory() as session:
+        fetched = await session.get(Approval, approval.id)
+        events = list(
+            (
+                await session.scalars(
+                    select(ApprovalEvent).where(
+                        ApprovalEvent.approval_id == approval.id
+                    )
+                )
+            ).all()
+        )
+    assert fetched is not None
+    assert fetched.status == ApprovalStatus.PENDING.value
+    assert events == []
 
 
 async def test_dashboard_home_handles_empty_database(

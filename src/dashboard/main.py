@@ -17,9 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_session
 from src.dashboard.service import load_dashboard_snapshot, load_run_detail
+from src.platform.approval_service import decide_approval
 from src.platform.control_service import request_run_cancellation
-from src.platform.models import Run
-from src.platform.run_service import InvalidRunTransitionError
+from src.platform.models import Approval, ApprovalStatus, Run
+from src.platform.run_service import IdempotencyConflictError, InvalidRunTransitionError
 
 _TEMPLATE_DIRECTORY = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIRECTORY))
@@ -102,10 +103,71 @@ def create_app(*, csrf_token: str | None = None) -> FastAPI:
             raise
         return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
+    @application.post("/approvals/{approval_id}/reject", response_class=HTMLResponse)
+    async def reject_approval(
+        request: Request,
+        approval_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> RedirectResponse:
+        submitted_token, confirmation, actor, reason = (
+            await _parse_approval_rejection_form(request)
+        )
+        if not hmac.compare_digest(submitted_token, control_token):
+            raise HTTPException(status_code=403, detail="invalid csrf token")
+        if confirmation != "reject-approval":
+            raise HTTPException(status_code=400, detail="explicit confirmation required")
+
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        run_id = approval.run_id
+        try:
+            await decide_approval(
+                session,
+                approval=approval,
+                decision=ApprovalStatus.REJECTED,
+                actor=actor,
+                reason=reason,
+            )
+            await session.commit()
+        except (IdempotencyConflictError, InvalidRunTransitionError) as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail="approval cannot be rejected") from exc
+        except ValueError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=400, detail="invalid approval decision") from exc
+        except Exception:
+            await session.rollback()
+            raise
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
     return application
 
 
 async def _parse_cancellation_form(request: Request) -> tuple[str, str, str]:
+    fields = await _parse_form_fields(request, maximum_fields=3)
+    csrf_token = _single_form_value(fields, "csrf_token", maximum_length=128)
+    confirmation = _single_form_value(fields, "confirmation", maximum_length=32)
+    reason = _single_form_value(fields, "reason", maximum_length=500)
+    return csrf_token, confirmation, reason
+
+
+async def _parse_approval_rejection_form(
+    request: Request,
+) -> tuple[str, str, str, str]:
+    fields = await _parse_form_fields(request, maximum_fields=4)
+    csrf_token = _single_form_value(fields, "csrf_token", maximum_length=128)
+    confirmation = _single_form_value(fields, "confirmation", maximum_length=32)
+    actor = _single_form_value(fields, "actor", maximum_length=200)
+    reason = _single_form_value(fields, "reason", maximum_length=500)
+    return csrf_token, confirmation, actor, reason
+
+
+async def _parse_form_fields(
+    request: Request,
+    *,
+    maximum_fields: int,
+) -> dict[str, list[str]]:
     content_type = request.headers.get("content-type", "").split(";", maxsplit=1)[0]
     if content_type.lower() != "application/x-www-form-urlencoded":
         raise HTTPException(status_code=415, detail="unsupported form content type")
@@ -116,15 +178,12 @@ async def _parse_cancellation_form(request: Request) -> tuple[str, str, str]:
         fields = parse_qs(
             body.decode("utf-8", errors="strict"),
             keep_blank_values=True,
-            max_num_fields=4,
+            max_num_fields=maximum_fields,
         )
     except (UnicodeDecodeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="invalid form body") from exc
 
-    csrf_token = _single_form_value(fields, "csrf_token", maximum_length=128)
-    confirmation = _single_form_value(fields, "confirmation", maximum_length=32)
-    reason = _single_form_value(fields, "reason", maximum_length=500)
-    return csrf_token, confirmation, reason
+    return fields
 
 
 def _single_form_value(

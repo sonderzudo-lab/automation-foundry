@@ -33,8 +33,10 @@
       .control { border-color: #5c342f; }
       label { display: block; color: #b7c0cc; font-size: .85rem; margin-bottom: .5rem; }
       textarea { box-sizing: border-box; width: 100%; min-height: 5rem; resize: vertical; background: #0b0d10; color: #f2f4f7; border: 1px solid #3b4552; border-radius: 8px; padding: .7rem; font: inherit; }
+      input[type="text"] { box-sizing: border-box; width: 100%; background: #0b0d10; color: #f2f4f7; border: 1px solid #3b4552; border-radius: 8px; padding: .7rem; font: inherit; margin-bottom: .8rem; }
       .confirm { display: flex; align-items: center; gap: .5rem; margin: .85rem 0; }
       .confirm input { margin: 0; }
+      .approval-control { border-top: 1px solid #3a2b29; margin-top: 1rem; padding-top: 1rem; }
       button { border: 1px solid #8e4b43; border-radius: 8px; background: #351916; color: #ffb4aa; padding: .6rem .9rem; font: inherit; font-weight: 650; cursor: pointer; }
       button:hover { background: #47201c; }
       @media (max-width: 820px) { section { grid-column: 1 / -1; } header { align-items: start; flex-direction: column; } .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
@@ -89,7 +91,7 @@
           {% else %}<div class="empty">Nenhum step registrado.</div>{% endif %}
         </section>
 
-        <section>
+        <section class="wide">
           <h2>Approvals vinculadas</h2>
           {% if run.approvals %}
           <table><thead><tr><th>ID</th><th>Ação</th><th>Status</th><th>Solicitada UTC</th><th>Decidida UTC</th></tr></thead><tbody>
@@ -97,6 +99,23 @@
             <tr><td>#{{ approval.id }}</td><td>{{ approval.action }}</td><td>{{ approval.status }}</td><td>{{ approval.requested_at.isoformat() }}Z</td><td>{{ approval.decided_at.isoformat() ~ "Z" if approval.decided_at else "—" }}</td></tr>
           {% endfor %}
           </tbody></table>
+          {% for approval in run.approvals %}
+          {% if approval.status == "pending" and run.status == "awaiting_approval" %}
+          <div class="approval-control">
+            <strong>Rejeitar approval #{{ approval.id }} · {{ approval.action }}</strong>
+            <p>A rejeição é definitiva e cancela a run. Aprovação positiva permanece indisponível sem contexto seguro do payload.</p>
+            <form method="post" action="/approvals/{{ approval.id }}/reject">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <label for="actor-{{ approval.id }}">Actor local</label>
+              <input id="actor-{{ approval.id }}" type="text" name="actor" maxlength="200" autocomplete="username" required>
+              <label for="approval-reason-{{ approval.id }}">Motivo da rejeição</label>
+              <textarea id="approval-reason-{{ approval.id }}" name="reason" minlength="1" maxlength="500" required></textarea>
+              <label class="confirm"><input type="checkbox" name="confirmation" value="reject-approval" required> Confirmo a rejeição definitiva desta approval.</label>
+              <button type="submit">Rejeitar approval</button>
+            </form>
+          </div>
+          {% endif %}
+          {% endfor %}
           {% else %}<div class="empty">Nenhuma approval vinculada.</div>{% endif %}
         </section>
 
