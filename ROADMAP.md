@@ -52,7 +52,7 @@ Objetivo: executar uma automaÃ§Ã£o mÃ­nima usando contratos genÃ©ricos e
 - [ ] Adotar PostgreSQL para o caminho concorrente; manter SQLite nos testes.
 - [ ] Configurar Celery + Redis e filas `gpu`, `cpu`, `io`.
 - [x] Implementar task wrapper idempotente com retries limitados, timeout, backoff exponencial e transiÃ§Ãµes persistidas em processo Ãºnico.
-- [ ] Implementar cancelamento e kill switch.
+- [x] Implementar pedidos de cancelamento e kill switch persistentes, auditÃ¡veis e consultados pelo wrapper em processo Ãºnico.
 - [x] Registrar uma automaÃ§Ã£o de exemplo e executar um step manual observÃ¡vel em processo Ãºnico, sem efeito externo.
 
 **PortÃ£o:** uma run manual percorre `queued â†’ running â†’ succeeded/failed`, sobrevive a retry e deixa evidÃªncia completa no banco.

@@ -11,9 +11,9 @@
 O repositório possui uma base parcial e testável do Content Engine, mas ainda não possui o
 runtime completo da plataforma. A geração de roteiro A1, a configuração, a sessão de banco e os
 modelos SQLAlchemy orientados a conteúdo têm código real. O kernel compartilhado persiste
-`Automation`, `Run`, `StepRun` e cada transição de estado, e executa um único exemplo no-op em
-processo local. Celery, control plane e as demais etapas de automação são placeholders ou itens
-planejados.
+`Automation`, `Run`, `StepRun`, controles de execução e cada transição de estado, e executa um
+único exemplo no-op em processo local. Celery, control plane e as demais etapas de automação são
+placeholders ou itens planejados.
 
 ## Classificação por área
 
@@ -23,12 +23,12 @@ planejados.
 | Configuração | Parcial | `src/core/config.py` implementa settings tipados, leitura de `.env` e defaults locais. Campos de credenciais existem, mas criptografia, validação operacional e adapters consumidores ainda não existem. |
 | Banco e sessão | Parcial | `src/core/database.py` cria engine e sessão async com commit/rollback. O default de processo único é SQLite; o caminho PostgreSQL concorrente ainda não foi implementado nem validado. |
 | Modelos de domínio | Parcial | `src/core/models.py` implementa `Channel`, `Video`, `Job`, `Metric`, `Cost`, `Topic`, `Alert` e `ABVariant`. O schema é específico do Content Engine e não contém os contratos genéricos da Fase 2. |
-| Kernel compartilhado | Parcial | `src/platform/models.py` implementa `Automation`, `Run`, `StepRun` e históricos append-only. Os serviços oferecem criação idempotente e as transições `queued → running → succeeded/failed/cancelled`; cada step registra fila, ordem, tentativa, timestamps, payloads e erro estruturado. Approval e proteção de corrida entre workers concorrentes ainda não existem. |
-| Migrations | Parcial | `alembic.ini`, `alembic/env.py` e duas revisions incrementais formam um caminho verificável para as cinco tabelas compartilhadas. As tabelas legadas do Content Engine permanecem deliberadamente fora dessa baseline. |
+| Kernel compartilhado | Parcial | `src/platform/models.py` implementa `Automation`, `Run`, `StepRun`, controles persistidos e históricos append-only. Cancelamento de run e kill switch por automação exigem motivo, são idempotentes e geram `ControlEvent`. Approval e proteção de corrida entre workers concorrentes ainda não existem. |
+| Migrations | Parcial | `alembic.ini`, `alembic/env.py` e três revisions incrementais formam um caminho verificável para as seis tabelas compartilhadas. As tabelas legadas do Content Engine permanecem deliberadamente fora dessa baseline. |
 | Content Engine — A1 | Implementado | `src/pipeline/script_gen.py` contém geração em quatro chamadas, retry limitado, saneamento de saída e persistência local de roteiro/narração. `tests/pipeline/test_script_gen.py` cobre o comportamento com Ollama mockado. |
 | Content Engine — mídia e publicação | Placeholder | `src/pipeline/tts.py`, `visuals.py`, `captions.py`, `assembly.py` e `upload.py` estão vazios. Nenhuma publicação real foi implementada. |
-| Orquestração e filas | Parcial | `src/platform/task_runner.py` executa corrotinas em processo único com timeout, retries limitados, backoff exponencial, erros redigidos e cancelamento entre tentativas; cada tentativa é persistida como `StepRun`. `src/core/celery_app.py` e `src/tasks/` continuam vazios: não há workers, Beat, concorrência, hard time limits ou separação executável das filas. |
-| CLI operacional | Parcial | `src/cli.py` expõe `automation-foundry doctor` para diagnóstico sem alteração de estado e `automation-foundry run-example` para uma execução no-op local, explícita, idempotente e com checkpoints transacionais. Não há ainda comandos de cancelamento, retry ou operação de workers. |
+| Orquestração e filas | Parcial | `src/platform/task_runner.py` executa corrotinas em processo único com timeout, retries limitados, backoff exponencial e erros redigidos. Controles persistidos são consultados antes e depois da corrotina e entre tentativas; o wrapper não preempta código síncrono bloqueante. `src/core/celery_app.py` e `src/tasks/` continuam vazios. |
+| CLI operacional | Parcial | `src/cli.py` expõe `doctor`, `run-example`, `kill-switch` e `cancel-run`. As mutações de controle são explícitas, exigem motivo e têm saída redigida. Não há ainda comandos de retry ou operação de workers. |
 | Control plane | Placeholder | `src/dashboard/main.py`, `src/dashboard/routers/__init__.py` e `src/dashboard/templates/.gitkeep` estão vazios. A CLI de diagnóstico não inicia nem antecipa a aplicação FastAPI da Fase 3. |
 | Inteligência | Placeholder | `src/intelligence/trends.py`, `competitors.py` e `similarity.py` estão vazios. |
 | Engajamento | Placeholder | `src/engagement/comments.py` está vazio. |
@@ -37,7 +37,7 @@ planejados.
 | Extras e ações externas | Placeholder | `src/extras/affiliate.py`, `outreach.py` e `x_bot.py` estão vazios. Não há envio, gasto ou ação externa implementada. |
 | Trading Research Lab | Planejado | O domínio aparece em `ARQUITETURA.md` e `ROADMAP.md`, mas não possui implementação. Trading com dinheiro real permanece fora do escopo. |
 | Infraestrutura local | Parcial | `docker-compose.yml` define somente Redis com AOF. PostgreSQL, workers e health checks ainda não estão definidos. Ollama é esperado no host, fora do Compose. |
-| Testes | Parcial | Há 86 testes para modelos legados, A1, CLI, lifecycles de runs/steps, retry/backoff/timeout/cancelamento e durabilidade transacional do wrapper, idempotência do exemplo e smoke das migrations. Não há testes de Celery, dashboard, PostgreSQL, integrações reais, restart ou hardware. |
+| Testes | Parcial | Há 97 testes para modelos legados, A1, CLI, lifecycles de runs/steps, task wrapper, controles persistidos, integração SQLite dos comandos e smoke das migrations. Não há testes de Celery, dashboard, PostgreSQL, integrações reais, restart ou hardware. |
 
 Arquivos `__init__.py` vazios são marcadores de pacote e não contam como funcionalidade.
 
@@ -77,6 +77,14 @@ e recuperar tentativas interrompidas. Repetir a mesma chave retorna o resultado 
 criar novas transições. Este caminho é
 deliberadamente de processo único e não valida concorrência, Redis, Celery ou GPU.
 
+Controles locais explícitos usam um motivo obrigatório:
+
+```powershell
+.venv\Scripts\automation-foundry kill-switch --automation-slug platform-smoke --enable --reason "maintenance"
+.venv\Scripts\automation-foundry kill-switch --automation-slug platform-smoke --disable --reason "review completed"
+.venv\Scripts\automation-foundry cancel-run --run-id 1 --reason "operator request"
+```
+
 `automation-foundry doctor` é a execução canônica e sem efeitos colaterais da Fase 1. Use
 `doctor --json` para saída estruturada e `doctor --services` somente quando Redis e Ollama locais
 devem estar ativos. O Redis pode ser iniciado com `docker compose up -d redis`. A CLI não inicia
@@ -95,7 +103,7 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 - `python -m pip install -e ".[dev]"`: concluído; a primeira tentativa foi bloqueada pela rede da
   sandbox e a repetição com acesso autorizado concluiu a instalação;
-- `python -m pytest -q`: **86 passed**;
+- `python -m pytest -q`: **97 passed**;
 - `python -m ruff check .`: encontrou 7 ocorrências mecânicas preexistentes; o autofix removeu
   imports não usados, ordenou imports e simplificou um context manager; a repetição terminou com
   **All checks passed**;
@@ -110,7 +118,7 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 - `docker compose config`: bloqueado porque o executável Docker não está disponível neste
   ambiente.
 - migrations Alembic em SQLite temporário: `upgrade head` e `alembic check` concluídos; somente as
-  cinco tabelas compartilhadas e `alembic_version` foram criadas.
+  seis tabelas compartilhadas e `alembic_version` foram criadas.
 
 ## Verificações bloqueadas ou adiadas
 
@@ -120,10 +128,11 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 - **Credenciais:** validar somente em modo opt-in as APIs oficiais de Google/YouTube, Reddit,
   bancos de mídia, X e demais provedores. Nenhuma credencial deve entrar no Git.
 - **Ações externas:** publicação, mensagens, gastos, exclusões materiais e ações financeiras
-  continuam sem implementação e exigem aprovação humana e kill switch antes de qualquer teste.
+  continuam sem implementação. O kill switch genérico existe; approval e gates específicos de
+  domínio ainda são obrigatórios antes de qualquer teste externo.
 
 ## Próxima fatia recomendada
 
-Persistir pedidos de cancelamento e um kill switch por automação, fazendo o wrapper consultar
-esses estados antes de cada tentativa. A interrupção de trabalho concorrente, Redis, Celery e os
-limites hard continuam dependentes da próxima etapa e da validação no computador de casa.
+Adicionar `Approval` persistente e o estado `awaiting_approval`, com decisão humana auditável e
+sem executar a ação protegida antes da aprovação. A preempção de trabalho concorrente, Redis,
+Celery e hard time limits continuam dependentes do computador de casa.
