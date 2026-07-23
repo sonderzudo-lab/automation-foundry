@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -13,12 +14,18 @@ from src.platform.models import (
     AlertStatus,
     Approval,
     ApprovalStatus,
+    Artifact,
     Automation,
     LedgerEntry,
     LedgerEntryType,
+    MetricPoint,
     PlatformAlert,
     Run,
+    StepRun,
 )
+
+_SAFE_FAILURE_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,79}")
+_SAFE_EXCEPTION_TYPE = re.compile(r"[A-Za-z][A-Za-z0-9_.]{0,99}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +95,103 @@ class DashboardSnapshot:
     pending_approvals: tuple[ApprovalSummary, ...]
     active_alerts: tuple[AlertSummary, ...]
     ledger_totals: tuple[LedgerCurrencySummary, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FailureSummary:
+    """Allowlisted failure metadata without messages or payloads."""
+
+    code: str
+    exception_type: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StepRunSummary:
+    """Safe attempt-level execution fields for one run."""
+
+    id: int
+    name: str
+    queue: str
+    ordinal: int
+    attempt: int
+    status: str
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_seconds: Decimal | None
+    failure: FailureSummary | None
+
+
+@dataclass(frozen=True, slots=True)
+class RunApprovalSummary:
+    """Approval lifecycle fields safe for a run detail page."""
+
+    id: int
+    action: str
+    status: str
+    requested_at: datetime
+    decided_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class RunArtifactSummary:
+    """Artifact metadata without filesystem paths, hashes, or origins."""
+
+    id: int
+    step_run_id: int | None
+    artifact_type: str
+    media_type: str
+    size_bytes: int
+    sensitivity: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RunMetricSummary:
+    """Metric observation without source or free-form dimensions."""
+
+    id: int
+    step_run_id: int | None
+    name: str
+    kind: str
+    value: Decimal
+    unit: str
+    confidence: Decimal | None
+    observed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RunLedgerSummary:
+    """Financial observation without category, source, or idempotency data."""
+
+    id: int
+    step_run_id: int | None
+    metric_point_id: int | None
+    entry_type: str
+    amount: Decimal
+    currency: str
+    confidence: Decimal | None
+    observed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RunDetail:
+    """Redacted, read-only execution evidence for one persisted run."""
+
+    id: int
+    automation_slug: str
+    automation_name: str
+    status: str
+    trigger: str
+    queued_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_seconds: Decimal | None
+    failure: FailureSummary | None
+    steps: tuple[StepRunSummary, ...]
+    approvals: tuple[RunApprovalSummary, ...]
+    artifacts: tuple[RunArtifactSummary, ...]
+    metrics: tuple[RunMetricSummary, ...]
+    ledger_entries: tuple[RunLedgerSummary, ...]
 
 
 async def load_dashboard_snapshot(
@@ -208,3 +312,155 @@ async def load_dashboard_snapshot(
         active_alerts=active_alerts,
         ledger_totals=ledger_totals,
     )
+
+
+async def load_run_detail(session: AsyncSession, *, run_id: int) -> RunDetail | None:
+    """Load one redacted run and its directly attributable durable evidence."""
+    if run_id < 1:
+        return None
+
+    run_row = (
+        await session.execute(
+            select(Run, Automation.slug, Automation.name)
+            .join(Automation, Automation.id == Run.automation_id)
+            .where(Run.id == run_id)
+        )
+    ).first()
+    if run_row is None:
+        return None
+    run, automation_slug, automation_name = run_row
+
+    steps = tuple(
+        StepRunSummary(
+            id=step.id,
+            name=step.name,
+            queue=step.queue,
+            ordinal=step.ordinal,
+            attempt=step.attempt,
+            status=step.status,
+            started_at=step.started_at,
+            finished_at=step.finished_at,
+            duration_seconds=_duration_seconds(step.started_at, step.finished_at),
+            failure=_redacted_failure(step.error),
+        )
+        for step in await session.scalars(
+            select(StepRun)
+            .where(StepRun.run_id == run_id)
+            .order_by(StepRun.ordinal, StepRun.attempt, StepRun.id)
+        )
+    )
+    approvals = tuple(
+        RunApprovalSummary(
+            id=approval.id,
+            action=approval.action,
+            status=approval.status,
+            requested_at=approval.requested_at,
+            decided_at=approval.decided_at,
+        )
+        for approval in await session.scalars(
+            select(Approval)
+            .where(Approval.run_id == run_id)
+            .order_by(Approval.requested_at, Approval.id)
+        )
+    )
+    artifacts = tuple(
+        RunArtifactSummary(
+            id=artifact.id,
+            step_run_id=artifact.step_run_id,
+            artifact_type=artifact.artifact_type,
+            media_type=artifact.media_type,
+            size_bytes=artifact.size_bytes,
+            sensitivity=artifact.sensitivity,
+            created_at=artifact.created_at,
+        )
+        for artifact in await session.scalars(
+            select(Artifact)
+            .where(Artifact.run_id == run_id)
+            .order_by(Artifact.created_at, Artifact.id)
+        )
+    )
+    metrics = tuple(
+        RunMetricSummary(
+            id=metric.id,
+            step_run_id=metric.step_run_id,
+            name=metric.name,
+            kind=metric.kind,
+            value=metric.value,
+            unit=metric.unit,
+            confidence=metric.confidence,
+            observed_at=metric.observed_at,
+        )
+        for metric in await session.scalars(
+            select(MetricPoint)
+            .where(MetricPoint.run_id == run_id)
+            .order_by(MetricPoint.observed_at, MetricPoint.id)
+        )
+    )
+    ledger_entries = tuple(
+        RunLedgerSummary(
+            id=entry.id,
+            step_run_id=entry.step_run_id,
+            metric_point_id=entry.metric_point_id,
+            entry_type=entry.entry_type,
+            amount=entry.amount,
+            currency=entry.currency,
+            confidence=entry.confidence,
+            observed_at=entry.observed_at,
+        )
+        for entry in await session.scalars(
+            select(LedgerEntry)
+            .where(LedgerEntry.run_id == run_id)
+            .order_by(LedgerEntry.observed_at, LedgerEntry.id)
+        )
+    )
+
+    return RunDetail(
+        id=run.id,
+        automation_slug=automation_slug,
+        automation_name=automation_name,
+        status=run.status,
+        trigger=run.trigger,
+        queued_at=run.queued_at,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        duration_seconds=_duration_seconds(run.started_at, run.finished_at),
+        failure=_redacted_failure(run.error),
+        steps=steps,
+        approvals=approvals,
+        artifacts=artifacts,
+        metrics=metrics,
+        ledger_entries=ledger_entries,
+    )
+
+
+def _duration_seconds(
+    started_at: datetime | None,
+    finished_at: datetime | None,
+) -> Decimal | None:
+    if started_at is None or finished_at is None or finished_at < started_at:
+        return None
+    duration = finished_at - started_at
+    microseconds = (
+        (duration.days * 86_400 + duration.seconds) * 1_000_000
+        + duration.microseconds
+    )
+    return Decimal(microseconds) / Decimal(1_000_000)
+
+
+def _redacted_failure(error: dict[str, object] | None) -> FailureSummary | None:
+    if error is None:
+        return None
+    code = error.get("code")
+    exception_type = error.get("exception_type")
+    safe_code = (
+        code
+        if isinstance(code, str) and _SAFE_FAILURE_CODE.fullmatch(code)
+        else "REDACTED_FAILURE"
+    )
+    safe_exception_type = (
+        exception_type
+        if isinstance(exception_type, str)
+        and _SAFE_EXCEPTION_TYPE.fullmatch(exception_type)
+        else None
+    )
+    return FailureSummary(code=safe_code, exception_type=safe_exception_type)

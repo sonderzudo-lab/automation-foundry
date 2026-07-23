@@ -22,6 +22,8 @@
       th { color: #8995a3; font-weight: 600; }
       tr:last-child td { border-bottom: 0; }
       code { color: #d2a8ff; }
+      a { color: #8ab4f8; text-decoration: none; }
+      a:hover { text-decoration: underline; }
       .badge { display: inline-block; border: 1px solid #3b4552; border-radius: 999px; padding: .15rem .5rem; font-size: .75rem; }
       .ok { color: #7ee787; } .warn { color: #f2cc60; } .danger { color: #ff7b72; }
       .empty { padding: 1rem 0; color: #75808d; }
@@ -55,7 +57,7 @@
           {% if snapshot.recent_runs %}
           <table><thead><tr><th>ID</th><th>Automação</th><th>Status</th><th>Trigger</th><th>Enfileirada UTC</th></tr></thead><tbody>
           {% for run in snapshot.recent_runs %}
-            <tr><td>#{{ run.id }}</td><td><code>{{ run.automation_slug }}</code></td><td><span class="badge">{{ run.status }}</span></td><td>{{ run.trigger }}</td><td>{{ run.queued_at.isoformat() }}Z</td></tr>
+            <tr><td><a href="/runs/{{ run.id }}">#{{ run.id }}</a></td><td><code>{{ run.automation_slug }}</code></td><td><span class="badge">{{ run.status }}</span></td><td>{{ run.trigger }}</td><td>{{ run.queued_at.isoformat() }}Z</td></tr>
           {% endfor %}
           </tbody></table>
           {% else %}<div class="empty">Nenhuma run registrada.</div>{% endif %}
