@@ -64,14 +64,14 @@ Objetivo: executar uma automaÃ§Ã£o mÃ­nima usando contratos genÃ©ricos e
 
 Objetivo: controlar a plataforma sem depender do terminal para a operaÃ§Ã£o normal.
 
-- [ ] Criar FastAPI ligado a `127.0.0.1`.
-- [ ] Construir dashboard Jinja/HTMX para mÃ³dulos, runs, steps e alertas.
-- [ ] Adicionar fila de aprovaÃ§Ãµes.
+- [x] Criar FastAPI ligado a loopback por configuraÃ§Ã£o validada, com `127.0.0.1` como default.
+- [ ] Construir dashboard Jinja/HTMX para mÃ³dulos, runs, steps e alertas. A primeira pÃ¡gina read-only mostra automaÃ§Ãµes, runs recentes e alertas ativos; detalhe de run/step permanece pendente.
+- [ ] Adicionar fila de aprovaÃ§Ãµes. A primeira pÃ¡gina mostra pendÃªncias redigidas, ainda sem decisÃ£o pela UI.
 - [ ] Permitir iniciar, cancelar, retentar e acionar kill switch.
 - [x] Adicionar schedules persistidos, desabilitados por padrÃ£o e com mudanÃ§as auditadas.
 - [ ] Integrar os schedules ao Celery Beat singleton e validar dispatch idempotente. `bloqueado local`
 - [ ] Mostrar saÃºde de CPU, RAM, GPU/VRAM, disco, banco, Redis e workers.
-- [ ] Mostrar custos e resultados atribuÃ­veis.
+- [ ] Mostrar custos e resultados atribuÃ­veis. Totais exatos do ledger jÃ¡ aparecem por moeda, sem conversÃ£o; drill-down por automaÃ§Ã£o/run permanece pendente.
 
 **PortÃ£o:** pelo dashboard, o usuÃ¡rio dispara e acompanha uma run, resolve uma aprovaÃ§Ã£o, diagnostica uma falha e desabilita o mÃ³dulo.
 

@@ -28,8 +28,8 @@ automação são placeholders ou itens planejados.
 | Content Engine — A1 | Implementado | `src/pipeline/script_gen.py` contém geração em quatro chamadas, retry limitado, saneamento de saída e persistência local de roteiro/narração. `tests/pipeline/test_script_gen.py` cobre o comportamento com Ollama mockado. |
 | Content Engine — mídia e publicação | Placeholder | `src/pipeline/tts.py`, `visuals.py`, `captions.py`, `assembly.py` e `upload.py` estão vazios. Nenhuma publicação real foi implementada. |
 | Orquestração e filas | Parcial | `src/platform/task_runner.py` executa corrotinas em processo único com timeout, retries limitados, backoff exponencial e erros redigidos. Controles persistidos são consultados antes e depois da corrotina e entre tentativas; o wrapper não preempta código síncrono bloqueante. `src/core/celery_app.py` e `src/tasks/` continuam vazios. |
-| CLI operacional | Parcial | `src/cli.py` expõe diagnóstico, exemplo, controles, approvals, artifacts, schedules, `record-metric`, `record-ledger-entry`, `record-alert` e `set-alert`. Criação de schedule é sempre desabilitada; habilitar ou desabilitar exige actor e motivo. Métricas e valores financeiros entram como strings decimais. A saída do ledger omite categoria, fonte e chave idempotente; alertas não repetem o summary. A CLI local ainda não autentica criptograficamente o actor e não há comandos de retry ou operação de workers. |
-| Control plane | Placeholder | `src/dashboard/main.py`, `src/dashboard/routers/__init__.py` e `src/dashboard/templates/.gitkeep` estão vazios. A CLI de diagnóstico não inicia nem antecipa a aplicação FastAPI da Fase 3. |
+| CLI operacional | Parcial | `src/cli.py` expõe diagnóstico, dashboard read-only, exemplo, controles, approvals, artifacts, schedules, `record-metric`, `record-ledger-entry`, `record-alert` e `set-alert`. O comando `dashboard` usa apenas host validado como loopback. Criação de schedule é sempre desabilitada; habilitar ou desabilitar exige actor e motivo. Métricas e valores financeiros entram como strings decimais. A saída do ledger omite categoria, fonte e chave idempotente; alertas não repetem o summary. A CLI local ainda não autentica criptograficamente o actor e não há comandos de retry ou operação de workers. |
+| Control plane | Parcial | `src/dashboard/main.py`, `service.py` e `templates/dashboard.html` implementam a primeira página FastAPI/Jinja somente leitura. Ela mostra automações, runs recentes, approvals pendentes, alertas ativos e totais exatos do ledger por moeda. Owner, payloads, erros, summaries, fontes financeiras e chaves idempotentes não são projetados para o HTML. Não há formulário, rota mutável, detalhe de run/step, health de serviços nem HTMX interativo. |
 | Inteligência | Placeholder | `src/intelligence/trends.py`, `competitors.py` e `similarity.py` estão vazios. |
 | Engajamento | Placeholder | `src/engagement/comments.py` está vazio. |
 | Operações | Placeholder | `src/operations/health.py`, `seo.py` e `repurpose.py` estão vazios. |
@@ -37,7 +37,7 @@ automação são placeholders ou itens planejados.
 | Extras e ações externas | Placeholder | `src/extras/affiliate.py`, `outreach.py` e `x_bot.py` estão vazios. Não há envio, gasto ou ação externa implementada. |
 | Trading Research Lab | Planejado | O domínio aparece em `ARQUITETURA.md` e `ROADMAP.md`, mas não possui implementação. Trading com dinheiro real permanece fora do escopo. |
 | Infraestrutura local | Parcial | `docker-compose.yml` define somente Redis com AOF. PostgreSQL, workers e health checks ainda não estão definidos. Ollama é esperado no host, fora do Compose. |
-| Testes | Parcial | Há 171 testes para modelos legados, A1, CLI, lifecycles, task wrapper, controles, approval gates, artifacts, schedules com timezone/DST, métricas, ledger financeiro observacional, alertas deduplicados/auditados, integração SQLite e smoke/roundtrip das migrations. Não há testes de Celery, dashboard, PostgreSQL, integrações reais, restart ou hardware. |
+| Testes | Parcial | Há 183 testes para modelos legados, A1, CLI, lifecycles, task wrapper, controles, approval gates, artifacts, schedules com timezone/DST, métricas, ledger financeiro observacional, alertas deduplicados/auditados, dashboard read-only, integração SQLite e smoke/roundtrip das migrations. Não há testes de Celery, PostgreSQL, integrações reais, restart ou hardware. |
 
 Arquivos `__init__.py` vazios são marcadores de pacote e não contam como funcionalidade.
 
@@ -165,8 +165,18 @@ coleta health checks nem envia email, mensagem ou webhook.
 
 `automation-foundry doctor` é a execução canônica e sem efeitos colaterais da Fase 1. Use
 `doctor --json` para saída estruturada e `doctor --services` somente quando Redis e Ollama locais
-devem estar ativos. O Redis pode ser iniciado com `docker compose up -d redis`. A CLI não inicia
-o dashboard: `src/dashboard/main.py` continua como placeholder até a Fase 3.
+devem estar ativos. O Redis pode ser iniciado com `docker compose up -d redis`.
+
+Depois de `alembic upgrade head`, a primeira visão do control plane é iniciada com:
+
+```powershell
+.venv\Scripts\automation-foundry dashboard
+```
+
+O host default é `127.0.0.1` e qualquer configuração de host não-loopback é rejeitada. A página
+consulta somente o banco, não possui rotas mutáveis e não depende de Redis, Ollama, Celery ou GPU.
+Totais financeiros são calculados com `Decimal` em Python para preservar a precisão do SQLite e
+permanecem separados por moeda, sem conversão cambial.
 
 ## Baseline observado neste checkpoint
 
@@ -181,11 +191,11 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 - `python -m pip install -e ".[dev]"`: concluído; a primeira tentativa foi bloqueada pela rede da
   sandbox e a repetição com acesso autorizado concluiu a instalação;
-- `python -m pytest -q`: **171 passed**;
+- `python -m pytest -q`: **183 passed**;
 - `python -m ruff check .`: encontrou 7 ocorrências mecânicas preexistentes; o autofix removeu
   imports não usados, ordenou imports e simplificou um context manager; a repetição terminou com
   **All checks passed**;
-- `python -m mypy src`: **Success: no issues found in 49 source files**;
+- `python -m mypy src`: **Success: no issues found in 50 source files**;
 - `python -m pip check`: **No broken requirements found**;
 - validação estrutural de `pyproject.toml` e `docker-compose.yml` por `tomllib` e YAML:
   concluída, incluindo metadata, entry point `src.cli:main` e nome do container;
@@ -213,6 +223,7 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 ## Próxima fatia recomendada
 
-Escolher a próxima fatia somente após revisar o estado do roadmap. `Experiment`, o dispatcher de
-schedules e o caminho PostgreSQL concorrente permanecem pendentes; concorrência, Redis, Celery
-Beat e hard time limits continuam dependentes do computador de casa.
+Adicionar detalhe read-only de run e step ao dashboard, preservando redaction, é a próxima fatia
+local verificável. `Experiment`, o dispatcher de schedules e o caminho PostgreSQL concorrente
+permanecem pendentes; concorrência, Redis, Celery Beat e hard time limits continuam dependentes
+do computador de casa.
