@@ -32,13 +32,14 @@ Na data desta versÃ£o:
 - Celery, dashboard e grande parte dos mÃ³dulos planejados permanecem vazios ou incompletos;
 - metadata, defaults locais e nomes de serviÃ§os usam a identidade `automation-foundry`;
 - `src/cli.py` oferece o diagnÃ³stico local `automation-foundry doctor` sem alterar estado;
-- `src/platform/` implementa parcialmente o kernel com `Automation`, `Run`, `StepRun`, `Approval`, `Artifact` e histÃ³ricos persistidos de transiÃ§Ãµes;
-- cinco migrations Alembic incrementais cobrem somente essas tabelas compartilhadas; o schema legado do Content Engine ainda nÃ£o possui baseline;
+- `src/platform/` implementa parcialmente o kernel com `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule` e histÃ³ricos persistidos de transiÃ§Ãµes;
+- seis migrations Alembic incrementais cobrem somente essas tabelas compartilhadas; o schema legado do Content Engine ainda nÃ£o possui baseline;
 - `automation-foundry run-example` executa um Ãºnico passo `io` no-op, idempotente e com checkpoints transacionais, somente em processo local;
 - `src/platform/task_runner.py` aplica timeout assÃ­ncrono, retries limitados e backoff exponencial; pedidos de cancelamento e kill switch sÃ£o consultados antes e depois de cada corrotina e entre tentativas;
 - `control_events` mantÃ©m auditoria append-only de pedidos de cancelamento e mudanÃ§as do kill switch por automaÃ§Ã£o;
 - approvals vinculam run, aÃ§Ã£o e digest do payload; uma decisÃ£o aprovada sÃ³ pode autorizar uma chave idempotente de task;
 - artifacts vinculam arquivo local a run e, opcionalmente, step; o registro persiste somente caminho relativo e metadados apÃ³s validar confinamento em `STORAGE_ROOT`, tamanho e SHA-256;
+- schedules nascem desabilitados, validam cron POSIX de cinco campos e timezone IANA, calculam `next_run_at` em UTC e auditam criaÃ§Ã£o, habilitaÃ§Ã£o e desabilitaÃ§Ã£o;
 - o runtime completo nÃ£o foi validado no computador de casa.
 
 O roadmap deve evoluir essa base sem confundir placeholders com funcionalidades prontas e sem reescrever a parte testada apenas por estÃ©tica arquitetural.
@@ -177,7 +178,7 @@ Celery executa as tarefas e Redis atua como broker e cache. Redis nÃ£o substit
 - `cpu`: FFmpeg, transformaÃ§Ã£o de arquivos e cÃ¡lculo paralelo.
 - `io`: APIs, scraping permitido, downloads, uploads e coleta de dados.
 
-Tasks devem ser idempotentes, reconhecer cancelamento, usar limites de tempo e produzir erros acionÃ¡veis. O wrapper inicial consulta controles persistidos antes e depois de cada corrotina e entre retries, mas nÃ£o preempta cÃ³digo sÃ­ncrono bloqueante nem substitui os soft/hard limits futuros do Celery. Celery Beat Ã© o scheduler inicial e deve rodar como singleton. n8n sÃ³ entra se integraÃ§Ãµes entre aplicaÃ§Ãµes justificarem outra camada operacional.
+Tasks devem ser idempotentes, reconhecer cancelamento, usar limites de tempo e produzir erros acionÃ¡veis. O wrapper inicial consulta controles persistidos antes e depois de cada corrotina e entre retries, mas nÃ£o preempta cÃ³digo sÃ­ncrono bloqueante nem substitui os soft/hard limits futuros do Celery. Schedules persistidos jÃ¡ possuem estado auditado, timezone, prÃ³xima ocorrÃªncia, tolerÃ¢ncia a atraso e polÃ­tica de sobreposiÃ§Ã£o; ainda nÃ£o existe dispatcher que crie runs a partir deles. Celery Beat Ã© o scheduler inicial e deve rodar como singleton. n8n sÃ³ entra se integraÃ§Ãµes entre aplicaÃ§Ãµes justificarem outra camada operacional.
 
 ## 9. Control plane
 

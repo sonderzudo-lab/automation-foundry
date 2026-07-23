@@ -47,8 +47,8 @@ Objetivo: fazer a base atual representar Automation Foundry e obter um baseline 
 
 Objetivo: executar uma automaÃ§Ã£o mÃ­nima usando contratos genÃ©ricos e estado durÃ¡vel.
 
-- [ ] Introduzir os conceitos `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `Experiment`, `LedgerEntry` e `Alert`. `Automation`, `Run`, `StepRun`, `Approval` e `Artifact` estÃ£o implementados; os demais permanecem pendentes.
-- [ ] Criar migrations e separar tabelas compartilhadas das tabelas do Content Engine. Cinco migrations incrementais cobrem o kernel compartilhado; o baseline legado permanece pendente.
+- [ ] Introduzir os conceitos `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `Experiment`, `LedgerEntry` e `Alert`. `Automation`, `Run`, `StepRun`, `Approval`, `Artifact` e `Schedule` estÃ£o implementados; os demais permanecem pendentes.
+- [ ] Criar migrations e separar tabelas compartilhadas das tabelas do Content Engine. Seis migrations incrementais cobrem o kernel compartilhado; o baseline legado permanece pendente.
 - [ ] Adotar PostgreSQL para o caminho concorrente; manter SQLite nos testes.
 - [ ] Configurar Celery + Redis e filas `gpu`, `cpu`, `io`.
 - [x] Implementar task wrapper idempotente com retries limitados, timeout, backoff exponencial e transiÃ§Ãµes persistidas em processo Ãºnico.
@@ -65,7 +65,8 @@ Objetivo: controlar a plataforma sem depender do terminal para a operaÃ§Ã£o 
 - [ ] Construir dashboard Jinja/HTMX para mÃ³dulos, runs, steps e alertas.
 - [ ] Adicionar fila de aprovaÃ§Ãµes.
 - [ ] Permitir iniciar, cancelar, retentar e acionar kill switch.
-- [ ] Adicionar schedules persistidos e Celery Beat singleton.
+- [x] Adicionar schedules persistidos, desabilitados por padrÃ£o e com mudanÃ§as auditadas.
+- [ ] Integrar os schedules ao Celery Beat singleton e validar dispatch idempotente. `bloqueado local`
 - [ ] Mostrar saÃºde de CPU, RAM, GPU/VRAM, disco, banco, Redis e workers.
 - [ ] Mostrar custos e resultados atribuÃ­veis.
 
