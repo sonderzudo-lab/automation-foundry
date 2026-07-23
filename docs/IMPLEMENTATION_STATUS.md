@@ -25,7 +25,8 @@ automação são placeholders ou itens planejados.
 | Content Engine — A1 | Implementado | `src/pipeline/script_gen.py` contém geração em quatro chamadas, retry limitado, saneamento de saída e persistência local de roteiro/narração. `tests/pipeline/test_script_gen.py` cobre o comportamento com Ollama mockado. |
 | Content Engine — mídia e publicação | Placeholder | `src/pipeline/tts.py`, `visuals.py`, `captions.py`, `assembly.py` e `upload.py` estão vazios. Nenhuma publicação real foi implementada. |
 | Orquestração e filas | Placeholder | `src/core/celery_app.py` está vazio e `src/tasks/` contém somente `__init__.py` vazio. Não há workers, Beat, retries persistidos ou separação executável das filas `gpu`, `cpu` e `io`. |
-| Control plane | Placeholder | `src/dashboard/main.py`, `src/dashboard/routers/__init__.py` e `src/dashboard/templates/.gitkeep` estão vazios. O console script inválido foi removido de `pyproject.toml`; um comando só deve ser publicado quando a aplicação FastAPI da Fase 3 existir. |
+| CLI operacional | Implementado | `src/cli.py` expõe `automation-foundry doctor`, valida Python, package, banco e endpoints locais sem alterar estado. `--services` adiciona sondas TCP opt-in somente em loopback e `--json` produz saída estruturada sem URLs ou credenciais. |
+| Control plane | Placeholder | `src/dashboard/main.py`, `src/dashboard/routers/__init__.py` e `src/dashboard/templates/.gitkeep` estão vazios. A CLI de diagnóstico não inicia nem antecipa a aplicação FastAPI da Fase 3. |
 | Inteligência | Placeholder | `src/intelligence/trends.py`, `competitors.py` e `similarity.py` estão vazios. |
 | Engajamento | Placeholder | `src/engagement/comments.py` está vazio. |
 | Operações | Placeholder | `src/operations/health.py`, `seo.py` e `repurpose.py` estão vazios. |
@@ -47,12 +48,14 @@ py -3.12 -m venv .venv
 .venv\Scripts\python -m pytest -q
 .venv\Scripts\python -m ruff check .
 .venv\Scripts\python -m mypy src
+.venv\Scripts\automation-foundry doctor
 docker compose config
 ```
 
-O Redis local pode ser iniciado com `docker compose up -d redis`. Ainda não há comando válido
-para executar a aplicação: `src/dashboard/main.py` é um placeholder. Essa lacuna não deve ser
-mascarada por um comando que falha ou por antecipação da Fase 3.
+`automation-foundry doctor` é a execução canônica e sem efeitos colaterais da Fase 1. Use
+`doctor --json` para saída estruturada e `doctor --services` somente quando Redis e Ollama locais
+devem estar ativos. O Redis pode ser iniciado com `docker compose up -d redis`. A CLI não inicia
+o dashboard: `src/dashboard/main.py` continua como placeholder até a Fase 3.
 
 ## Baseline observado neste checkpoint
 
@@ -67,13 +70,18 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 - `python -m pip install -e ".[dev]"`: concluído; a primeira tentativa foi bloqueada pela rede da
   sandbox e a repetição com acesso autorizado concluiu a instalação;
-- `python -m pytest -q`: **59 passed** em 1,73 s;
+- `python -m pytest -q`: **65 passed**;
 - `python -m ruff check .`: encontrou 7 ocorrências mecânicas preexistentes; o autofix removeu
   imports não usados, ordenou imports e simplificou um context manager; a repetição terminou com
   **All checks passed**;
-- `python -m mypy src`: **Success: no issues found in 35 source files**;
+- `python -m mypy src`: **Success: no issues found in 36 source files**;
 - validação estrutural de `pyproject.toml` e `docker-compose.yml` por `tomllib` e YAML:
-  concluída, incluindo metadata, ausência do console script placeholder e nome do container;
+  concluída, incluindo metadata, entry point `src.cli:main` e nome do container;
+- `automation-foundry doctor`: concluído sem serviços externos, com checks estáticos aprovados e
+  sondas de Redis/Ollama explicitamente marcadas como `skip`;
+- `automation-foundry doctor --json`: concluído com código 0 e payload redigido;
+- `automation-foundry doctor --services`: código 1 esperado neste ambiente de viagem, com Redis e
+  Ollama reportados como indisponíveis em loopback;
 - `docker compose config`: bloqueado porque o executável Docker não está disponível neste
   ambiente.
 
@@ -89,7 +97,6 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 ## Próxima fatia recomendada
 
-Fechar o baseline instalando apenas as dependências core/dev, executar os 59 testes e as
-verificações estáticas, corrigir somente falhas reproduzíveis e registrar os resultados. Depois,
-o menor passo da Fase 2 é uma run manual persistida com estados explícitos, sem dashboard e sem
-efeito externo.
+No computador de casa, executar `automation-foundry doctor --services` após iniciar Redis e
+Ollama e registrar o resultado como validação local. Em paralelo, o menor passo da Fase 2 é uma
+run manual persistida com estados explícitos, sem dashboard e sem efeito externo.

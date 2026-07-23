@@ -38,7 +38,7 @@ Objetivo: fazer a base atual representar Automation Foundry e obter um baseline 
 - [x] Executar testes existentes e registrar o baseline.
 - [x] Corrigir apenas falhas que bloqueiem o baseline, sem reescrever A1.
 - [x] Atualizar `.env.example` para defaults locais seguros e loopback.
-- [ ] Definir comandos Ãºnicos para setup, lint, testes e execuÃ§Ã£o. Setup, lint e testes estÃ£o documentados; execuÃ§Ã£o aguarda uma aplicaÃ§Ã£o real na Fase 3.
+- [x] Definir comandos Ãºnicos para setup, lint, testes e execuÃ§Ã£o. A execuÃ§Ã£o da Fase 1 usa `automation-foundry doctor`; o dashboard permanece na Fase 3.
 - [ ] Confirmar versÃµes e specs no computador de casa. `bloqueado local`
 
 **PortÃ£o:** um checkout limpo instala as dependÃªncias de desenvolvimento, executa os testes existentes e identifica honestamente o que estÃ¡ ou nÃ£o implementado.

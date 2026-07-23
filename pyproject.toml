@@ -73,6 +73,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 
+[project.scripts]
+automation-foundry = "src.cli:main"
+
 # ── Ruff (linter/formatter) ──────────────────────────────────────────────────
 [tool.ruff]
 target-version = "py312"

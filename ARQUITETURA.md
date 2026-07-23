@@ -31,6 +31,7 @@ Na data desta versÃ£o:
 - o schema atual ainda Ã© orientado a conteÃºdo;
 - Celery, dashboard e grande parte dos mÃ³dulos planejados permanecem vazios ou incompletos;
 - metadata, defaults locais e nomes de serviÃ§os usam a identidade `automation-foundry`;
+- `src/cli.py` oferece o diagnÃ³stico local `automation-foundry doctor` sem alterar estado;
 - o runtime completo nÃ£o foi validado no computador de casa.
 
 O roadmap deve evoluir essa base sem confundir placeholders com funcionalidades prontas e sem reescrever a parte testada apenas por estÃ©tica arquitetural.
