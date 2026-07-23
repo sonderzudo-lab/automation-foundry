@@ -27,6 +27,8 @@ _PLATFORM_TABLES = frozenset(
         "control_events",
         "runs",
         "run_transitions",
+        "schedule_events",
+        "schedules",
         "step_runs",
         "step_run_transitions",
     }

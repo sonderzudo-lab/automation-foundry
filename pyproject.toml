@@ -29,6 +29,8 @@ dependencies = [
     "python-multipart>=0.0.9", # uploads de arquivo no FastAPI
     "jinja2>=3.1",             # templates HTMX
     "aiofiles>=23.2",
+    "croniter>=6.2,<7",       # validação e cálculo de schedules cron timezone-aware
+    "tzdata>=2026.1",         # base IANA para ZoneInfo no Windows
 ]
 
 [project.optional-dependencies]

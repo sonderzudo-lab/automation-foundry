@@ -73,6 +73,21 @@ class ArtifactSensitivity(StrEnum):
     RESTRICTED = "restricted"
 
 
+class ScheduleStatus(StrEnum):
+    """Operator-controlled states for a persistent schedule."""
+
+    DISABLED = "disabled"
+    ENABLED = "enabled"
+
+
+class ScheduleEventType(StrEnum):
+    """Append-only schedule lifecycle events."""
+
+    CREATED = "created"
+    ENABLED = "enabled"
+    DISABLED = "disabled"
+
+
 _RUN_STATUS_SQL = (
     "'queued', 'running', 'awaiting_approval', 'succeeded', 'failed', 'cancelled'"
 )
@@ -80,6 +95,8 @@ _STEP_RUN_STATUS_SQL = "'queued', 'running', 'succeeded', 'failed', 'cancelled'"
 _QUEUE_CLASS_SQL = "'gpu', 'cpu', 'io'"
 _APPROVAL_STATUS_SQL = "'pending', 'approved', 'rejected', 'cancelled'"
 _ARTIFACT_SENSITIVITY_SQL = "'public', 'internal', 'confidential', 'restricted'"
+_SCHEDULE_STATUS_SQL = "'disabled', 'enabled'"
+_SCHEDULE_EVENT_TYPE_SQL = "'created', 'enabled', 'disabled'"
 _CONTROL_EVENT_TYPE_SQL = (
     "'kill_switch_enabled', 'kill_switch_disabled', 'cancellation_requested'"
 )
@@ -113,6 +130,11 @@ class Automation(Base):
         "ControlEvent",
         back_populates="automation",
         order_by="ControlEvent.id",
+    )
+    schedules: Mapped[list[Schedule]] = relationship(
+        "Schedule",
+        back_populates="automation",
+        order_by="Schedule.id",
     )
 
 
@@ -364,6 +386,121 @@ class Artifact(Base):
         "StepRun",
         back_populates="artifacts",
     )
+
+
+class Schedule(Base):
+    """A validated cron definition whose activation is controlled by an operator."""
+
+    __tablename__ = "schedules"
+    __table_args__ = (
+        UniqueConstraint(
+            "automation_id",
+            "name",
+            name="uq_schedules_automation_name",
+        ),
+        CheckConstraint(
+            f"status IN ({_SCHEDULE_STATUS_SQL})",
+            name="ck_schedules_status",
+        ),
+        CheckConstraint(
+            "misfire_grace_seconds >= 0",
+            name="ck_schedules_misfire_grace_nonnegative",
+        ),
+        CheckConstraint(
+            "(status = 'disabled' AND next_run_at IS NULL) OR "
+            "(status = 'enabled' AND next_run_at IS NOT NULL)",
+            name="ck_schedules_status_next_run",
+        ),
+        Index("ix_schedules_status_next_run", "status", "next_run_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    automation_id: Mapped[int] = mapped_column(
+        ForeignKey("automations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    cron_expression: Mapped[str] = mapped_column(String(100), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(100), nullable=False)
+    input_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default=ScheduleStatus.DISABLED.value,
+    )
+    allow_overlap: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    misfire_grace_seconds: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=300,
+    )
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_enqueued_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    automation: Mapped[Automation] = relationship(
+        "Automation",
+        back_populates="schedules",
+    )
+    events: Mapped[list[ScheduleEvent]] = relationship(
+        "ScheduleEvent",
+        back_populates="schedule",
+        order_by="ScheduleEvent.id",
+    )
+
+
+class ScheduleEvent(Base):
+    """Append-only evidence for schedule creation and operator state changes."""
+
+    __tablename__ = "schedule_events"
+    __table_args__ = (
+        CheckConstraint(
+            f"event_type IN ({_SCHEDULE_EVENT_TYPE_SQL})",
+            name="ck_schedule_events_type",
+        ),
+        CheckConstraint(
+            f"from_status IS NULL OR from_status IN ({_SCHEDULE_STATUS_SQL})",
+            name="ck_schedule_events_from_status",
+        ),
+        CheckConstraint(
+            f"to_status IN ({_SCHEDULE_STATUS_SQL})",
+            name="ck_schedule_events_to_status",
+        ),
+        CheckConstraint(
+            "(event_type = 'created' AND from_status IS NULL AND "
+            "to_status = 'disabled') OR "
+            "(event_type = 'enabled' AND from_status = 'disabled' AND "
+            "to_status = 'enabled') OR "
+            "(event_type = 'disabled' AND from_status = 'enabled' AND "
+            "to_status = 'disabled')",
+            name="ck_schedule_events_transition",
+        ),
+        Index(
+            "ix_schedule_events_schedule_occurred",
+            "schedule_id",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    schedule_id: Mapped[int] = mapped_column(
+        ForeignKey("schedules.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    actor: Mapped[str] = mapped_column(String(200), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    previous_next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    schedule: Mapped[Schedule] = relationship("Schedule", back_populates="events")
 
 
 class ControlEvent(Base):
