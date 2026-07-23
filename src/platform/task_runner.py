@@ -10,8 +10,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.platform.control_service import get_execution_control_state
 from src.platform.models import QueueClass, Run, RunStatus, StepRun
-from src.platform.run_service import IdempotencyConflictError, InvalidRunTransitionError
+from src.platform.run_service import (
+    IdempotencyConflictError,
+    InvalidRunTransitionError,
+    transition_run,
+)
 from src.platform.step_service import get_or_create_step_run, transition_step_run
 
 TaskOperation = Callable[["TaskAttemptContext"], Awaitable[dict[str, Any]]]
@@ -179,12 +184,23 @@ async def execute_task_step(
         if not attempts or attempts[-1].id != step_run.id:
             attempts.append(step_run)
 
-        if cancellation_requested is not None and await cancellation_requested():
+        control_code = await _execution_block_code(
+            session,
+            run_id=run.id,
+            cancellation_requested=cancellation_requested,
+        )
+        if control_code is not None:
             await transition_step_run(
                 session,
                 step_run,
                 RunStatus.CANCELLED,
-                note="cancellation observed before attempt",
+                note=f"execution blocked by {control_code}",
+            )
+            await transition_run(
+                session,
+                run,
+                RunStatus.CANCELLED,
+                note=f"execution blocked by {control_code}",
             )
             await session.commit()
             return _result(attempts, replayed=False)
@@ -233,6 +249,26 @@ async def execute_task_step(
                 timed_out=False,
             )
         else:
+            control_code = await _execution_block_code(
+                session,
+                run_id=run.id,
+                cancellation_requested=cancellation_requested,
+            )
+            if control_code is not None:
+                await transition_step_run(
+                    session,
+                    step_run,
+                    RunStatus.CANCELLED,
+                    note=f"completion blocked by {control_code}",
+                )
+                await transition_run(
+                    session,
+                    run,
+                    RunStatus.CANCELLED,
+                    note=f"completion blocked by {control_code}",
+                )
+                await session.commit()
+                return _result(attempts, replayed=False)
             await transition_step_run(
                 session,
                 step_run,
@@ -258,6 +294,20 @@ async def execute_task_step(
         next_attempt += 1
 
     raise RuntimeError("task runner exhausted without a durable result")
+
+
+async def _execution_block_code(
+    session: AsyncSession,
+    *,
+    run_id: int,
+    cancellation_requested: CancellationProbe | None,
+) -> str | None:
+    control = await get_execution_control_state(session, run_id=run_id)
+    if control.blocked:
+        return control.code
+    if cancellation_requested is not None and await cancellation_requested():
+        return "CANCELLATION_CALLBACK"
+    return None
 
 
 def _validate_existing_attempts(attempts: list[StepRun], spec: TaskStepSpec) -> None:

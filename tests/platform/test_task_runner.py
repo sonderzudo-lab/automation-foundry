@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import selectinload
 
 from src.core.database import Base
-from src.platform.models import QueueClass, Run, RunStatus, StepRun
+from src.platform.control_service import (
+    request_run_cancellation,
+    set_automation_kill_switch,
+)
+from src.platform.models import Automation, QueueClass, Run, RunStatus, StepRun
 from src.platform.run_service import (
     get_or_create_automation,
     get_or_create_run,
@@ -322,6 +326,115 @@ async def test_cancellation_between_attempts_stops_before_more_work(
         RunStatus.QUEUED.value,
         RunStatus.CANCELLED.value,
     ]
+
+
+async def test_persisted_cancellation_is_observed_after_backoff(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "persistent-cancellation.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        echo=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    operation_calls = 0
+
+    async with factory() as worker_session:
+        run = await _running_run(worker_session)
+
+        async def operation(_context: TaskAttemptContext) -> dict[str, object]:
+            nonlocal operation_calls
+            operation_calls += 1
+            raise RetryableTaskError("WAIT_FOR_OPERATOR")
+
+        async def request_cancellation(_delay: float) -> None:
+            async with factory() as operator_session:
+                operator_run = await operator_session.get(Run, run.id)
+                assert operator_run is not None
+                await request_run_cancellation(
+                    operator_session,
+                    run=operator_run,
+                    reason="operator stopped retries",
+                )
+                await operator_session.commit()
+
+        result = await execute_task_step(
+            worker_session,
+            run=run,
+            spec=_spec(),
+            policy=RetryPolicy(max_attempts=3),
+            operation=operation,
+            sleep=request_cancellation,
+        )
+
+    await engine.dispose()
+    assert result.status is RunStatus.CANCELLED
+    assert result.attempt_count == 2
+    assert operation_calls == 1
+    assert run.status == RunStatus.CANCELLED.value
+
+
+async def test_persisted_kill_switch_cancels_before_operation(
+    session: AsyncSession,
+) -> None:
+    run = await _running_run(session)
+    automation = await session.get(Automation, run.automation_id)
+    assert automation is not None
+    await set_automation_kill_switch(
+        session,
+        automation=automation,
+        active=True,
+        reason="emergency stop",
+    )
+    await session.commit()
+    called = False
+
+    async def operation(_context: TaskAttemptContext) -> dict[str, object]:
+        nonlocal called
+        called = True
+        return {}
+
+    result = await execute_task_step(
+        session,
+        run=run,
+        spec=_spec(),
+        policy=RetryPolicy(),
+        operation=operation,
+    )
+
+    assert result.status is RunStatus.CANCELLED
+    assert called is False
+    assert run.status == RunStatus.CANCELLED.value
+
+
+async def test_cancellation_observed_after_operation_blocks_success(
+    session: AsyncSession,
+) -> None:
+    run = await _running_run(session)
+    probe_calls = 0
+
+    async def cancellation_requested() -> bool:
+        nonlocal probe_calls
+        probe_calls += 1
+        return probe_calls >= 2
+
+    async def operation(_context: TaskAttemptContext) -> dict[str, bool]:
+        return {"completed": True}
+
+    result = await execute_task_step(
+        session,
+        run=run,
+        spec=_spec(),
+        policy=RetryPolicy(),
+        operation=operation,
+        cancellation_requested=cancellation_requested,
+    )
+
+    assert result.status is RunStatus.CANCELLED
+    assert result.output_payload is None
+    assert run.status == RunStatus.CANCELLED.value
 
 
 def test_retry_policy_rejects_unbounded_or_invalid_values() -> None:

@@ -146,6 +146,28 @@ async def transition_run(
     if target not in _ALLOWED_TRANSITIONS[current]:
         raise InvalidRunTransitionError(f"cannot transition run from {current} to {target}")
 
+    if target is RunStatus.RUNNING:
+        control = (
+            await session.execute(
+                select(
+                    Automation.kill_switch_active,
+                    Run.cancellation_requested_at,
+                )
+                .join(Run, Run.automation_id == Automation.id)
+                .where(Run.id == run.id)
+            )
+        ).one_or_none()
+        if control is None:
+            raise ValueError("run does not exist")
+        if control.kill_switch_active:
+            raise InvalidRunTransitionError(
+                "cannot start run while automation kill switch is active"
+            )
+        if control.cancellation_requested_at is not None:
+            raise InvalidRunTransitionError(
+                "cannot start run after cancellation was requested"
+            )
+
     if target is RunStatus.FAILED and not error:
         raise InvalidRunTransitionError("failed transition requires structured error")
     if target is not RunStatus.FAILED and error is not None:
