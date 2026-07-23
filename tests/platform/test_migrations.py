@@ -37,6 +37,8 @@ def test_upgrade_head_creates_only_platform_kernel_tables(tmp_path: Path) -> Non
         "automations",
         "control_events",
         "metric_points",
+        "platform_alert_events",
+        "platform_alerts",
         "runs",
         "run_transitions",
         "schedule_events",
@@ -139,6 +141,31 @@ def test_metric_migration_downgrade_and_reupgrade(tmp_path: Path) -> None:
         }
     assert "metric_points" not in downgraded_tables
     assert "schedules" in downgraded_tables
+
+    command.upgrade(config, "head")
+    command.check(config)
+
+
+def test_alert_migration_downgrade_and_reupgrade(tmp_path: Path) -> None:
+    database_path = tmp_path / "alert-roundtrip.db"
+    config = Config("alembic.ini")
+    config.set_main_option(
+        "sqlalchemy.url",
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+    )
+
+    command.upgrade(config, "head")
+    command.downgrade(config, "20260723_0007")
+    with sqlite3.connect(database_path) as connection:
+        downgraded_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "platform_alerts" not in downgraded_tables
+    assert "platform_alert_events" not in downgraded_tables
+    assert "metric_points" in downgraded_tables
 
     command.upgrade(config, "head")
     command.check(config)

@@ -137,6 +137,33 @@ class MetricKind(StrEnum):
     CURRENCY = "currency"
 
 
+class AlertSeverity(StrEnum):
+    """Operator-visible impact levels for platform alerts."""
+
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+
+class AlertStatus(StrEnum):
+    """Lifecycle states for a deduplicated platform alert."""
+
+    OPEN = "open"
+    ACKNOWLEDGED = "acknowledged"
+    RESOLVED = "resolved"
+
+
+class AlertEventType(StrEnum):
+    """Append-only events supported by the alert lifecycle."""
+
+    OPENED = "opened"
+    OCCURRED = "occurred"
+    REOPENED = "reopened"
+    ACKNOWLEDGED = "acknowledged"
+    RESOLVED = "resolved"
+
+
 _RUN_STATUS_SQL = (
     "'queued', 'running', 'awaiting_approval', 'succeeded', 'failed', 'cancelled'"
 )
@@ -147,6 +174,11 @@ _ARTIFACT_SENSITIVITY_SQL = "'public', 'internal', 'confidential', 'restricted'"
 _SCHEDULE_STATUS_SQL = "'disabled', 'enabled'"
 _SCHEDULE_EVENT_TYPE_SQL = "'created', 'enabled', 'disabled'"
 _METRIC_KIND_SQL = "'counter', 'gauge', 'duration', 'ratio', 'currency'"
+_ALERT_SEVERITY_SQL = "'info', 'warning', 'error', 'critical'"
+_ALERT_STATUS_SQL = "'open', 'acknowledged', 'resolved'"
+_ALERT_EVENT_TYPE_SQL = (
+    "'opened', 'occurred', 'reopened', 'acknowledged', 'resolved'"
+)
 _CONTROL_EVENT_TYPE_SQL = (
     "'kill_switch_enabled', 'kill_switch_disabled', 'cancellation_requested'"
 )
@@ -190,6 +222,11 @@ class Automation(Base):
         "MetricPoint",
         back_populates="automation",
         order_by="MetricPoint.id",
+    )
+    alerts: Mapped[list[PlatformAlert]] = relationship(
+        "PlatformAlert",
+        back_populates="automation",
+        order_by="PlatformAlert.id",
     )
 
 
@@ -261,6 +298,11 @@ class Run(Base):
         "MetricPoint",
         back_populates="run",
         order_by="MetricPoint.id",
+    )
+    alerts: Mapped[list[PlatformAlert]] = relationship(
+        "PlatformAlert",
+        back_populates="run",
+        order_by="PlatformAlert.id",
     )
 
 
@@ -360,6 +402,11 @@ class StepRun(Base):
         "MetricPoint",
         back_populates="step_run",
         order_by="MetricPoint.id",
+    )
+    alerts: Mapped[list[PlatformAlert]] = relationship(
+        "PlatformAlert",
+        back_populates="step_run",
+        order_by="PlatformAlert.id",
     )
 
 
@@ -648,6 +695,213 @@ class MetricPoint(Base):
         "StepRun",
         back_populates="metric_points",
     )
+    alerts: Mapped[list[PlatformAlert]] = relationship(
+        "PlatformAlert",
+        back_populates="metric_point",
+        order_by="PlatformAlert.id",
+    )
+
+
+class PlatformAlert(Base):
+    """One deduplicated operational condition in the shared platform kernel."""
+
+    __tablename__ = "platform_alerts"
+    __table_args__ = (
+        UniqueConstraint(
+            "automation_id",
+            "deduplication_key",
+            name="uq_platform_alerts_automation_deduplication",
+        ),
+        CheckConstraint(
+            f"severity IN ({_ALERT_SEVERITY_SQL})",
+            name="ck_platform_alerts_severity",
+        ),
+        CheckConstraint(
+            f"status IN ({_ALERT_STATUS_SQL})",
+            name="ck_platform_alerts_status",
+        ),
+        CheckConstraint(
+            "occurrence_count >= 1",
+            name="ck_platform_alerts_occurrence_count_positive",
+        ),
+        CheckConstraint(
+            "last_seen_at >= first_seen_at",
+            name="ck_platform_alerts_seen_order",
+        ),
+        CheckConstraint(
+            "step_run_id IS NULL OR run_id IS NOT NULL",
+            name="ck_platform_alerts_step_requires_run",
+        ),
+        CheckConstraint(
+            "((acknowledged_at IS NULL AND acknowledged_by IS NULL AND "
+            "acknowledgement_reason IS NULL) OR "
+            "(acknowledged_at IS NOT NULL AND acknowledged_by IS NOT NULL AND "
+            "acknowledgement_reason IS NOT NULL))",
+            name="ck_platform_alerts_acknowledgement_complete",
+        ),
+        CheckConstraint(
+            "((resolved_at IS NULL AND resolved_by IS NULL AND "
+            "resolution_reason IS NULL) OR "
+            "(resolved_at IS NOT NULL AND resolved_by IS NOT NULL AND "
+            "resolution_reason IS NOT NULL))",
+            name="ck_platform_alerts_resolution_complete",
+        ),
+        CheckConstraint(
+            "(status = 'open' AND acknowledged_at IS NULL AND resolved_at IS NULL) "
+            "OR (status = 'acknowledged' AND acknowledged_at IS NOT NULL AND "
+            "resolved_at IS NULL) OR "
+            "(status = 'resolved' AND resolved_at IS NOT NULL)",
+            name="ck_platform_alerts_status_metadata",
+        ),
+        Index(
+            "ix_platform_alerts_status_severity_seen",
+            "status",
+            "severity",
+            "last_seen_at",
+        ),
+        Index(
+            "ix_platform_alerts_automation_status",
+            "automation_id",
+            "status",
+        ),
+        Index("ix_platform_alerts_run_status", "run_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    automation_id: Mapped[int] = mapped_column(
+        ForeignKey("automations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    step_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("step_runs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    metric_point_id: Mapped[int | None] = mapped_column(
+        ForeignKey("metric_points.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    deduplication_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default=AlertStatus.OPEN.value,
+    )
+    source: Mapped[str] = mapped_column(String(200), nullable=False)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    acknowledgement_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    resolution_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    automation: Mapped[Automation] = relationship(
+        "Automation",
+        back_populates="alerts",
+    )
+    run: Mapped[Run | None] = relationship("Run", back_populates="alerts")
+    step_run: Mapped[StepRun | None] = relationship(
+        "StepRun",
+        back_populates="alerts",
+    )
+    metric_point: Mapped[MetricPoint | None] = relationship(
+        "MetricPoint",
+        back_populates="alerts",
+    )
+    events: Mapped[list[AlertEvent]] = relationship(
+        "AlertEvent",
+        back_populates="alert",
+        order_by="AlertEvent.id",
+    )
+
+
+class AlertEvent(Base):
+    """Append-only evidence for alert occurrences and operator transitions."""
+
+    __tablename__ = "platform_alert_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "alert_id",
+            "idempotency_key",
+            name="uq_platform_alert_events_alert_idempotency",
+        ),
+        CheckConstraint(
+            f"event_type IN ({_ALERT_EVENT_TYPE_SQL})",
+            name="ck_platform_alert_events_type",
+        ),
+        CheckConstraint(
+            f"from_status IS NULL OR from_status IN ({_ALERT_STATUS_SQL})",
+            name="ck_platform_alert_events_from_status",
+        ),
+        CheckConstraint(
+            f"to_status IN ({_ALERT_STATUS_SQL})",
+            name="ck_platform_alert_events_to_status",
+        ),
+        CheckConstraint(
+            f"severity IN ({_ALERT_SEVERITY_SQL})",
+            name="ck_platform_alert_events_severity",
+        ),
+        CheckConstraint(
+            "(event_type IN ('opened', 'occurred', 'reopened') AND "
+            "idempotency_key IS NOT NULL) OR "
+            "(event_type IN ('acknowledged', 'resolved') AND "
+            "idempotency_key IS NULL)",
+            name="ck_platform_alert_events_idempotency_scope",
+        ),
+        CheckConstraint(
+            "(event_type = 'opened' AND from_status IS NULL AND "
+            "to_status = 'open') OR "
+            "(event_type = 'occurred' AND from_status = 'open' AND "
+            "to_status = 'open') OR "
+            "(event_type = 'reopened' AND "
+            "from_status IN ('acknowledged', 'resolved') AND "
+            "to_status = 'open') OR "
+            "(event_type = 'acknowledged' AND from_status = 'open' AND "
+            "to_status = 'acknowledged') OR "
+            "(event_type = 'resolved' AND "
+            "from_status IN ('open', 'acknowledged') AND "
+            "to_status = 'resolved')",
+            name="ck_platform_alert_events_transition",
+        ),
+        Index(
+            "ix_platform_alert_events_alert_occurred",
+            "alert_id",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    alert_id: Mapped[int] = mapped_column(
+        ForeignKey("platform_alerts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    severity: Mapped[str] = mapped_column(String(30), nullable=False)
+    actor: Mapped[str] = mapped_column(String(200), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    alert: Mapped[PlatformAlert] = relationship(
+        "PlatformAlert",
+        back_populates="events",
+    )
+
+
+Alert = PlatformAlert
 
 
 class ControlEvent(Base):

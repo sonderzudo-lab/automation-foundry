@@ -26,6 +26,8 @@ _PLATFORM_TABLES = frozenset(
         "approvals",
         "control_events",
         "metric_points",
+        "platform_alert_events",
+        "platform_alerts",
         "runs",
         "run_transitions",
         "schedule_events",
