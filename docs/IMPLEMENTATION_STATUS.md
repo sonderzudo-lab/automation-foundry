@@ -25,7 +25,7 @@ automação são placeholders ou itens planejados.
 | Content Engine — A1 | Implementado | `src/pipeline/script_gen.py` contém geração em quatro chamadas, retry limitado, saneamento de saída e persistência local de roteiro/narração. `tests/pipeline/test_script_gen.py` cobre o comportamento com Ollama mockado. |
 | Content Engine — mídia e publicação | Placeholder | `src/pipeline/tts.py`, `visuals.py`, `captions.py`, `assembly.py` e `upload.py` estão vazios. Nenhuma publicação real foi implementada. |
 | Orquestração e filas | Placeholder | `src/core/celery_app.py` está vazio e `src/tasks/` contém somente `__init__.py` vazio. Não há workers, Beat, retries persistidos ou separação executável das filas `gpu`, `cpu` e `io`. |
-| Control plane | Placeholder | `src/dashboard/main.py`, `src/dashboard/routers/__init__.py` e `src/dashboard/templates/.gitkeep` estão vazios. O console script em `pyproject.toml` foi renomeado, mas continua não executável até a aplicação FastAPI da Fase 3 existir. |
+| Control plane | Placeholder | `src/dashboard/main.py`, `src/dashboard/routers/__init__.py` e `src/dashboard/templates/.gitkeep` estão vazios. O console script inválido foi removido de `pyproject.toml`; um comando só deve ser publicado quando a aplicação FastAPI da Fase 3 existir. |
 | Inteligência | Placeholder | `src/intelligence/trends.py`, `competitors.py` e `similarity.py` estão vazios. |
 | Engajamento | Placeholder | `src/engagement/comments.py` está vazio. |
 | Operações | Placeholder | `src/operations/health.py`, `seo.py` e `repurpose.py` estão vazios. |
@@ -73,7 +73,7 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
   **All checks passed**;
 - `python -m mypy src`: **Success: no issues found in 35 source files**;
 - validação estrutural de `pyproject.toml` e `docker-compose.yml` por `tomllib` e YAML:
-  concluída, incluindo metadata, console script e nome do container;
+  concluída, incluindo metadata, ausência do console script placeholder e nome do container;
 - `docker compose config`: bloqueado porque o executável Docker não está disponível neste
   ambiente.
 
