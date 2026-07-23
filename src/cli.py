@@ -33,6 +33,15 @@ class CheckResult:
     detail: str
 
 
+@dataclass(frozen=True, slots=True)
+class ControlCommandResult:
+    """Redacted result of one explicit local operator control command."""
+
+    action: str
+    target_id: int
+    changed: bool
+
+
 def _is_loopback_host(host: str | None) -> bool:
     if host is None:
         return False
@@ -234,6 +243,24 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emite o resultado estruturado em JSON.",
     )
+    kill_switch = subparsers.add_parser(
+        "kill-switch",
+        help="Ativa ou desativa o kill switch de uma automação local.",
+    )
+    kill_switch.add_argument("--automation-slug", required=True)
+    kill_switch_state = kill_switch.add_mutually_exclusive_group(required=True)
+    kill_switch_state.add_argument("--enable", action="store_true")
+    kill_switch_state.add_argument("--disable", action="store_true")
+    kill_switch.add_argument("--reason", required=True)
+    kill_switch.add_argument("--json", action="store_true")
+
+    cancel_run = subparsers.add_parser(
+        "cancel-run",
+        help="Solicita o cancelamento seguro de uma run local.",
+    )
+    cancel_run.add_argument("--run-id", required=True, type=int)
+    cancel_run.add_argument("--reason", required=True)
+    cancel_run.add_argument("--json", action="store_true")
     return parser
 
 
@@ -266,6 +293,86 @@ def _render_example_result(result: ExampleRunResult, *, as_json: bool) -> None:
     )
 
 
+async def _set_kill_switch_command(
+    automation_slug: str,
+    *,
+    active: bool,
+    reason: str,
+) -> ControlCommandResult:
+    from sqlalchemy import select
+
+    from src.core.database import AsyncSessionLocal
+    from src.platform.control_service import set_automation_kill_switch
+    from src.platform.models import Automation
+
+    async with AsyncSessionLocal() as session:
+        try:
+            automation = await session.scalar(
+                select(Automation).where(Automation.slug == automation_slug.strip())
+            )
+            if automation is None:
+                raise ValueError("automation does not exist")
+            change = await set_automation_kill_switch(
+                session,
+                automation=automation,
+                active=active,
+                reason=reason,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return ControlCommandResult(
+        action="kill_switch_enabled" if active else "kill_switch_disabled",
+        target_id=automation.id,
+        changed=change.changed,
+    )
+
+
+async def _cancel_run_command(run_id: int, *, reason: str) -> ControlCommandResult:
+    from src.core.database import AsyncSessionLocal
+    from src.platform.control_service import request_run_cancellation
+    from src.platform.models import Run
+
+    async with AsyncSessionLocal() as session:
+        try:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise ValueError("run does not exist")
+            change = await request_run_cancellation(
+                session,
+                run=run,
+                reason=reason,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return ControlCommandResult(
+        action="cancellation_requested",
+        target_id=run.id,
+        changed=change.changed,
+    )
+
+
+def _render_control_result(result: ControlCommandResult, *, as_json: bool) -> None:
+    payload = asdict(result)
+    if as_json:
+        print(json.dumps({"ok": True, **payload}, ensure_ascii=False, indent=2))
+        return
+    outcome = "alterado" if result.changed else "sem alteração (idempotente)"
+    print(f"{result.action} no alvo {result.target_id}: {outcome}")
+
+
+def _render_command_failure(command: str, exc: Exception, *, as_json: bool) -> int:
+    detail = f"{command} falhou ({type(exc).__name__})"
+    if as_json:
+        print(json.dumps({"ok": False, "error": detail}, ensure_ascii=False))
+    else:
+        print(detail)
+    return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Automation Foundry CLI and return a process exit code."""
     args = _build_parser().parse_args(argv)
@@ -292,7 +399,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "run-example":
         try:
-            result = asyncio.run(_execute_example_command(args.idempotency_key))
+            example_result = asyncio.run(
+                _execute_example_command(args.idempotency_key)
+            )
         except Exception as exc:
             detail = f"run-example falhou ({type(exc).__name__})"
             if args.json:
@@ -300,7 +409,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print(detail)
             return 1
-        _render_example_result(result, as_json=bool(args.json))
+        _render_example_result(example_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "kill-switch":
+        try:
+            control_result = asyncio.run(
+                _set_kill_switch_command(
+                    args.automation_slug,
+                    active=bool(args.enable),
+                    reason=args.reason,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure("kill-switch", exc, as_json=bool(args.json))
+        _render_control_result(control_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "cancel-run":
+        try:
+            cancellation_result = asyncio.run(
+                _cancel_run_command(
+                    args.run_id,
+                    reason=args.reason,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure("cancel-run", exc, as_json=bool(args.json))
+        _render_control_result(cancellation_result, as_json=bool(args.json))
         return 0
 
     return 2
