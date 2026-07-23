@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build Automation Module"
+  short_description: "Add a safe, observable automation module"
+  default_prompt: "Use $build-automation-module to add a new Automation Foundry module as a complete vertical slice."
