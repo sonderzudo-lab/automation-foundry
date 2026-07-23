@@ -310,6 +310,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emite resultados estruturados em JSON.",
     )
+    subparsers.add_parser(
+        "dashboard",
+        help="Inicia o dashboard local somente leitura em loopback.",
+    )
     run_example = subparsers.add_parser(
         "run-example",
         help="Executa um passo no-op local e persiste seu ciclo de vida.",
@@ -1187,6 +1191,19 @@ def _render_alert_result(result: AlertCommandResult, *, as_json: bool) -> None:
     )
 
 
+def _serve_dashboard_command() -> None:
+    """Run the read-only dashboard with a validated loopback binding."""
+    import uvicorn
+
+    settings = get_settings()
+    uvicorn.run(
+        "src.dashboard.main:app",
+        host=settings.dashboard_host,
+        port=settings.dashboard_port,
+        reload=False,
+    )
+
+
 def _render_command_failure(command: str, exc: Exception, *, as_json: bool) -> int:
     detail = f"{command} falhou ({type(exc).__name__})"
     if as_json:
@@ -1219,6 +1236,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             _render_text(results)
         return int(any(result.status == "fail" for result in results))
+
+    if args.command == "dashboard":
+        try:
+            _serve_dashboard_command()
+        except Exception as exc:
+            return _render_command_failure("dashboard", exc, as_json=False)
+        return 0
 
     if args.command == "run-example":
         try:

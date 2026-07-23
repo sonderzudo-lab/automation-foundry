@@ -1367,3 +1367,61 @@ def test_record_ledger_failure_is_redacted(
     assert exit_code == 1
     assert "RuntimeError" in output
     assert private_source not in output
+
+
+def test_dashboard_command_starts_local_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = False
+
+    def serve() -> None:
+        nonlocal started
+        started = True
+
+    monkeypatch.setattr(cli, "_serve_dashboard_command", serve)
+
+    assert cli.main(["dashboard"]) == 0
+    assert started is True
+
+
+def test_dashboard_server_uses_validated_settings(
+    local_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import uvicorn
+
+    received: dict[str, object] = {}
+
+    def run(app: str, **kwargs: object) -> None:
+        received["app"] = app
+        received.update(kwargs)
+
+    monkeypatch.setattr(cli, "get_settings", lambda: local_settings)
+    monkeypatch.setattr(uvicorn, "run", run)
+
+    cli._serve_dashboard_command()
+
+    assert received == {
+        "app": "src.dashboard.main:app",
+        "host": "127.0.0.1",
+        "port": 8000,
+        "reload": False,
+    }
+
+
+def test_dashboard_command_failure_is_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    private_detail = "private database location"
+
+    def fail() -> None:
+        raise RuntimeError(private_detail)
+
+    monkeypatch.setattr(cli, "_serve_dashboard_command", fail)
+    exit_code = cli.main(["dashboard"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "RuntimeError" in output
+    assert private_detail not in output
