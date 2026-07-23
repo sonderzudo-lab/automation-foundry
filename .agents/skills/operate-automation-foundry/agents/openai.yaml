@@ -1,0 +1,5 @@
+interface:
+  display_name: "Automation Foundry"
+  short_description: "Operate the local automation platform"
+  default_prompt: "Use $operate-automation-foundry to plan or review work across the local automation platform."
+
