@@ -18,7 +18,15 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = platform_models.Base.metadata
-_PLATFORM_TABLES = frozenset({"automations", "runs", "run_transitions"})
+_PLATFORM_TABLES = frozenset(
+    {
+        "automations",
+        "runs",
+        "run_transitions",
+        "step_runs",
+        "step_run_transitions",
+    }
+)
 
 
 def _include_object(

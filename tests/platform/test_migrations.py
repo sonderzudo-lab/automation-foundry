@@ -34,5 +34,7 @@ def test_upgrade_head_creates_only_platform_kernel_tables(tmp_path: Path) -> Non
         "automations",
         "runs",
         "run_transitions",
+        "step_runs",
+        "step_run_transitions",
     }.issubset(table_names)
     assert "channels" not in table_names
