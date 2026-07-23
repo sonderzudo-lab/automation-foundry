@@ -32,8 +32,9 @@ Na data desta versÃ£o:
 - Celery, dashboard e grande parte dos mÃ³dulos planejados permanecem vazios ou incompletos;
 - metadata, defaults locais e nomes de serviÃ§os usam a identidade `automation-foundry`;
 - `src/cli.py` oferece o diagnÃ³stico local `automation-foundry doctor` sem alterar estado;
-- `src/platform/` implementa parcialmente o kernel com `Automation`, `Run` e histÃ³rico persistido de transiÃ§Ãµes;
-- a primeira migration Alembic cobre somente essas tabelas compartilhadas; o schema legado do Content Engine ainda nÃ£o possui baseline;
+- `src/platform/` implementa parcialmente o kernel com `Automation`, `Run`, `StepRun` e histÃ³ricos persistidos de transiÃ§Ãµes;
+- duas migrations Alembic incrementais cobrem somente essas tabelas compartilhadas; o schema legado do Content Engine ainda nÃ£o possui baseline;
+- `automation-foundry run-example` executa um Ãºnico passo `io` no-op, transacional e idempotente, somente em processo local;
 - o runtime completo nÃ£o foi validado no computador de casa.
 
 O roadmap deve evoluir essa base sem confundir placeholders com funcionalidades prontas e sem reescrever a parte testada apenas por estÃ©tica arquitetural.
