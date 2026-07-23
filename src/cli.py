@@ -95,6 +95,22 @@ class MetricCommandResult:
 
 
 @dataclass(frozen=True, slots=True)
+class LedgerCommandResult:
+    """Redacted result of one local financial observation command."""
+
+    ledger_entry_id: int
+    automation_id: int
+    run_id: int | None
+    step_run_id: int | None
+    metric_point_id: int | None
+    entry_type: str
+    amount: str
+    currency: str
+    observed_at: str
+    created: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AlertCommandResult:
     """Redacted result of one local platform alert command."""
 
@@ -430,6 +446,36 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Timestamp ISO 8601 com timezone; default e o instante do registro.",
     )
     record_metric.add_argument("--json", action="store_true")
+
+    record_ledger = subparsers.add_parser(
+        "record-ledger-entry",
+        help="Registra uma observacao financeira imutavel no banco local.",
+    )
+    record_ledger.add_argument("--automation-slug", required=True)
+    record_ledger.add_argument("--run-id", type=int)
+    record_ledger.add_argument("--step-run-id", type=int)
+    record_ledger.add_argument("--metric-point-id", type=int)
+    record_ledger.add_argument("--idempotency-key", required=True)
+    record_ledger.add_argument(
+        "--type",
+        dest="entry_type",
+        choices=("cost", "revenue", "attributed_value"),
+        required=True,
+    )
+    record_ledger.add_argument("--category", required=True)
+    record_ledger.add_argument(
+        "--amount",
+        required=True,
+        help="Valor decimal observado; use ponto como separador.",
+    )
+    record_ledger.add_argument("--currency", required=True)
+    record_ledger.add_argument("--source", required=True)
+    record_ledger.add_argument("--confidence")
+    record_ledger.add_argument(
+        "--observed-at",
+        help="Timestamp ISO 8601 com timezone; default e o instante do registro.",
+    )
+    record_ledger.add_argument("--json", action="store_true")
 
     record_alert = subparsers.add_parser(
         "record-alert",
@@ -921,6 +967,101 @@ def _render_metric_result(result: MetricCommandResult, *, as_json: bool) -> None
     )
 
 
+async def _record_ledger_command(
+    automation_slug: str,
+    *,
+    run_id: int | None,
+    step_run_id: int | None,
+    metric_point_id: int | None,
+    idempotency_key: str,
+    entry_type: str,
+    category: str,
+    amount: str,
+    currency: str,
+    source: str,
+    confidence: str | None,
+    observed_at: str | None,
+) -> LedgerCommandResult:
+    from sqlalchemy import select
+
+    from src.core.database import AsyncSessionLocal
+    from src.platform.ledger_service import record_ledger_entry
+    from src.platform.models import (
+        Automation,
+        LedgerEntryType,
+        MetricPoint,
+        Run,
+        StepRun,
+    )
+
+    async with AsyncSessionLocal() as session:
+        try:
+            automation = await session.scalar(
+                select(Automation).where(Automation.slug == automation_slug.strip())
+            )
+            if automation is None:
+                raise ValueError("automation does not exist")
+            run = None if run_id is None else await session.get(Run, run_id)
+            if run_id is not None and run is None:
+                raise ValueError("run does not exist")
+            step_run = (
+                None if step_run_id is None else await session.get(StepRun, step_run_id)
+            )
+            if step_run_id is not None and step_run is None:
+                raise ValueError("step run does not exist")
+            metric_point = (
+                None
+                if metric_point_id is None
+                else await session.get(MetricPoint, metric_point_id)
+            )
+            if metric_point_id is not None and metric_point is None:
+                raise ValueError("metric point does not exist")
+            creation = await record_ledger_entry(
+                session,
+                automation=automation,
+                run=run,
+                step_run=step_run,
+                metric_point=metric_point,
+                idempotency_key=idempotency_key,
+                entry_type=LedgerEntryType(entry_type),
+                category=category,
+                amount=amount,
+                currency=currency,
+                source=source,
+                confidence=confidence,
+                observed_at=_parse_observed_at(observed_at),
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    ledger_entry = creation.ledger_entry
+    return LedgerCommandResult(
+        ledger_entry_id=ledger_entry.id,
+        automation_id=ledger_entry.automation_id,
+        run_id=ledger_entry.run_id,
+        step_run_id=ledger_entry.step_run_id,
+        metric_point_id=ledger_entry.metric_point_id,
+        entry_type=ledger_entry.entry_type,
+        amount=_decimal_text(ledger_entry.amount),
+        currency=ledger_entry.currency,
+        observed_at=f"{ledger_entry.observed_at.isoformat()}Z",
+        created=creation.created,
+    )
+
+
+def _render_ledger_result(result: LedgerCommandResult, *, as_json: bool) -> None:
+    payload = asdict(result)
+    if as_json:
+        print(json.dumps({"ok": True, **payload}, ensure_ascii=False, indent=2))
+        return
+    outcome = "registrada" if result.created else "existente (idempotente)"
+    print(
+        f"ledger entry {result.ledger_entry_id}: {result.amount} {result.currency} "
+        f"({result.entry_type}, {outcome}) em {result.observed_at}"
+    )
+
+
 def _alert_command_result(alert: Alert, *, changed: bool) -> AlertCommandResult:
     return AlertCommandResult(
         alert_id=alert.id,
@@ -1250,6 +1391,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                 as_json=bool(args.json),
             )
         _render_metric_result(metric_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "record-ledger-entry":
+        try:
+            ledger_result = asyncio.run(
+                _record_ledger_command(
+                    args.automation_slug,
+                    run_id=args.run_id,
+                    step_run_id=args.step_run_id,
+                    metric_point_id=args.metric_point_id,
+                    idempotency_key=args.idempotency_key,
+                    entry_type=args.entry_type,
+                    category=args.category,
+                    amount=args.amount,
+                    currency=args.currency,
+                    source=args.source,
+                    confidence=args.confidence,
+                    observed_at=args.observed_at,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "record-ledger-entry",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_ledger_result(ledger_result, as_json=bool(args.json))
         return 0
 
     if args.command == "record-alert":

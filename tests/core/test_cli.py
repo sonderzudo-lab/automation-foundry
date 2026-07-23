@@ -1233,3 +1233,137 @@ async def test_alert_command_helpers_persist_real_local_lifecycle(
         AlertEventType.ACKNOWLEDGED.value,
         AlertEventType.RESOLVED.value,
     ]
+
+
+def test_record_ledger_command_is_structured_and_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    received: dict[str, object] = {}
+    private_category = "private-customer-attribution"
+    private_source = "private invoice reference"
+    private_key = "private-ledger-key"
+
+    async def record(
+        automation_slug: str,
+        *,
+        run_id: int | None,
+        step_run_id: int | None,
+        metric_point_id: int | None,
+        idempotency_key: str,
+        entry_type: str,
+        category: str,
+        amount: str,
+        currency: str,
+        source: str,
+        confidence: str | None,
+        observed_at: str | None,
+    ) -> cli.LedgerCommandResult:
+        received.update(
+            automation_slug=automation_slug,
+            run_id=run_id,
+            step_run_id=step_run_id,
+            metric_point_id=metric_point_id,
+            idempotency_key=idempotency_key,
+            entry_type=entry_type,
+            category=category,
+            amount=amount,
+            currency=currency,
+            source=source,
+            confidence=confidence,
+            observed_at=observed_at,
+        )
+        return cli.LedgerCommandResult(
+            ledger_entry_id=41,
+            automation_id=7,
+            run_id=9,
+            step_run_id=11,
+            metric_point_id=31,
+            entry_type="attributed_value",
+            amount="125.5",
+            currency="BRL",
+            observed_at="2026-07-23T12:30:00Z",
+            created=True,
+        )
+
+    monkeypatch.setattr(cli, "_record_ledger_command", record)
+    exit_code = cli.main(
+        [
+            "record-ledger-entry",
+            "--automation-slug",
+            "content-engine",
+            "--run-id",
+            "9",
+            "--step-run-id",
+            "11",
+            "--metric-point-id",
+            "31",
+            "--idempotency-key",
+            private_key,
+            "--type",
+            "attributed_value",
+            "--category",
+            private_category,
+            "--amount",
+            "125.5",
+            "--currency",
+            "BRL",
+            "--source",
+            private_source,
+            "--confidence",
+            "0.75",
+            "--observed-at",
+            "2026-07-23T09:30:00-03:00",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["ledger_entry_id"] == 41
+    assert payload["amount"] == "125.5"
+    assert received["category"] == private_category
+    assert private_category not in output
+    assert private_source not in output
+    assert private_key not in output
+
+
+def test_record_ledger_failure_is_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    private_source = "private invoice reference"
+
+    async def fail(
+        _automation_slug: str,
+        **_kwargs: object,
+    ) -> cli.LedgerCommandResult:
+        raise RuntimeError(f"could not read {private_source}")
+
+    monkeypatch.setattr(cli, "_record_ledger_command", fail)
+    exit_code = cli.main(
+        [
+            "record-ledger-entry",
+            "--automation-slug",
+            "content-engine",
+            "--idempotency-key",
+            "ledger-key",
+            "--type",
+            "cost",
+            "--category",
+            "api",
+            "--amount",
+            "1.25",
+            "--currency",
+            "USD",
+            "--source",
+            private_source,
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "RuntimeError" in output
+    assert private_source not in output
