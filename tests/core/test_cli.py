@@ -13,8 +13,12 @@ from src import cli
 from src.core import database
 from src.core.config import Settings
 from src.platform.example_run import ExampleRunResult
-from src.platform.models import Automation, Run, RunStatus
-from src.platform.run_service import get_or_create_automation, get_or_create_run
+from src.platform.models import Approval, ApprovalStatus, Automation, Run, RunStatus
+from src.platform.run_service import (
+    get_or_create_automation,
+    get_or_create_run,
+    transition_run,
+)
 
 
 @pytest.fixture
@@ -328,3 +332,155 @@ async def test_control_command_helpers_persist_real_local_state(
     assert stored_automation.kill_switch_active is True
     assert stored_run is not None
     assert stored_run.status == RunStatus.CANCELLED.value
+
+
+def test_request_approval_command_renders_pending_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def request(
+        run_id: int,
+        *,
+        idempotency_key: str,
+        action: str,
+        summary: str,
+    ) -> cli.ApprovalCommandResult:
+        assert (run_id, idempotency_key, action, summary) == (
+            9,
+            "publish:9",
+            "publish",
+            "Review private upload",
+        )
+        return cli.ApprovalCommandResult(
+            approval_id=11,
+            run_id=run_id,
+            status="pending",
+            changed=True,
+        )
+
+    monkeypatch.setattr(cli, "_request_approval_command", request)
+    exit_code = cli.main(
+        [
+            "request-approval",
+            "--run-id",
+            "9",
+            "--idempotency-key",
+            "publish:9",
+            "--action",
+            "publish",
+            "--summary",
+            "Review private upload",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["approval_id"] == 11
+    assert payload["status"] == "pending"
+
+
+def test_decide_approval_command_requires_explicit_decision(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def decide(
+        approval_id: int,
+        *,
+        approve: bool,
+        actor: str,
+        reason: str,
+    ) -> cli.ApprovalCommandResult:
+        assert (approval_id, approve, actor, reason) == (
+            11,
+            False,
+            "local-owner",
+            "needs revision",
+        )
+        return cli.ApprovalCommandResult(
+            approval_id=approval_id,
+            run_id=9,
+            status="rejected",
+            changed=True,
+        )
+
+    monkeypatch.setattr(cli, "_decide_approval_command", decide)
+    exit_code = cli.main(
+        [
+            "decide-approval",
+            "--approval-id",
+            "11",
+            "--reject",
+            "--actor",
+            "local-owner",
+            "--reason",
+            "needs revision",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "rejected" in output
+
+
+async def test_approval_command_helpers_persist_real_decision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "cli-approvals.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        echo=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(database.Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as seed_session:
+        automation = (
+            await get_or_create_automation(
+                seed_session,
+                slug="cli-approval",
+                name="CLI Approval",
+                owner="local-owner",
+            )
+        ).automation
+        run = (
+            await get_or_create_run(
+                seed_session,
+                automation=automation,
+                idempotency_key="cli-approval:run",
+                input_payload={"artifact_id": 5},
+            )
+        ).run
+        await transition_run(seed_session, run, RunStatus.RUNNING)
+        await seed_session.commit()
+        run_id = run.id
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", factory)
+    requested = await cli._request_approval_command(
+        run_id,
+        idempotency_key="cli-approval:publish",
+        action="publish",
+        summary="Review local artifact",
+    )
+    decided = await cli._decide_approval_command(
+        requested.approval_id,
+        approve=True,
+        actor="local-owner",
+        reason="review passed",
+    )
+
+    async with factory() as observer_session:
+        stored_run = await observer_session.get(Run, run_id)
+        stored_approval = await observer_session.get(
+            Approval,
+            requested.approval_id,
+        )
+    await engine.dispose()
+
+    assert requested.status == ApprovalStatus.PENDING.value
+    assert decided.status == ApprovalStatus.APPROVED.value
+    assert stored_run is not None
+    assert stored_run.status == RunStatus.RUNNING.value
+    assert stored_approval is not None
+    assert stored_approval.decided_by == "local-owner"

@@ -42,6 +42,16 @@ class ControlCommandResult:
     changed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovalCommandResult:
+    """Redacted result of one local human approval command."""
+
+    approval_id: int
+    run_id: int
+    status: str
+    changed: bool
+
+
 def _is_loopback_host(host: str | None) -> bool:
     if host is None:
         return False
@@ -261,6 +271,28 @@ def _build_parser() -> argparse.ArgumentParser:
     cancel_run.add_argument("--run-id", required=True, type=int)
     cancel_run.add_argument("--reason", required=True)
     cancel_run.add_argument("--json", action="store_true")
+
+    request_gate = subparsers.add_parser(
+        "request-approval",
+        help="Cria um gate humano para o payload atual de uma run.",
+    )
+    request_gate.add_argument("--run-id", required=True, type=int)
+    request_gate.add_argument("--idempotency-key", required=True)
+    request_gate.add_argument("--action", required=True)
+    request_gate.add_argument("--summary", required=True)
+    request_gate.add_argument("--json", action="store_true")
+
+    decide_gate = subparsers.add_parser(
+        "decide-approval",
+        help="Aprova ou rejeita de forma imutável um gate pendente.",
+    )
+    decide_gate.add_argument("--approval-id", required=True, type=int)
+    approval_decision = decide_gate.add_mutually_exclusive_group(required=True)
+    approval_decision.add_argument("--approve", action="store_true")
+    approval_decision.add_argument("--reject", action="store_true")
+    decide_gate.add_argument("--actor", required=True)
+    decide_gate.add_argument("--reason", required=True)
+    decide_gate.add_argument("--json", action="store_true")
     return parser
 
 
@@ -364,6 +396,91 @@ def _render_control_result(result: ControlCommandResult, *, as_json: bool) -> No
     print(f"{result.action} no alvo {result.target_id}: {outcome}")
 
 
+async def _request_approval_command(
+    run_id: int,
+    *,
+    idempotency_key: str,
+    action: str,
+    summary: str,
+) -> ApprovalCommandResult:
+    from src.core.database import AsyncSessionLocal
+    from src.platform.approval_service import request_approval
+    from src.platform.models import Run
+
+    async with AsyncSessionLocal() as session:
+        try:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise ValueError("run does not exist")
+            creation = await request_approval(
+                session,
+                run=run,
+                idempotency_key=idempotency_key,
+                action=action,
+                summary=summary,
+                input_payload=run.input_payload,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return ApprovalCommandResult(
+        approval_id=creation.approval.id,
+        run_id=run.id,
+        status=creation.approval.status,
+        changed=creation.created,
+    )
+
+
+async def _decide_approval_command(
+    approval_id: int,
+    *,
+    approve: bool,
+    actor: str,
+    reason: str,
+) -> ApprovalCommandResult:
+    from src.core.database import AsyncSessionLocal
+    from src.platform.approval_service import decide_approval
+    from src.platform.models import Approval, ApprovalStatus
+
+    async with AsyncSessionLocal() as session:
+        try:
+            approval = await session.get(Approval, approval_id)
+            if approval is None:
+                raise ValueError("approval does not exist")
+            decision = await decide_approval(
+                session,
+                approval=approval,
+                decision=(
+                    ApprovalStatus.APPROVED if approve else ApprovalStatus.REJECTED
+                ),
+                actor=actor,
+                reason=reason,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return ApprovalCommandResult(
+        approval_id=approval.id,
+        run_id=approval.run_id,
+        status=approval.status,
+        changed=decision.changed,
+    )
+
+
+def _render_approval_result(result: ApprovalCommandResult, *, as_json: bool) -> None:
+    payload = asdict(result)
+    if as_json:
+        print(json.dumps({"ok": True, **payload}, ensure_ascii=False, indent=2))
+        return
+    outcome = "alterado" if result.changed else "sem alteração (idempotente)"
+    print(
+        f"approval {result.approval_id} da run {result.run_id}: "
+        f"{result.status} ({outcome})"
+    )
+
+
 def _render_command_failure(command: str, exc: Exception, *, as_json: bool) -> int:
     detail = f"{command} falhou ({type(exc).__name__})"
     if as_json:
@@ -437,6 +554,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as exc:
             return _render_command_failure("cancel-run", exc, as_json=bool(args.json))
         _render_control_result(cancellation_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "request-approval":
+        try:
+            approval_result = asyncio.run(
+                _request_approval_command(
+                    args.run_id,
+                    idempotency_key=args.idempotency_key,
+                    action=args.action,
+                    summary=args.summary,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "request-approval",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_approval_result(approval_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "decide-approval":
+        try:
+            decision_result = asyncio.run(
+                _decide_approval_command(
+                    args.approval_id,
+                    approve=bool(args.approve),
+                    actor=args.actor,
+                    reason=args.reason,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "decide-approval",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_approval_result(decision_result, as_json=bool(args.json))
         return 0
 
     return 2
