@@ -47,13 +47,14 @@ Objetivo: fazer a base atual representar Automation Foundry e obter um baseline 
 
 Objetivo: executar uma automaÃ§Ã£o mÃ­nima usando contratos genÃ©ricos e estado durÃ¡vel.
 
-- [ ] Introduzir os conceitos `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `Experiment`, `LedgerEntry` e `Alert`. `Automation`, `Run`, `StepRun`, `Approval`, `Artifact` e `Schedule` estÃ£o implementados; os demais permanecem pendentes.
-- [ ] Criar migrations e separar tabelas compartilhadas das tabelas do Content Engine. Seis migrations incrementais cobrem o kernel compartilhado; o baseline legado permanece pendente.
+- [ ] Introduzir os conceitos `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `Experiment`, `LedgerEntry` e `Alert`. `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule` e `MetricPoint` estÃ£o implementados; os demais permanecem pendentes.
+- [ ] Criar migrations e separar tabelas compartilhadas das tabelas do Content Engine. Sete migrations incrementais cobrem o kernel compartilhado; o baseline legado permanece pendente.
 - [ ] Adotar PostgreSQL para o caminho concorrente; manter SQLite nos testes.
 - [ ] Configurar Celery + Redis e filas `gpu`, `cpu`, `io`.
 - [x] Implementar task wrapper idempotente com retries limitados, timeout, backoff exponencial e transiÃ§Ãµes persistidas em processo Ãºnico.
 - [x] Implementar pedidos de cancelamento e kill switch persistentes, auditÃ¡veis e consultados pelo wrapper em processo Ãºnico.
 - [x] Registrar uma automaÃ§Ã£o de exemplo e executar um step manual observÃ¡vel em processo Ãºnico, sem efeito externo.
+- [x] Registrar metric points decimais, idempotentes e atribuÃ­veis, sem coleta ou efeito externo.
 
 **PortÃ£o:** uma run manual percorre `queued â†’ running â†’ succeeded/failed`, sobrevive a retry e deixa evidÃªncia completa no banco.
 
