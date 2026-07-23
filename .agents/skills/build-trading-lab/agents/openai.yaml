@@ -1,0 +1,5 @@
+interface:
+  display_name: "Trading Research Lab"
+  short_description: "Build paper-trading research safely"
+  default_prompt: "Use $build-trading-lab to implement or review backtesting and paper-trading research with strict risk controls."
+
