@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src import cli
@@ -14,6 +15,9 @@ from src.core import database
 from src.core.config import Settings
 from src.platform.example_run import ExampleRunResult
 from src.platform.models import (
+    Alert,
+    AlertEventType,
+    AlertStatus,
     Approval,
     ApprovalStatus,
     Artifact,
@@ -23,6 +27,9 @@ from src.platform.models import (
     RunStatus,
     Schedule,
     ScheduleStatus,
+)
+from src.platform.models import (
+    AlertEvent as PlatformAlertEvent,
 )
 from src.platform.run_service import (
     get_or_create_automation,
@@ -980,3 +987,249 @@ async def test_record_metric_helper_persists_real_local_observation(
     assert stored_metric is not None
     assert stored_metric.name == "queue.depth"
     assert stored_metric.source == "local-control-plane"
+
+
+def test_record_alert_command_is_structured_and_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    received: dict[str, object] = {}
+    private_summary = "Customer Alpha connector failed with private details."
+
+    async def record(
+        automation_slug: str,
+        *,
+        run_id: int | None,
+        step_run_id: int | None,
+        metric_point_id: int | None,
+        deduplication_key: str,
+        idempotency_key: str,
+        title: str,
+        summary: str,
+        severity: str,
+        source: str,
+        observed_at: str | None,
+    ) -> cli.AlertCommandResult:
+        received.update(
+            automation_slug=automation_slug,
+            run_id=run_id,
+            step_run_id=step_run_id,
+            metric_point_id=metric_point_id,
+            deduplication_key=deduplication_key,
+            idempotency_key=idempotency_key,
+            title=title,
+            summary=summary,
+            severity=severity,
+            source=source,
+            observed_at=observed_at,
+        )
+        return cli.AlertCommandResult(
+            alert_id=41,
+            automation_id=7,
+            status="open",
+            severity="critical",
+            occurrence_count=2,
+            last_seen_at="2026-07-23T12:30:00Z",
+            changed=True,
+        )
+
+    monkeypatch.setattr(cli, "_record_alert_command", record)
+    exit_code = cli.main(
+        [
+            "record-alert",
+            "--automation-slug",
+            "content-engine",
+            "--run-id",
+            "9",
+            "--step-run-id",
+            "11",
+            "--metric-point-id",
+            "31",
+            "--deduplication-key",
+            "connector:youtube:offline",
+            "--idempotency-key",
+            "connector:youtube:offline:20260723T1230",
+            "--title",
+            "Connector is offline",
+            "--summary",
+            private_summary,
+            "--severity",
+            "critical",
+            "--source",
+            "connector-monitor",
+            "--observed-at",
+            "2026-07-23T09:30:00-03:00",
+            "--json",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert exit_code == 0
+    assert received["summary"] == private_summary
+    assert received["metric_point_id"] == 31
+    assert payload == {
+        "ok": True,
+        "alert_id": 41,
+        "automation_id": 7,
+        "status": "open",
+        "severity": "critical",
+        "occurrence_count": 2,
+        "last_seen_at": "2026-07-23T12:30:00Z",
+        "changed": True,
+    }
+    assert private_summary not in output
+
+
+def test_set_alert_command_requires_explicit_state(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def change(
+        alert_id: int,
+        *,
+        acknowledge: bool,
+        actor: str,
+        reason: str,
+    ) -> cli.AlertCommandResult:
+        assert (alert_id, acknowledge, actor, reason) == (
+            41,
+            True,
+            "local-owner",
+            "investigating locally",
+        )
+        return cli.AlertCommandResult(
+            alert_id=alert_id,
+            automation_id=7,
+            status="acknowledged",
+            severity="critical",
+            occurrence_count=2,
+            last_seen_at="2026-07-23T12:30:00Z",
+            changed=True,
+        )
+
+    monkeypatch.setattr(cli, "_set_alert_command", change)
+    exit_code = cli.main(
+        [
+            "set-alert",
+            "--alert-id",
+            "41",
+            "--acknowledge",
+            "--actor",
+            "local-owner",
+            "--reason",
+            "investigating locally",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "acknowledged/critical" in output
+    assert "ocorrencias=2" in output
+
+
+def test_record_alert_failure_does_not_echo_private_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    private_summary = "Customer Alpha private connector payload."
+
+    async def fail(*_args: object, **_kwargs: object) -> cli.AlertCommandResult:
+        raise RuntimeError(private_summary)
+
+    monkeypatch.setattr(cli, "_record_alert_command", fail)
+    exit_code = cli.main(
+        [
+            "record-alert",
+            "--automation-slug",
+            "content-engine",
+            "--deduplication-key",
+            "connector:private",
+            "--idempotency-key",
+            "connector:private:1",
+            "--title",
+            "Connector failure",
+            "--summary",
+            private_summary,
+            "--severity",
+            "error",
+            "--source",
+            "connector-monitor",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "RuntimeError" in output
+    assert private_summary not in output
+
+
+async def test_alert_command_helpers_persist_real_local_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "cli-alerts.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        echo=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(database.Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as seed_session:
+        await get_or_create_automation(
+            seed_session,
+            slug="cli-alert",
+            name="CLI Alert",
+            owner="local-owner",
+        )
+        await seed_session.commit()
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", factory)
+    recorded = await cli._record_alert_command(
+        "cli-alert",
+        run_id=None,
+        step_run_id=None,
+        metric_point_id=None,
+        deduplication_key="service:redis:offline",
+        idempotency_key="service:redis:offline:1",
+        title="Redis is offline",
+        summary="The local broker did not accept a connection.",
+        severity="error",
+        source="service-health",
+        observed_at=None,
+    )
+    acknowledged = await cli._set_alert_command(
+        recorded.alert_id,
+        acknowledge=True,
+        actor="local-owner",
+        reason="investigating the local service",
+    )
+    resolved = await cli._set_alert_command(
+        recorded.alert_id,
+        acknowledge=False,
+        actor="local-owner",
+        reason="local service recovered",
+    )
+
+    async with factory() as observer_session:
+        stored_alert = await observer_session.get(Alert, recorded.alert_id)
+        event_types = list(
+            await observer_session.scalars(
+                select(PlatformAlertEvent.event_type).where(
+                    PlatformAlertEvent.alert_id == recorded.alert_id
+                ).order_by(PlatformAlertEvent.id)
+            )
+        )
+    await engine.dispose()
+
+    assert recorded.changed is True
+    assert acknowledged.status == AlertStatus.ACKNOWLEDGED.value
+    assert resolved.status == AlertStatus.RESOLVED.value
+    assert stored_alert is not None
+    assert stored_alert.status == AlertStatus.RESOLVED.value
+    assert event_types == [
+        AlertEventType.OPENED.value,
+        AlertEventType.ACKNOWLEDGED.value,
+        AlertEventType.RESOLVED.value,
+    ]

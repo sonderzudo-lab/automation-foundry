@@ -21,7 +21,7 @@ from src.core.config import Settings, get_settings
 
 if TYPE_CHECKING:
     from src.platform.example_run import ExampleRunResult
-    from src.platform.models import Schedule
+    from src.platform.models import Alert, Schedule
 
 CheckStatus = Literal["pass", "fail", "skip"]
 _REDIS_SCHEMES = frozenset({"redis", "rediss"})
@@ -92,6 +92,19 @@ class MetricCommandResult:
     unit: str
     observed_at: str
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AlertCommandResult:
+    """Redacted result of one local platform alert command."""
+
+    alert_id: int
+    automation_id: int
+    status: str
+    severity: str
+    occurrence_count: int
+    last_seen_at: str
+    changed: bool
 
 
 def _is_loopback_host(host: str | None) -> bool:
@@ -417,6 +430,42 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Timestamp ISO 8601 com timezone; default e o instante do registro.",
     )
     record_metric.add_argument("--json", action="store_true")
+
+    record_alert = subparsers.add_parser(
+        "record-alert",
+        help="Registra uma ocorrencia deduplicada de alerta local.",
+    )
+    record_alert.add_argument("--automation-slug", required=True)
+    record_alert.add_argument("--run-id", type=int)
+    record_alert.add_argument("--step-run-id", type=int)
+    record_alert.add_argument("--metric-point-id", type=int)
+    record_alert.add_argument("--deduplication-key", required=True)
+    record_alert.add_argument("--idempotency-key", required=True)
+    record_alert.add_argument("--title", required=True)
+    record_alert.add_argument("--summary", required=True)
+    record_alert.add_argument(
+        "--severity",
+        choices=("info", "warning", "error", "critical"),
+        required=True,
+    )
+    record_alert.add_argument("--source", required=True)
+    record_alert.add_argument(
+        "--observed-at",
+        help="Timestamp ISO 8601 com timezone; default e o instante do registro.",
+    )
+    record_alert.add_argument("--json", action="store_true")
+
+    set_alert = subparsers.add_parser(
+        "set-alert",
+        help="Reconhece ou resolve um alerta local com auditoria.",
+    )
+    set_alert.add_argument("--alert-id", required=True, type=int)
+    alert_state = set_alert.add_mutually_exclusive_group(required=True)
+    alert_state.add_argument("--acknowledge", action="store_true")
+    alert_state.add_argument("--resolve", action="store_true")
+    set_alert.add_argument("--actor", required=True)
+    set_alert.add_argument("--reason", required=True)
+    set_alert.add_argument("--json", action="store_true")
     return parser
 
 
@@ -872,6 +921,131 @@ def _render_metric_result(result: MetricCommandResult, *, as_json: bool) -> None
     )
 
 
+def _alert_command_result(alert: Alert, *, changed: bool) -> AlertCommandResult:
+    return AlertCommandResult(
+        alert_id=alert.id,
+        automation_id=alert.automation_id,
+        status=alert.status,
+        severity=alert.severity,
+        occurrence_count=alert.occurrence_count,
+        last_seen_at=f"{alert.last_seen_at.isoformat()}Z",
+        changed=changed,
+    )
+
+
+async def _record_alert_command(
+    automation_slug: str,
+    *,
+    run_id: int | None,
+    step_run_id: int | None,
+    metric_point_id: int | None,
+    deduplication_key: str,
+    idempotency_key: str,
+    title: str,
+    summary: str,
+    severity: str,
+    source: str,
+    observed_at: str | None,
+) -> AlertCommandResult:
+    from sqlalchemy import select
+
+    from src.core.database import AsyncSessionLocal
+    from src.platform.alert_service import record_alert_occurrence
+    from src.platform.models import (
+        AlertSeverity,
+        Automation,
+        MetricPoint,
+        Run,
+        StepRun,
+    )
+
+    async with AsyncSessionLocal() as session:
+        try:
+            automation = await session.scalar(
+                select(Automation).where(Automation.slug == automation_slug.strip())
+            )
+            if automation is None:
+                raise ValueError("automation does not exist")
+            run = None if run_id is None else await session.get(Run, run_id)
+            if run_id is not None and run is None:
+                raise ValueError("run does not exist")
+            step_run = (
+                None if step_run_id is None else await session.get(StepRun, step_run_id)
+            )
+            if step_run_id is not None and step_run is None:
+                raise ValueError("step run does not exist")
+            metric_point = (
+                None
+                if metric_point_id is None
+                else await session.get(MetricPoint, metric_point_id)
+            )
+            if metric_point_id is not None and metric_point is None:
+                raise ValueError("metric point does not exist")
+            occurrence = await record_alert_occurrence(
+                session,
+                automation=automation,
+                run=run,
+                step_run=step_run,
+                metric_point=metric_point,
+                deduplication_key=deduplication_key,
+                idempotency_key=idempotency_key,
+                title=title,
+                summary=summary,
+                severity=AlertSeverity(severity),
+                source=source,
+                observed_at=_parse_observed_at(observed_at),
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return _alert_command_result(occurrence.alert, changed=occurrence.recorded)
+
+
+async def _set_alert_command(
+    alert_id: int,
+    *,
+    acknowledge: bool,
+    actor: str,
+    reason: str,
+) -> AlertCommandResult:
+    from src.core.database import AsyncSessionLocal
+    from src.platform.alert_service import transition_alert
+    from src.platform.models import Alert, AlertStatus
+
+    async with AsyncSessionLocal() as session:
+        try:
+            alert = await session.get(Alert, alert_id)
+            if alert is None:
+                raise ValueError("alert does not exist")
+            change = await transition_alert(
+                session,
+                alert=alert,
+                target=(
+                    AlertStatus.ACKNOWLEDGED if acknowledge else AlertStatus.RESOLVED
+                ),
+                actor=actor,
+                reason=reason,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return _alert_command_result(change.alert, changed=change.changed)
+
+
+def _render_alert_result(result: AlertCommandResult, *, as_json: bool) -> None:
+    payload = asdict(result)
+    if as_json:
+        print(json.dumps({"ok": True, **payload}, ensure_ascii=False, indent=2))
+        return
+    outcome = "alterado" if result.changed else "sem alteracao (idempotente)"
+    print(
+        f"alert {result.alert_id}: {result.status}/{result.severity} ({outcome}); "
+        f"ocorrencias={result.occurrence_count}; ultimo UTC={result.last_seen_at}"
+    )
+
+
 def _render_command_failure(command: str, exc: Exception, *, as_json: bool) -> int:
     detail = f"{command} falhou ({type(exc).__name__})"
     if as_json:
@@ -1076,6 +1250,51 @@ def main(argv: Sequence[str] | None = None) -> int:
                 as_json=bool(args.json),
             )
         _render_metric_result(metric_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "record-alert":
+        try:
+            alert_result = asyncio.run(
+                _record_alert_command(
+                    args.automation_slug,
+                    run_id=args.run_id,
+                    step_run_id=args.step_run_id,
+                    metric_point_id=args.metric_point_id,
+                    deduplication_key=args.deduplication_key,
+                    idempotency_key=args.idempotency_key,
+                    title=args.title,
+                    summary=args.summary,
+                    severity=args.severity,
+                    source=args.source,
+                    observed_at=args.observed_at,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "record-alert",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_alert_result(alert_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "set-alert":
+        try:
+            alert_change = asyncio.run(
+                _set_alert_command(
+                    args.alert_id,
+                    acknowledge=bool(args.acknowledge),
+                    actor=args.actor,
+                    reason=args.reason,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "set-alert",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_alert_result(alert_change, as_json=bool(args.json))
         return 0
 
     return 2
