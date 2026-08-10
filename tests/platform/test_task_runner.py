@@ -398,6 +398,7 @@ async def test_persisted_kill_switch_cancels_before_operation(
         session,
         automation=automation,
         active=True,
+        actor="local-owner",
         reason="emergency stop",
     )
     await session.commit()
@@ -471,6 +472,7 @@ async def test_protected_task_requires_exact_approved_payload(
             action="local-task",
             summary="Execute protected local task",
             input_payload=payload,
+            review_payload={"operation": "Execute protected local task"},
         )
     ).approval
     await decide_approval(

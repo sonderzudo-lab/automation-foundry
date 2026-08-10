@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Saúde · Automation Foundry</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      body { margin: 0; background: #0b0d10; color: #f2f4f7; }
+      main { width: min(1000px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+      header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin-bottom: 1.5rem; }
+      h1 { margin: 0; letter-spacing: -.03em; }
+      p { color: #9ba6b4; }
+      a { color: #8ab4f8; text-decoration: none; }
+      table { width: 100%; border-collapse: collapse; background: #13171c; border: 1px solid #262d36; border-radius: 14px; overflow: hidden; }
+      th, td { text-align: left; border-bottom: 1px solid #252c34; padding: .8rem; vertical-align: top; }
+      th { color: #8995a3; }
+      tr:last-child td { border-bottom: 0; }
+      .badge { display: inline-block; border: 1px solid #3b4552; border-radius: 999px; padding: .15rem .5rem; font-size: .75rem; }
+      .pass { color: #7ee787; } .degraded { color: #f2cc60; } .fail { color: #ff7b72; } .skip { color: #8995a3; }
+      dl { display: grid; grid-template-columns: max-content 1fr; gap: .2rem .7rem; margin: 0; font-size: .85rem; }
+      dt { color: #8995a3; } dd { margin: 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Saúde operacional</h1>
+          <p>Probes locais redigidos; nenhum endpoint ou nome de host é exibido.</p>
+        </div>
+        <a href="/">← Dashboard</a>
+      </header>
+      <p>Estado geral: <span class="badge {{ report.status.value }}">{{ report.status.value }}</span> · verificado em {{ report.checked_at.isoformat() }}Z</p>
+      <table>
+        <thead><tr><th>Componente</th><th>Estado</th><th>Resumo</th><th>Métricas seguras</th></tr></thead>
+        <tbody>
+        {% for check in report.checks %}
+          <tr>
+            <td><code>{{ check.name }}</code></td>
+            <td><span class="badge {{ check.status.value }}">{{ check.status.value }}</span></td>
+            <td>{{ check.summary }}</td>
+            <td>
+              {% if check.metrics %}<dl>{% for key, value in check.metrics.items() %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>{% else %}—{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </main>
+  </body>
+</html>

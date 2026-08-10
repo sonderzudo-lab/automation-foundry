@@ -62,9 +62,29 @@
             <div class="fact"><span>Duração</span>{{ run.duration_seconds if run.duration_seconds is not none else "—" }}{% if run.duration_seconds is not none %} s{% endif %}</div>
             <div class="fact"><span>Enfileirada UTC</span>{{ run.queued_at.isoformat() }}Z</div>
           </div>
+          {% if run.retry_of_run_id %}<p class="note">Retry da <a href="/runs/{{ run.retry_of_run_id }}">run #{{ run.retry_of_run_id }}</a>.</p>{% endif %}
+          {% if run.experiment_id %}<p class="note">Experimento #{{ run.experiment_id }} · {{ run.experiment_name }} · <code>{{ run.experiment_key }}</code>.</p>{% endif %}
           {% if run.failure %}<p class="danger note">Falha: <code>{{ run.failure.code }}</code>{% if run.failure.exception_type %} · {{ run.failure.exception_type }}{% endif %}</p>{% endif %}
           {% if run.cancellation_requested_at %}<p class="danger note">Cancelamento solicitado em {{ run.cancellation_requested_at.isoformat() }}Z. O motivo permanece redigido.</p>{% endif %}
         </section>
+
+        {% if run.can_retry %}
+        <section class="wide control">
+          <h2>Retentar run</h2>
+          <p>Cria uma nova run ligada a esta falha; a execução anterior permanece imutável.</p>
+          <form method="post" action="/runs/{{ run.id }}/retry">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label for="retry-key">Nova chave de idempotência</label>
+            <input id="retry-key" type="text" name="idempotency_key" maxlength="255" required>
+            <label for="retry-actor">Actor local</label>
+            <input id="retry-actor" type="text" name="actor" maxlength="200" required>
+            <label for="retry-reason">Motivo do retry</label>
+            <textarea id="retry-reason" name="reason" minlength="1" maxlength="500" required></textarea>
+            <label class="confirm"><input type="checkbox" name="confirmation" value="retry-run" required> Confirmo a criação de uma nova tentativa.</label>
+            <button type="submit">Retentar run</button>
+          </form>
+        </section>
+        {% endif %}
 
         {% if run.can_request_cancellation %}
         <section class="wide control">
@@ -102,8 +122,20 @@
           {% for approval in run.approvals %}
           {% if approval.status == "pending" and run.status == "awaiting_approval" %}
           <div class="approval-control">
-            <strong>Rejeitar approval #{{ approval.id }} · {{ approval.action }}</strong>
-            <p>A rejeição é definitiva e cancela a run. Aprovação positiva permanece indisponível sem contexto seguro do payload.</p>
+            <strong>Approval #{{ approval.id }} · {{ approval.action }}</strong>
+            {% if approval.review_payload %}
+            <p>Contexto seguro para revisão:</p>
+            <table><tbody>{% for key, value in approval.review_payload.items() %}<tr><th>{{ key }}</th><td>{{ value }}</td></tr>{% endfor %}</tbody></table>
+            <form method="post" action="/approvals/{{ approval.id }}/approve">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <label for="approve-actor-{{ approval.id }}">Actor local</label>
+              <input id="approve-actor-{{ approval.id }}" type="text" name="actor" maxlength="200" autocomplete="username" required>
+              <label for="approve-reason-{{ approval.id }}">Motivo da aprovação</label>
+              <textarea id="approve-reason-{{ approval.id }}" name="reason" minlength="1" maxlength="500" required></textarea>
+              <label class="confirm"><input type="checkbox" name="confirmation" value="approve-approval" required> Confirmo a aprovação desta ação conforme a revisão acima.</label>
+              <button type="submit">Aprovar approval</button>
+            </form>
+            {% else %}<p>Sem contexto seguro de revisão; somente a rejeição está disponível.</p>{% endif %}
             <form method="post" action="/approvals/{{ approval.id }}/reject">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <label for="actor-{{ approval.id }}">Actor local</label>

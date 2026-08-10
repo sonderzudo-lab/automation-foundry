@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Serviços em container: APENAS Redis (broker + backend do Celery).
+# Serviços de estado locais: PostgreSQL (verdade durável) e Redis (broker).
 #
 # O que roda FORA deste compose (no host / venv local):
 #   • Python / FastAPI / Celery workers  →  python -m uvicorn / celery worker
@@ -8,16 +8,43 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: automation-foundry-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-automation_foundry}
+      POSTGRES_USER: ${POSTGRES_USER:-automation_foundry}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
   redis:
     image: redis:7-alpine
     container_name: automation-foundry-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes   # persistência AOF
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 volumes:
+  postgres_data:
+    driver: local
   redis_data:
     driver: local

@@ -69,18 +69,21 @@ async def test_kill_switch_changes_are_idempotent_and_audited(
         session,
         automation=automation,
         active=True,
+        actor="local-owner",
         reason="operator safety stop",
     )
     duplicate = await set_automation_kill_switch(
         session,
         automation=automation,
         active=True,
+        actor="local-owner",
         reason="duplicate request",
     )
     disabled = await set_automation_kill_switch(
         session,
         automation=automation,
         active=False,
+        actor="local-owner",
         reason="manual review completed",
     )
     await session.commit()
@@ -101,6 +104,10 @@ async def test_kill_switch_changes_are_idempotent_and_audited(
     assert [event.event_type for event in fetched.control_events] == [
         ControlEventType.KILL_SWITCH_ENABLED.value,
         ControlEventType.KILL_SWITCH_DISABLED.value,
+    ]
+    assert [event.actor for event in fetched.control_events] == [
+        "local-owner",
+        "local-owner",
     ]
 
 
@@ -153,6 +160,7 @@ async def test_kill_switch_blocks_start_and_control_state_reads_both_sources(
         session,
         automation=automation,
         active=True,
+        actor="local-owner",
         reason="maintenance",
     )
     await session.commit()

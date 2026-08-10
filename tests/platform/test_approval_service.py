@@ -66,6 +66,7 @@ async def _request(session: AsyncSession, run: Run) -> Approval:
             action="publish",
             summary="Publish reviewed local artifact",
             input_payload={"artifact_id": 7, "visibility": "private"},
+            review_payload={"artifact": "Video #7", "visibility": "Private"},
         )
     ).approval
 
@@ -81,6 +82,7 @@ async def test_request_is_idempotent_and_moves_run_to_waiting(
         action="publish",
         summary="Publish reviewed local artifact",
         input_payload={"artifact_id": 7, "visibility": "private"},
+        review_payload={"artifact": "Video #7", "visibility": "Private"},
     )
     second = await request_approval(
         session,
@@ -89,6 +91,7 @@ async def test_request_is_idempotent_and_moves_run_to_waiting(
         action="publish",
         summary="Publish reviewed local artifact",
         input_payload={"visibility": "private", "artifact_id": 7},
+        review_payload={"artifact": "Video #7", "visibility": "Private"},
     )
     await session.commit()
 
@@ -115,6 +118,7 @@ async def test_request_is_idempotent_and_moves_run_to_waiting(
             action="publish",
             summary="Changed summary",
             input_payload={"artifact_id": 7, "visibility": "private"},
+            review_payload={"artifact": "Video #7", "visibility": "Private"},
         )
 
 
@@ -162,6 +166,42 @@ async def test_approval_decision_is_immutable_and_resumes_run(
             decision=ApprovalStatus.REJECTED,
             actor="local-owner",
             reason="cannot reverse immutable decision",
+        )
+
+
+async def test_safe_review_projection_is_required_and_validated(
+    session: AsyncSession,
+) -> None:
+    run = await _running_run(session, key="review-projection")
+    with pytest.raises(ValueError, match="protected data"):
+        await request_approval(
+            session,
+            run=run,
+            idempotency_key="approval:review:invalid",
+            action="publish",
+            summary="Review local artifact",
+            input_payload={"artifact_id": 7},
+            review_payload={"api_token": "do not show"},
+        )
+
+    approval = Approval(
+        run_id=run.id,
+        idempotency_key="approval:review:legacy",
+        action="publish",
+        summary="legacy protected summary",
+        payload_digest="a" * 64,
+        status=ApprovalStatus.PENDING.value,
+    )
+    session.add(approval)
+    await session.flush()
+    await transition_run(session, run, RunStatus.AWAITING_APPROVAL)
+    with pytest.raises(ApprovalGateError, match="safe review"):
+        await decide_approval(
+            session,
+            approval=approval,
+            decision=ApprovalStatus.APPROVED,
+            actor="local-owner",
+            reason="must fail closed",
         )
 
 

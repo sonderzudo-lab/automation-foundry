@@ -43,3 +43,67 @@ def test_dashboard_accepts_loopback_hosts(host: str) -> None:
     settings = Settings(_env_file=None, dashboard_host=host)
 
     assert settings.dashboard_host == host
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "::1"])
+def test_postgresql_accepts_only_asyncpg_on_loopback(host: str) -> None:
+    rendered_host = f"[{host}]" if ":" in host else host
+    database_url = (
+        f"postgresql+asyncpg://foundry:secret@{rendered_host}:5432/automation_foundry"
+    )
+
+    settings = Settings(_env_file=None, database_url=database_url)
+
+    assert settings.database_url == database_url
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    [
+        "postgresql+psycopg://foundry:secret@127.0.0.1/automation_foundry",
+        "postgresql+asyncpg://foundry:secret@192.168.1.20/automation_foundry",
+        "mysql+aiomysql://foundry:secret@127.0.0.1/automation_foundry",
+    ],
+)
+def test_database_rejects_unsupported_or_non_loopback_urls(database_url: str) -> None:
+    with pytest.raises(ValidationError, match="database_url|loopback"):
+        Settings(_env_file=None, database_url=database_url)
+
+
+def test_database_pool_limits_are_validated() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, database_pool_size=0)
+
+
+def test_health_capacity_thresholds_must_be_ordered() -> None:
+    with pytest.raises(ValidationError, match="warning threshold"):
+        Settings(
+            _env_file=None,
+            health_warning_percent=95,
+            health_critical_percent=90,
+        )
+
+
+def test_health_alert_thresholds_are_bounded() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, health_alert_failure_threshold=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, health_alert_recovery_threshold=101)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, celery_health_tick_seconds=9)
+
+
+def test_runtime_timeouts_are_bounded() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, runtime_startup_timeout_seconds=9)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, runtime_shutdown_timeout_seconds=4)
+
+    settings = Settings(
+        _env_file=None,
+        runtime_startup_timeout_seconds=10,
+        runtime_shutdown_timeout_seconds=5,
+    )
+
+    assert settings.runtime_startup_timeout_seconds == 10
+    assert settings.runtime_shutdown_timeout_seconds == 5

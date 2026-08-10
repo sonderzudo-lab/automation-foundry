@@ -234,6 +234,7 @@ async def test_schedule_cannot_enable_under_automation_safety_blocks(
         session,
         automation=automation,
         active=True,
+        actor="local-owner",
         reason="maintenance",
     )
 
@@ -249,6 +250,7 @@ async def test_schedule_cannot_enable_under_automation_safety_blocks(
         session,
         automation=automation,
         active=False,
+        actor="local-owner",
         reason="maintenance complete",
     )
     automation.enabled = False

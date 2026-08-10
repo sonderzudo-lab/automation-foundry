@@ -60,17 +60,26 @@ def _require_reason(reason: str) -> str:
     return normalized
 
 
+def _require_actor(actor: str) -> str:
+    normalized = actor.strip()
+    if not normalized:
+        raise ValueError("actor must not be empty")
+    return normalized
+
+
 async def set_automation_kill_switch(
     session: AsyncSession,
     *,
     automation: Automation,
     active: bool,
+    actor: str,
     reason: str,
 ) -> ControlChangeResult:
     """Set an automation kill switch idempotently and append audit evidence."""
     if automation.id is None:
         raise ValueError("automation must be persisted before changing kill switch")
     reason = _require_reason(reason)
+    actor = _require_actor(actor)
     current = await session.scalar(
         select(Automation.kill_switch_active).where(Automation.id == automation.id)
     )
@@ -89,6 +98,7 @@ async def set_automation_kill_switch(
             if active
             else ControlEventType.KILL_SWITCH_DISABLED.value
         ),
+        actor=actor,
         reason=reason,
     )
     session.add(event)

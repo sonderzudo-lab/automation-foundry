@@ -86,6 +86,28 @@ class QueueClass(StrEnum):
     IO = "io"
 
 
+class DispatchStatus(StrEnum):
+    """Durable broker-delivery states for one run."""
+
+    PENDING = "pending"
+    PUBLISHED = "published"
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class DispatchEventType(StrEnum):
+    """Append-only evidence emitted while delivering one run."""
+
+    PREPARED = "prepared"
+    PUBLISH_SUCCEEDED = "publish_succeeded"
+    PUBLISH_FAILED = "publish_failed"
+    CLAIMED = "claimed"
+    LEASE_RECLAIMED = "lease_reclaimed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class ControlEventType(StrEnum):
     """Audited operator controls supported by the local run kernel."""
 
@@ -125,6 +147,35 @@ class ScheduleEventType(StrEnum):
     CREATED = "created"
     ENABLED = "enabled"
     DISABLED = "disabled"
+
+
+class ScheduleOccurrenceStatus(StrEnum):
+    """Durable outcomes for one expected schedule occurrence."""
+
+    PENDING = "pending"
+    PUBLISHED = "published"
+    SKIPPED = "skipped"
+
+
+class ExperimentStatus(StrEnum):
+    """Audited lifecycle states for a measurable experiment."""
+
+    DRAFT = "draft"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class ExperimentEventType(StrEnum):
+    """Append-only experiment lifecycle events."""
+
+    CREATED = "created"
+    STARTED = "started"
+    PAUSED = "paused"
+    RESUMED = "resumed"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
 
 
 class MetricKind(StrEnum):
@@ -177,10 +228,20 @@ _RUN_STATUS_SQL = (
 )
 _STEP_RUN_STATUS_SQL = "'queued', 'running', 'succeeded', 'failed', 'cancelled'"
 _QUEUE_CLASS_SQL = "'gpu', 'cpu', 'io'"
+_DISPATCH_STATUS_SQL = "'pending', 'published', 'claimed', 'completed', 'failed'"
+_DISPATCH_EVENT_TYPE_SQL = (
+    "'prepared', 'publish_succeeded', 'publish_failed', 'claimed', "
+    "'lease_reclaimed', 'completed', 'failed'"
+)
 _APPROVAL_STATUS_SQL = "'pending', 'approved', 'rejected', 'cancelled'"
 _ARTIFACT_SENSITIVITY_SQL = "'public', 'internal', 'confidential', 'restricted'"
 _SCHEDULE_STATUS_SQL = "'disabled', 'enabled'"
 _SCHEDULE_EVENT_TYPE_SQL = "'created', 'enabled', 'disabled'"
+_SCHEDULE_OCCURRENCE_STATUS_SQL = "'pending', 'published', 'skipped'"
+_EXPERIMENT_STATUS_SQL = "'draft', 'running', 'paused', 'completed', 'cancelled'"
+_EXPERIMENT_EVENT_TYPE_SQL = (
+    "'created', 'started', 'paused', 'resumed', 'completed', 'cancelled'"
+)
 _METRIC_KIND_SQL = "'counter', 'gauge', 'duration', 'ratio', 'currency'"
 _LEDGER_ENTRY_TYPE_SQL = "'cost', 'revenue', 'attributed_value'"
 _ALERT_SEVERITY_SQL = "'info', 'warning', 'error', 'critical'"
@@ -188,6 +249,7 @@ _ALERT_STATUS_SQL = "'open', 'acknowledged', 'resolved'"
 _ALERT_EVENT_TYPE_SQL = (
     "'opened', 'occurred', 'reopened', 'acknowledged', 'resolved'"
 )
+_HEALTH_STATUS_SQL = "'pass', 'degraded', 'fail', 'skip'"
 _CONTROL_EVENT_TYPE_SQL = (
     "'kill_switch_enabled', 'kill_switch_disabled', 'cancellation_requested'"
 )
@@ -227,6 +289,11 @@ class Automation(Base):
         back_populates="automation",
         order_by="Schedule.id",
     )
+    experiments: Mapped[list[Experiment]] = relationship(
+        "Experiment",
+        back_populates="automation",
+        order_by="Experiment.id",
+    )
     metric_points: Mapped[list[MetricPoint]] = relationship(
         "MetricPoint",
         back_populates="automation",
@@ -254,6 +321,7 @@ class Run(Base):
             "idempotency_key",
             name="uq_runs_automation_idempotency_key",
         ),
+        UniqueConstraint("retry_of_run_id", name="uq_runs_retry_of_run_id"),
         CheckConstraint(f"status IN ({_RUN_STATUS_SQL})", name="ck_runs_status"),
         Index("ix_runs_status_queued_at", "status", "queued_at"),
     )
@@ -262,6 +330,16 @@ class Run(Base):
     automation_id: Mapped[int] = mapped_column(
         ForeignKey("automations.id", ondelete="RESTRICT"),
         nullable=False,
+    )
+    retry_of_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    retry_requested_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    retry_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    experiment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("experiments.id", ondelete="RESTRICT"),
+        nullable=True,
     )
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     trigger: Mapped[str] = mapped_column(String(50), nullable=False, default="manual")
@@ -283,10 +361,19 @@ class Run(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     automation: Mapped[Automation] = relationship("Automation", back_populates="runs")
+    experiment: Mapped[Experiment | None] = relationship(
+        "Experiment",
+        back_populates="runs",
+    )
     transitions: Mapped[list[RunTransition]] = relationship(
         "RunTransition",
         back_populates="run",
         order_by="RunTransition.id",
+    )
+    dispatch: Mapped[RunDispatch | None] = relationship(
+        "RunDispatch",
+        back_populates="run",
+        uselist=False,
     )
     step_runs: Mapped[list[StepRun]] = relationship(
         "StepRun",
@@ -353,6 +440,94 @@ class RunTransition(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     run: Mapped[Run] = relationship("Run", back_populates="transitions")
+
+
+class RunDispatch(Base):
+    """Durable delivery record for a run sent through the broker."""
+
+    __tablename__ = "run_dispatches"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_run_dispatches_run_id"),
+        UniqueConstraint("delivery_id", name="uq_run_dispatches_delivery_id"),
+        CheckConstraint(f"queue IN ({_QUEUE_CLASS_SQL})", name="ck_run_dispatches_queue"),
+        CheckConstraint(
+            f"status IN ({_DISPATCH_STATUS_SQL})",
+            name="ck_run_dispatches_status",
+        ),
+        CheckConstraint(
+            "publish_attempts >= 0",
+            name="ck_run_dispatches_publish_attempts_nonnegative",
+        ),
+        Index("ix_run_dispatches_status_lease", "status", "lease_expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    queue: Mapped[str] = mapped_column(String(20), nullable=False)
+    task_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    delivery_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(30), nullable=False, default=DispatchStatus.PENDING.value
+    )
+    publish_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    claimed_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    prepared_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    run: Mapped[Run] = relationship("Run", back_populates="dispatch")
+    events: Mapped[list[RunDispatchEvent]] = relationship(
+        "RunDispatchEvent",
+        back_populates="dispatch",
+        order_by="RunDispatchEvent.id",
+    )
+
+
+class RunDispatchEvent(Base):
+    """Append-only audit event for a durable dispatch."""
+
+    __tablename__ = "run_dispatch_events"
+    __table_args__ = (
+        CheckConstraint(
+            f"event_type IN ({_DISPATCH_EVENT_TYPE_SQL})",
+            name="ck_run_dispatch_events_event_type",
+        ),
+        CheckConstraint(
+            f"from_status IS NULL OR from_status IN ({_DISPATCH_STATUS_SQL})",
+            name="ck_run_dispatch_events_from_status",
+        ),
+        CheckConstraint(
+            f"to_status IN ({_DISPATCH_STATUS_SQL})",
+            name="ck_run_dispatch_events_to_status",
+        ),
+        Index(
+            "ix_run_dispatch_events_dispatch_occurred",
+            "dispatch_id",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dispatch_id: Mapped[int] = mapped_column(
+        ForeignKey("run_dispatches.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    actor: Mapped[str] = mapped_column(String(200), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    dispatch: Mapped[RunDispatch] = relationship("RunDispatch", back_populates="events")
 
 
 class StepRun(Base):
@@ -584,6 +759,11 @@ class Schedule(Base):
         back_populates="schedule",
         order_by="ScheduleEvent.id",
     )
+    occurrences: Mapped[list[ScheduleOccurrence]] = relationship(
+        "ScheduleOccurrence",
+        back_populates="schedule",
+        order_by="ScheduleOccurrence.scheduled_for",
+    )
 
 
 class ScheduleEvent(Base):
@@ -637,6 +817,165 @@ class ScheduleEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
     schedule: Mapped[Schedule] = relationship("Schedule", back_populates="events")
+
+
+class ScheduleOccurrence(Base):
+    """One immutable scheduled instant and its durable dispatch outcome."""
+
+    __tablename__ = "schedule_occurrences"
+    __table_args__ = (
+        UniqueConstraint(
+            "schedule_id",
+            "scheduled_for",
+            name="uq_schedule_occurrences_schedule_time",
+        ),
+        UniqueConstraint("run_id", name="uq_schedule_occurrences_run_id"),
+        UniqueConstraint("dispatch_id", name="uq_schedule_occurrences_dispatch_id"),
+        CheckConstraint(
+            f"status IN ({_SCHEDULE_OCCURRENCE_STATUS_SQL})",
+            name="ck_schedule_occurrences_status",
+        ),
+        CheckConstraint(
+            "(status = 'skipped' AND run_id IS NULL AND dispatch_id IS NULL "
+            "AND reason_code IS NOT NULL) OR "
+            "(status IN ('pending', 'published') AND run_id IS NOT NULL "
+            "AND dispatch_id IS NOT NULL AND reason_code IS NULL)",
+            name="ck_schedule_occurrences_outcome",
+        ),
+        Index("ix_schedule_occurrences_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    schedule_id: Mapped[int] = mapped_column(
+        ForeignKey("schedules.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    dispatch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("run_dispatches.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    schedule: Mapped[Schedule] = relationship("Schedule", back_populates="occurrences")
+    run: Mapped[Run | None] = relationship("Run")
+    dispatch: Mapped[RunDispatch | None] = relationship("RunDispatch")
+
+
+class Experiment(Base):
+    """One measurable hypothesis comparing a control and candidate variant."""
+
+    __tablename__ = "experiments"
+    __table_args__ = (
+        UniqueConstraint(
+            "automation_id",
+            "key",
+            name="uq_experiments_automation_key",
+        ),
+        CheckConstraint(
+            f"status IN ({_EXPERIMENT_STATUS_SQL})",
+            name="ck_experiments_status",
+        ),
+        CheckConstraint(
+            "control_variant <> candidate_variant",
+            name="ck_experiments_distinct_variants",
+        ),
+        Index("ix_experiments_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    automation_id: Mapped[int] = mapped_column(
+        ForeignKey("automations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    key: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    hypothesis: Mapped[str] = mapped_column(Text, nullable=False)
+    primary_metric: Mapped[str] = mapped_column(String(200), nullable=False)
+    primary_metric_unit: Mapped[str] = mapped_column(String(30), nullable=False)
+    control_variant: Mapped[str] = mapped_column(String(100), nullable=False)
+    candidate_variant: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default=ExperimentStatus.DRAFT.value,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    automation: Mapped[Automation] = relationship(
+        "Automation",
+        back_populates="experiments",
+    )
+    events: Mapped[list[ExperimentEvent]] = relationship(
+        "ExperimentEvent",
+        back_populates="experiment",
+        order_by="ExperimentEvent.id",
+    )
+    runs: Mapped[list[Run]] = relationship(
+        "Run",
+        back_populates="experiment",
+        order_by="Run.id",
+    )
+
+
+class ExperimentEvent(Base):
+    """Append-only evidence for experiment creation and state transitions."""
+
+    __tablename__ = "experiment_events"
+    __table_args__ = (
+        CheckConstraint(
+            f"event_type IN ({_EXPERIMENT_EVENT_TYPE_SQL})",
+            name="ck_experiment_events_type",
+        ),
+        CheckConstraint(
+            f"from_status IS NULL OR from_status IN ({_EXPERIMENT_STATUS_SQL})",
+            name="ck_experiment_events_from_status",
+        ),
+        CheckConstraint(
+            f"to_status IN ({_EXPERIMENT_STATUS_SQL})",
+            name="ck_experiment_events_to_status",
+        ),
+        CheckConstraint(
+            "(event_type = 'created' AND from_status IS NULL AND to_status = 'draft') OR "
+            "(event_type = 'started' AND from_status = 'draft' AND to_status = 'running') OR "
+            "(event_type = 'paused' AND from_status = 'running' AND to_status = 'paused') OR "
+            "(event_type = 'resumed' AND from_status = 'paused' AND to_status = 'running') OR "
+            "(event_type = 'completed' AND from_status IN ('running', 'paused') AND to_status = 'completed') OR "
+            "(event_type = 'cancelled' AND from_status IN ('draft', 'running', 'paused') AND to_status = 'cancelled')",
+            name="ck_experiment_events_transition",
+        ),
+        Index(
+            "ix_experiment_events_experiment_occurred",
+            "experiment_id",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    experiment_id: Mapped[int] = mapped_column(
+        ForeignKey("experiments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    actor: Mapped[str] = mapped_column(String(200), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    experiment: Mapped[Experiment] = relationship(
+        "Experiment",
+        back_populates="events",
+    )
 
 
 class MetricPoint(Base):
@@ -1017,6 +1356,44 @@ class AlertEvent(Base):
 Alert = PlatformAlert
 
 
+class HealthCondition(Base):
+    """Durable consecutive-observation state for one allowlisted health check."""
+
+    __tablename__ = "health_conditions"
+    __table_args__ = (
+        CheckConstraint(
+            f"last_status IN ({_HEALTH_STATUS_SQL})",
+            name="ck_health_conditions_status",
+        ),
+        CheckConstraint(
+            "consecutive_unhealthy >= 0 AND consecutive_healthy >= 0",
+            name="ck_health_conditions_nonnegative_counts",
+        ),
+        CheckConstraint(
+            "consecutive_unhealthy = 0 OR consecutive_healthy = 0",
+            name="ck_health_conditions_exclusive_counts",
+        ),
+        CheckConstraint(
+            "(consecutive_unhealthy = 0 AND first_unhealthy_at IS NULL) OR "
+            "(consecutive_unhealthy > 0 AND first_unhealthy_at IS NOT NULL)",
+            name="ck_health_conditions_unhealthy_timestamp",
+        ),
+        Index(
+            "ix_health_conditions_status_observed",
+            "last_status",
+            "last_observed_at",
+        ),
+    )
+
+    check_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    consecutive_unhealthy: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    consecutive_healthy: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    first_unhealthy_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+
 class ControlEvent(Base):
     """Append-only audit evidence for operator safety controls."""
 
@@ -1047,6 +1424,7 @@ class ControlEvent(Base):
         nullable=True,
     )
     event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(200), nullable=True)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
@@ -1083,6 +1461,7 @@ class Approval(Base):
     action: Mapped[str] = mapped_column(String(100), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     payload_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    review_payload: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(
         String(30),
         nullable=False,

@@ -19,6 +19,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "alembic>=1.13",
     "aiosqlite>=0.20",         # driver async para SQLite (dev/default)
+    "asyncpg>=0.30,<1",        # driver async PostgreSQL (runtime concorrente)
     "openai>=1.30",            # cliente HTTP OpenAI-compatível → aponta para Ollama local
     "pydantic-settings>=2.2",
     "python-dotenv>=1.0",
@@ -26,6 +27,7 @@ dependencies = [
     "httpx>=0.27",
     "tenacity>=8.3",           # retry com backoff exponencial
     "structlog>=24.1",         # log estruturado
+    "psutil>=7.0,<8",          # saúde local de CPU, memória e disco
     "python-multipart>=0.0.9", # uploads de arquivo no FastAPI
     "jinja2>=3.1",             # templates HTMX
     "aiofiles>=23.2",
@@ -77,6 +79,9 @@ packages = ["src"]
 
 [project.scripts]
 automation-foundry = "src.cli:main"
+automation-foundry-worker = "src.worker_cli:main"
+automation-foundry-beat = "src.beat_cli:main"
+automation-foundry-runtime = "src.runtime_cli:main"
 
 # ── Ruff (linter/formatter) ──────────────────────────────────────────────────
 [tool.ruff]
@@ -96,6 +101,8 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "gpu: testes que requerem GPU real (pule com -m 'not gpu' em CI)",
+    "postgresql: integração que requer TEST_POSTGRESQL_URL para banco descartável",
+    "redis: integração que requer TEST_REDIS_URL para broker descartável",
 ]
 
 # ── Mypy ──────────────────────────────────────────────────────────────────────

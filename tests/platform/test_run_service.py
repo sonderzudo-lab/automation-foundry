@@ -188,3 +188,78 @@ async def test_reused_idempotency_key_with_different_input_is_rejected(
             idempotency_key="manual:example:conflict",
             input_payload={"value": 2},
         )
+
+
+async def test_retry_run_requires_retryable_failure_and_records_lineage(
+    session: AsyncSession,
+) -> None:
+    automation = await _automation(session)
+    source = (
+        await get_or_create_run(
+            session,
+            automation=automation,
+            idempotency_key="manual:example:retry-source",
+        )
+    ).run
+    await transition_run(session, source, RunStatus.RUNNING)
+    await transition_run(
+        session,
+        source,
+        RunStatus.FAILED,
+        error={"code": "TEMPORARY_FAILURE", "retryable": True},
+    )
+    retry = await get_or_create_run(
+        session,
+        automation=automation,
+        idempotency_key="manual:example:retry-001",
+        trigger="retry",
+        retry_of_run_id=source.id,
+        retry_requested_by="local-owner",
+        retry_reason="temporary dependency recovered",
+    )
+    replay = await get_or_create_run(
+        session,
+        automation=automation,
+        idempotency_key="manual:example:retry-001",
+        trigger="retry",
+        retry_of_run_id=source.id,
+        retry_requested_by="local-owner",
+        retry_reason="temporary dependency recovered",
+    )
+
+    assert retry.created is True
+    assert replay.created is False
+    assert retry.run.retry_of_run_id == source.id
+    assert retry.run.retry_requested_by == "local-owner"
+    assert retry.run.retry_reason == "temporary dependency recovered"
+
+
+async def test_retry_run_fails_closed_for_ineligible_source(
+    session: AsyncSession,
+) -> None:
+    automation = await _automation(session)
+    source = (
+        await get_or_create_run(
+            session,
+            automation=automation,
+            idempotency_key="manual:example:not-retryable",
+        )
+    ).run
+    await transition_run(session, source, RunStatus.RUNNING)
+    await transition_run(
+        session,
+        source,
+        RunStatus.FAILED,
+        error={"code": "PERMANENT_FAILURE", "retryable": False},
+    )
+
+    with pytest.raises(InvalidRunTransitionError, match="not marked retryable"):
+        await get_or_create_run(
+            session,
+            automation=automation,
+            idempotency_key="manual:example:blocked-retry",
+            trigger="retry",
+            retry_of_run_id=source.id,
+            retry_requested_by="local-owner",
+            retry_reason="must remain blocked",
+        )

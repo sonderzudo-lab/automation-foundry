@@ -20,12 +20,14 @@ from urllib.parse import urlsplit
 from src.core.config import Settings, get_settings
 
 if TYPE_CHECKING:
+    from src.platform.dispatch_service import DispatchPreparationResult
     from src.platform.example_run import ExampleRunResult
-    from src.platform.models import Alert, Schedule
+    from src.platform.models import Alert, Experiment, Schedule
 
 CheckStatus = Literal["pass", "fail", "skip"]
 _REDIS_SCHEMES = frozenset({"redis", "rediss"})
 _OLLAMA_SCHEMES = frozenset({"http", "https"})
+_POSTGRESQL_SCHEMES = frozenset({"postgresql+asyncpg"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +77,17 @@ class ScheduleCommandResult:
     automation_id: int
     status: str
     next_run_at: str | None
+    changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentCommandResult:
+    """Redacted result of one local experiment command."""
+
+    experiment_id: int
+    automation_id: int
+    key: str
+    status: str
     changed: bool
 
 
@@ -166,13 +179,28 @@ def _check_database(settings: Settings) -> CheckResult:
     if url.startswith("sqlite+aiosqlite:///"):
         return CheckResult("database", "pass", "SQLite local (processo único)")
 
-    if url.startswith("postgresql+"):
+    if url.startswith("postgresql+asyncpg://"):
         endpoint = _network_endpoint(url, 5432)
         if endpoint is not None and _is_loopback_host(endpoint[0]):
             return CheckResult("database", "pass", "PostgreSQL em loopback")
         return CheckResult("database", "fail", "PostgreSQL deve usar loopback")
 
     return CheckResult("database", "fail", "driver de banco não suportado")
+
+
+def _check_database_service(settings: Settings) -> CheckResult:
+    if settings.database_url.startswith("sqlite+aiosqlite:///"):
+        return CheckResult(
+            "database_service",
+            "skip",
+            "SQLite local não requer serviço",
+        )
+    return _check_tcp_service(
+        "database_service",
+        settings.database_url,
+        5432,
+        _POSTGRESQL_SCHEMES,
+    )
 
 
 def _check_loopback_url(
@@ -236,6 +264,7 @@ def run_doctor(settings: Settings, *, check_services: bool = False) -> list[Chec
     if check_services:
         results.extend(
             [
+                _check_database_service(settings),
                 _check_tcp_service(
                     "redis_service",
                     settings.redis_url,
@@ -253,6 +282,11 @@ def run_doctor(settings: Settings, *, check_services: bool = False) -> list[Chec
     else:
         results.extend(
             [
+                CheckResult(
+                    "database_service",
+                    "skip",
+                    "use --services para verificar PostgreSQL",
+                ),
                 CheckResult("redis_service", "skip", "use --services para verificar"),
                 CheckResult("ollama_service", "skip", "use --services para verificar"),
             ]
@@ -328,6 +362,13 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emite o resultado estruturado em JSON.",
     )
+    enqueue_run = subparsers.add_parser(
+        "enqueue-run",
+        help="Prepara uma run durável e a entrega à fila declarada do executor.",
+    )
+    enqueue_run.add_argument("--automation-slug", required=True)
+    enqueue_run.add_argument("--idempotency-key", required=True)
+    enqueue_run.add_argument("--json", action="store_true")
     kill_switch = subparsers.add_parser(
         "kill-switch",
         help="Ativa ou desativa o kill switch de uma automação local.",
@@ -336,6 +377,7 @@ def _build_parser() -> argparse.ArgumentParser:
     kill_switch_state = kill_switch.add_mutually_exclusive_group(required=True)
     kill_switch_state.add_argument("--enable", action="store_true")
     kill_switch_state.add_argument("--disable", action="store_true")
+    kill_switch.add_argument("--actor", required=True)
     kill_switch.add_argument("--reason", required=True)
     kill_switch.add_argument("--json", action="store_true")
 
@@ -355,6 +397,7 @@ def _build_parser() -> argparse.ArgumentParser:
     request_gate.add_argument("--idempotency-key", required=True)
     request_gate.add_argument("--action", required=True)
     request_gate.add_argument("--summary", required=True)
+    request_gate.add_argument("--review", required=True, help="JSON com 1-8 campos seguros para revisão")
     request_gate.add_argument("--json", action="store_true")
 
     decide_gate = subparsers.add_parser(
@@ -422,6 +465,36 @@ def _build_parser() -> argparse.ArgumentParser:
     set_schedule.add_argument("--actor", required=True)
     set_schedule.add_argument("--reason", required=True)
     set_schedule.add_argument("--json", action="store_true")
+
+    create_experiment = subparsers.add_parser(
+        "create-experiment",
+        help="Registra uma hipótese mensurável inicialmente em draft.",
+    )
+    create_experiment.add_argument("--automation-slug", required=True)
+    create_experiment.add_argument("--key", required=True)
+    create_experiment.add_argument("--name", required=True)
+    create_experiment.add_argument("--hypothesis", required=True)
+    create_experiment.add_argument("--primary-metric", required=True)
+    create_experiment.add_argument("--unit", required=True)
+    create_experiment.add_argument("--control", required=True)
+    create_experiment.add_argument("--candidate", required=True)
+    create_experiment.add_argument("--actor", required=True)
+    create_experiment.add_argument("--reason", required=True)
+    create_experiment.add_argument("--json", action="store_true")
+
+    set_experiment = subparsers.add_parser(
+        "set-experiment",
+        help="Altera o estado de um experimento com auditoria.",
+    )
+    set_experiment.add_argument("--experiment-id", required=True, type=int)
+    experiment_state = set_experiment.add_mutually_exclusive_group(required=True)
+    experiment_state.add_argument("--start", action="store_true")
+    experiment_state.add_argument("--pause", action="store_true")
+    experiment_state.add_argument("--complete", action="store_true")
+    experiment_state.add_argument("--cancel", action="store_true")
+    set_experiment.add_argument("--actor", required=True)
+    set_experiment.add_argument("--reason", required=True)
+    set_experiment.add_argument("--json", action="store_true")
 
     record_metric = subparsers.add_parser(
         "record-metric",
@@ -552,6 +625,7 @@ async def _set_kill_switch_command(
     automation_slug: str,
     *,
     active: bool,
+    actor: str,
     reason: str,
 ) -> ControlCommandResult:
     from sqlalchemy import select
@@ -571,6 +645,7 @@ async def _set_kill_switch_command(
                 session,
                 automation=automation,
                 active=active,
+                actor=actor,
                 reason=reason,
             )
             await session.commit()
@@ -619,12 +694,24 @@ def _render_control_result(result: ControlCommandResult, *, as_json: bool) -> No
     print(f"{result.action} no alvo {result.target_id}: {outcome}")
 
 
+def _parse_review_payload(raw_review: str) -> dict[str, str]:
+    """Parse the explicit, safe projection shown before an approval decision."""
+    try:
+        parsed = json.loads(raw_review)
+    except json.JSONDecodeError as exc:
+        raise ValueError("review must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("review must be a JSON object")
+    return parsed
+
+
 async def _request_approval_command(
     run_id: int,
     *,
     idempotency_key: str,
     action: str,
     summary: str,
+    review: str,
 ) -> ApprovalCommandResult:
     from src.core.database import AsyncSessionLocal
     from src.platform.approval_service import request_approval
@@ -642,6 +729,7 @@ async def _request_approval_command(
                 action=action,
                 summary=summary,
                 input_payload=run.input_payload,
+                review_payload=_parse_review_payload(review),
             )
             await session.commit()
         except Exception:
@@ -873,6 +961,143 @@ def _render_schedule_result(result: ScheduleCommandResult, *, as_json: bool) -> 
         f"schedule {result.schedule_id}: {result.status} ({outcome}); "
         f"próxima execução UTC: {next_run}"
     )
+
+
+async def _enqueue_run_command(
+    automation_slug: str,
+    idempotency_key: str,
+) -> DispatchPreparationResult:
+    from src.core.celery_app import publish_dispatch_message
+    from src.core.database import AsyncSessionLocal
+    from src.platform.dispatch_service import publish_registered_dispatch
+
+    async with AsyncSessionLocal() as session:
+        return await publish_registered_dispatch(
+            session,
+            slug=automation_slug,
+            idempotency_key=idempotency_key,
+            publish=publish_dispatch_message,
+        )
+
+
+def _render_dispatch_result(
+    result: DispatchPreparationResult,
+    *,
+    as_json: bool,
+) -> None:
+    payload = asdict(result)
+    payload["queue"] = result.queue.value
+    if as_json:
+        print(json.dumps({"ok": True, **payload}, ensure_ascii=False, indent=2))
+        return
+    replay = "existente" if not result.created else "criado"
+    print(
+        f"Dispatch {result.dispatch_id} {replay}; run {result.run_id}; "
+        f"fila {result.queue.value}; delivery {result.delivery_id}"
+    )
+
+
+def _experiment_command_result(
+    experiment: Experiment,
+    *,
+    changed: bool,
+) -> ExperimentCommandResult:
+    return ExperimentCommandResult(
+        experiment_id=experiment.id,
+        automation_id=experiment.automation_id,
+        key=experiment.key,
+        status=experiment.status,
+        changed=changed,
+    )
+
+
+async def _create_experiment_command(
+    automation_slug: str,
+    *,
+    key: str,
+    name: str,
+    hypothesis: str,
+    primary_metric: str,
+    unit: str,
+    control: str,
+    candidate: str,
+    actor: str,
+    reason: str,
+) -> ExperimentCommandResult:
+    from sqlalchemy import select
+
+    from src.core.database import AsyncSessionLocal
+    from src.platform.experiment_service import get_or_create_experiment
+    from src.platform.models import Automation
+
+    async with AsyncSessionLocal() as session:
+        try:
+            automation = await session.scalar(
+                select(Automation).where(Automation.slug == automation_slug.strip())
+            )
+            if automation is None:
+                raise ValueError("automation does not exist")
+            creation = await get_or_create_experiment(
+                session,
+                automation=automation,
+                key=key,
+                name=name,
+                hypothesis=hypothesis,
+                primary_metric=primary_metric,
+                primary_metric_unit=unit,
+                control_variant=control,
+                candidate_variant=candidate,
+                actor=actor,
+                reason=reason,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return _experiment_command_result(creation.experiment, changed=creation.created)
+
+
+async def _set_experiment_command(
+    experiment_id: int,
+    *,
+    target: str,
+    actor: str,
+    reason: str,
+) -> ExperimentCommandResult:
+    from src.core.database import AsyncSessionLocal
+    from src.platform.experiment_service import transition_experiment
+    from src.platform.models import Experiment, ExperimentStatus
+
+    async with AsyncSessionLocal() as session:
+        try:
+            experiment = await session.get(Experiment, experiment_id)
+            if experiment is None:
+                raise ValueError("experiment does not exist")
+            change = await transition_experiment(
+                session,
+                experiment=experiment,
+                target=ExperimentStatus(target),
+                actor=actor,
+                reason=reason,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+    return _experiment_command_result(change.experiment, changed=change.changed)
+
+
+def _render_experiment_result(
+    result: ExperimentCommandResult,
+    *,
+    as_json: bool,
+) -> None:
+    payload = asdict(result)
+    if as_json:
+        print(json.dumps({"ok": True, **payload}, ensure_ascii=False, indent=2))
+        return
+    outcome = "alterado" if result.changed else "sem alteração (idempotente)"
+    print(f"experiment {result.experiment_id} ({result.key}): {result.status} ({outcome})")
 
 
 def _parse_observed_at(value: str | None) -> datetime | None:
@@ -1193,9 +1418,29 @@ def _render_alert_result(result: AlertCommandResult, *, as_json: bool) -> None:
 
 def _serve_dashboard_command() -> None:
     """Run the operational dashboard with a validated loopback binding."""
+    import os
+
     import uvicorn
 
     settings = get_settings()
+    from src.runtime.cooperative import STOP_EVENT_ENV, start_stop_event_watcher
+
+    if os.getenv(STOP_EVENT_ENV):
+        server = uvicorn.Server(
+            uvicorn.Config(
+                "src.dashboard.main:app",
+                host=settings.dashboard_host,
+                port=settings.dashboard_port,
+                log_level=settings.log_level.lower(),
+            )
+        )
+        watcher = start_stop_event_watcher(lambda: setattr(server, "should_exit", True))
+        try:
+            server.run()
+        finally:
+            if watcher is not None:
+                watcher.close()
+        return
     uvicorn.run(
         "src.dashboard.main:app",
         host=settings.dashboard_host,
@@ -1259,12 +1504,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         _render_example_result(example_result, as_json=bool(args.json))
         return 0
 
+    if args.command == "enqueue-run":
+        try:
+            dispatch_result = asyncio.run(
+                _enqueue_run_command(args.automation_slug, args.idempotency_key)
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "enqueue-run", exc, as_json=bool(args.json)
+            )
+        _render_dispatch_result(dispatch_result, as_json=bool(args.json))
+        return 0
+
     if args.command == "kill-switch":
         try:
             control_result = asyncio.run(
                 _set_kill_switch_command(
                     args.automation_slug,
                     active=bool(args.enable),
+                    actor=args.actor,
                     reason=args.reason,
                 )
             )
@@ -1294,6 +1552,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     idempotency_key=args.idempotency_key,
                     action=args.action,
                     summary=args.summary,
+                    review=args.review,
                 )
             )
         except Exception as exc:
@@ -1389,6 +1648,59 @@ def main(argv: Sequence[str] | None = None) -> int:
                 as_json=bool(args.json),
             )
         _render_schedule_result(schedule_change, as_json=bool(args.json))
+        return 0
+
+    if args.command == "create-experiment":
+        try:
+            experiment_result = asyncio.run(
+                _create_experiment_command(
+                    args.automation_slug,
+                    key=args.key,
+                    name=args.name,
+                    hypothesis=args.hypothesis,
+                    primary_metric=args.primary_metric,
+                    unit=args.unit,
+                    control=args.control,
+                    candidate=args.candidate,
+                    actor=args.actor,
+                    reason=args.reason,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "create-experiment",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_experiment_result(experiment_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "set-experiment":
+        target = (
+            "running"
+            if args.start
+            else "paused"
+            if args.pause
+            else "completed"
+            if args.complete
+            else "cancelled"
+        )
+        try:
+            experiment_change = asyncio.run(
+                _set_experiment_command(
+                    args.experiment_id,
+                    target=target,
+                    actor=args.actor,
+                    reason=args.reason,
+                )
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "set-experiment",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_experiment_result(experiment_change, as_json=bool(args.json))
         return 0
 
     if args.command == "record-metric":

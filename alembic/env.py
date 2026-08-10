@@ -1,4 +1,4 @@
-"""Alembic environment for the shared platform schema."""
+"""Alembic environment for the shared platform and module schemas."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from sqlalchemy import Connection, pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
+from src.core import models as content_engine_models
 from src.core.config import settings
 from src.platform import models as platform_models
 
@@ -18,25 +19,41 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = platform_models.Base.metadata
-_PLATFORM_TABLES = frozenset(
+_MIGRATED_TABLES = frozenset(
     {
+        "ab_variants",
+        "alerts",
         "artifacts",
         "automations",
         "approval_events",
         "approvals",
+        "channels",
         "control_events",
+        "costs",
+        "experiment_events",
+        "experiments",
+        "jobs",
         "ledger_entries",
+        "metrics",
         "metric_points",
         "platform_alert_events",
         "platform_alerts",
         "runs",
         "run_transitions",
+        "run_dispatches",
+        "run_dispatch_events",
         "schedule_events",
+        "schedule_occurrences",
         "schedules",
         "step_runs",
         "step_run_transitions",
+        "topics",
+        "videos",
     }
 )
+
+if content_engine_models.Base.metadata is not target_metadata:
+    raise RuntimeError("Content Engine and platform models must share one metadata registry")
 
 
 def _include_object(
@@ -47,7 +64,7 @@ def _include_object(
     _compare_to: object | None,
 ) -> bool:
     if type_ == "table":
-        return name in _PLATFORM_TABLES
+        return name in _MIGRATED_TABLES
     return True
 
 

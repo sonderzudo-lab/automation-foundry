@@ -1,19 +1,19 @@
 # Estado real da implementação
 
-**Checkpoint:** 2026-07-23
+**Checkpoint:** 2026-08-10
 
-**Escopo:** Fase 1 e fatias locais verificáveis das Fases 2 e 3
+**Escopo:** Fase 1 e fatias locais verificáveis das Fases 2, 3 e 5
 
 **Branch:** `chore/project-skills`
 
 ## Veredito
 
-O repositório possui uma base parcial e testável do Content Engine, mas ainda não possui o
-runtime completo da plataforma. A geração de roteiro A1, a configuração, a sessão de banco e os
-modelos SQLAlchemy orientados a conteúdo têm código real. O kernel compartilhado persiste
-`Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `LedgerEntry`, `Alert`, controles de execução e cada transição de estado, e
-executa um único exemplo no-op em processo local. Celery, control plane e as demais etapas de
-automação são placeholders ou itens planejados.
+O repositório possui um kernel local parcial, testável e observável e um supervisor Windows para o
+runtime compartilhado. A geração de roteiro A1, a configuração, o banco, o dispatch Celery, os
+schedules e o control plane inicial têm código real. O kernel compartilhado persiste `Automation`,
+`Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `LedgerEntry`, `Alert`, controles
+de execução e cada transição de estado. O dashboard permite controles locais limitados e mostra um
+snapshot redigido da saúde. As demais etapas dos módulos continuam placeholders ou planejadas.
 
 ## Classificação por área
 
@@ -21,23 +21,23 @@ automação são placeholders ou itens planejados.
 | --- | --- | --- |
 | Identidade técnica | Implementado | `pyproject.toml`, `.env.example`, `src/core/config.py` e `docker-compose.yml` usam `automation-foundry` nos identificadores ativos. “Content Engine” permanece como nome legítimo do módulo. |
 | Configuração | Parcial | `src/core/config.py` implementa settings tipados, leitura de `.env` e defaults locais. Campos de credenciais existem, mas criptografia, validação operacional e adapters consumidores ainda não existem. |
-| Banco e sessão | Parcial | `src/core/database.py` cria engine e sessão async com commit/rollback. O default de processo único é SQLite; o caminho PostgreSQL concorrente ainda não foi implementado nem validado. |
+| Banco e sessão | Implementado no caminho local atual | `src/core/database.py` cria engine e sessão async com commit/rollback. PostgreSQL usa `asyncpg`, pool limitado, pre-ping e timeouts de conexão/comando; somente URLs em loopback são aceitas. SQLite permanece como default sem `.env`, bootstrap de processo único e backend dos testes. O dispatch concorrente foi validado em PostgreSQL. |
 | Modelos de domínio | Parcial | `src/core/models.py` implementa `Channel`, `Video`, `Job`, `Metric`, `Cost`, `Topic`, `Alert` e `ABVariant`. O schema é específico do Content Engine e não contém os contratos genéricos da Fase 2. |
-| Kernel compartilhado | Parcial | `src/platform/models.py` implementa `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `LedgerEntry`, `Alert`, controles persistidos e históricos append-only. Approval liga run, ação e digest do payload, tem decisão imutável e só autoriza uma chave idempotente de task. Artifact registra metadados verificados de arquivos confinados ao storage local. Schedule nasce desabilitado, valida cron/timezone, calcula a próxima ocorrência e audita mudanças; ainda não dispara runs. MetricPoint registra observações decimais imutáveis, idempotentes e atribuíveis a automation/run/step, sem agregação automática. LedgerEntry registra custo, receita ou valor atribuível como observação decimal imutável e idempotente, com escopo, moeda, categoria, fonte, confiança opcional e timestamp explícitos; não paga, cobra nem transfere. Alert deduplica ocorrências, escala severidade, audita reconhecimento/resolução e reabre somente com ocorrência posterior; ainda não envia notificações. Proteção de corrida entre workers concorrentes ainda não existe. |
-| Migrations | Parcial | `alembic.ini`, `alembic/env.py` e nove revisions incrementais formam um caminho verificável para as quinze tabelas compartilhadas. `platform_alerts` evita colisão com `alerts` do Content Engine legado. As tabelas legadas permanecem deliberadamente fora dessa baseline. |
+| Kernel compartilhado | Parcial | `src/platform/models.py` implementa `Automation`, `Run`, `StepRun`, `RunDispatch`, `Approval`, `Artifact`, `Schedule`, `ScheduleOccurrence`, `MetricPoint`, `Experiment`, `LedgerEntry`, `Alert`, `HealthCondition`, controles persistidos e históricos append-only. Cada horário de schedule possui resultado `pending`, `published` ou `skipped`; dispatch possui identidade estável, tentativas de publicação e claim/lease. |
+| Migrations | Implementado no baseline atual | `alembic.ini`, `alembic/env.py` e dezessete revisions incrementais formam um caminho verificável para as tabelas compartilhadas e as oito tabelas legadas do Content Engine. `platform_alerts` evita colisão com `alerts`, e os roundtrips são testados. Evoluções futuras de schema ainda exigem novas migrations. |
 | Content Engine — A1 | Implementado | `src/pipeline/script_gen.py` contém geração em quatro chamadas, retry limitado, saneamento de saída e persistência local de roteiro/narração. `tests/pipeline/test_script_gen.py` cobre o comportamento com Ollama mockado. |
 | Content Engine — mídia e publicação | Placeholder | `src/pipeline/tts.py`, `visuals.py`, `captions.py`, `assembly.py` e `upload.py` estão vazios. Nenhuma publicação real foi implementada. |
-| Orquestração e filas | Parcial | `src/platform/task_runner.py` executa corrotinas em processo único com timeout, retries limitados, backoff exponencial e erros redigidos. Controles persistidos são consultados antes e depois da corrotina e entre tentativas; o wrapper não preempta código síncrono bloqueante. `src/core/celery_app.py` e `src/tasks/` continuam vazios. |
-| CLI operacional | Parcial | `src/cli.py` expõe diagnóstico, dashboard operacional, exemplo, controles, approvals, artifacts, schedules, `record-metric`, `record-ledger-entry`, `record-alert` e `set-alert`. O comando `dashboard` usa apenas host validado como loopback. Criação de schedule é sempre desabilitada; habilitar ou desabilitar exige actor e motivo. Métricas e valores financeiros entram como strings decimais. A saída do ledger omite categoria, fonte e chave idempotente; alertas não repetem o summary. A CLI local ainda não autentica criptograficamente o actor e não há comandos de retry ou operação de workers. |
-| Control plane | Parcial | `src/dashboard/main.py`, `service.py` e os templates implementam visão geral read-only e detalhe da run com evidências vinculadas. Cancelamento de run e rejeição de approval usam POST com token CSRF por processo, Host loopback, confirmação e motivo; a rejeição também exige actor. Os serviços do kernel preservam idempotência, decisão imutável e eventos auditáveis. Motivos, actors, payloads e summaries não voltam ao HTML. Aprovação positiva permanece deliberadamente ausente porque o payload protegido ainda não possui projeção de revisão segura; também não há start, retry, kill switch, health ou HTMX interativo. A identidade do actor local ainda não é autenticada. |
+| Orquestração e filas | Parcial | `src/core/celery_app.py` declara exclusivamente `gpu`, `cpu` e `io`, usa mensagens JSON persistentes, late ack, prefetch 1, publish retry limitado e timeouts configurados. `RunDispatch` protege a entrega e `ScheduleOccurrence` protege cada horário previsto. Beat publica ticks de schedule e health na fila IO. O entrypoint combina PID file e named mutex no Windows; uma segunda aquisição do mutex é recusada. |
+| CLI operacional | Parcial | `src/cli.py` expõe diagnóstico, dashboard operacional, execução inline, `enqueue-run`, controles, approvals, artifacts, schedules, métricas, ledger e alertas. `automation-foundry-runtime start/stop/status` opera a topologia fixa; os entrypoints de worker e Beat continuam disponíveis para diagnóstico. A CLI local ainda não autentica criptograficamente o actor. |
+| Control plane | Parcial | `src/dashboard/main.py`, `service.py` e os templates implementam visão geral, detalhe da run e saúde operacional redigida. O dashboard mostra experiments sem hipótese ou motivos privados e permite atribuir um disparo manual a um experiment `running`. Um registro fail-closed permite disparo e retry somente para executores declarados; por enquanto apenas o smoke local está registrado. Cancelamento, kill switch e approvals usam POST com CSRF, Host loopback e confirmação. Ainda não há atualização HTMX interativa. A identidade do actor local ainda não é autenticada. |
 | Inteligência | Placeholder | `src/intelligence/trends.py`, `competitors.py` e `similarity.py` estão vazios. |
 | Engajamento | Placeholder | `src/engagement/comments.py` está vazio. |
-| Operações | Placeholder | `src/operations/health.py`, `seo.py` e `repurpose.py` estão vazios. |
-| Receita e experimentos | Placeholder | `src/revenue/aggregator.py`, `profit.py` e `ab_testing.py` estão vazios; só os modelos de dados relacionados existem. |
+| Operações | Parcial | `src/operations/health.py` coleta CPU, memória, disco, GPU/VRAM, banco, Redis, Beat e workers `gpu`/`cpu`/`io` com timeout e saída redigida. `health_alerts.py` persiste somente consecutividade e alertas allowlisted: duas falhas abrem/atualizam e duas recuperações resolvem; `skip` é inconclusivo. Não há histórico de métricas nem notificação externa. `seo.py` e `repurpose.py` continuam vazios. |
+| Receita e experimentos | Parcial | O contrato compartilhado de Experiment e sua atribuição de runs estão implementados. `src/revenue/aggregator.py`, `profit.py` e `ab_testing.py` continuam vazios; não há análise estatística nem decisão automática de vencedor. |
 | Extras e ações externas | Placeholder | `src/extras/affiliate.py`, `outreach.py` e `x_bot.py` estão vazios. Não há envio, gasto ou ação externa implementada. |
 | Trading Research Lab | Planejado | O domínio aparece em `ARQUITETURA.md` e `ROADMAP.md`, mas não possui implementação. Trading com dinheiro real permanece fora do escopo. |
-| Infraestrutura local | Parcial | `docker-compose.yml` define somente Redis com AOF. PostgreSQL, workers e health checks ainda não estão definidos. Ollama é esperado no host, fora do Compose. |
-| Testes | Parcial | Há 196 testes para modelos legados, A1, CLI, lifecycles, task wrapper, controles, approval gates, artifacts, schedules com timezone/DST, métricas, ledger financeiro observacional, alertas deduplicados/auditados, dashboard, cancelamento e rejeição de approval protegidos/idempotentes, integração SQLite e smoke/roundtrip das migrations. Não há testes de Celery, PostgreSQL, integrações reais, restart ou hardware. |
+| Infraestrutura local | Parcial | `docker-compose.yml` define PostgreSQL 17 e Redis com volumes, health checks e portas publicadas somente em `127.0.0.1`. O supervisor Windows inicia três workers host, Beat e dashboard, reivindica somente serviços Compose que estavam parados e nunca remove volumes. Ollama permanece fora do Compose. |
+| Testes | Parcial | A suíte cobre publicação, falha de broker, claim, lease expirada, ownership, duplicatas, redaction de health e lifecycle do supervisor. Um ciclo isolado em Windows real validou mutex, processos ocultos, estado, sinal externo, shutdown cooperativo e fallback Job Object sem tocar Docker ou banco. Integrações opt-in validam PostgreSQL, Redis/Celery, dispatch, schedule e três workers. Restart durante task, modelos e carga GPU ainda não foram validados. |
 
 Arquivos `__init__.py` vazios são marcadores de pacote e não contam como funcionalidade.
 
@@ -55,18 +55,49 @@ py -3.12 -m venv .venv
 docker compose config
 ```
 
-O schema compartilhado da Fase 2 é atualizado explicitamente com:
+O schema gerenciado da Fase 2 e do Content Engine é atualizado explicitamente com:
 
 ```powershell
+docker compose up -d postgres redis
 .venv\Scripts\python -m alembic upgrade head
 .venv\Scripts\python -m alembic check
 ```
 
-Esses comandos gerenciam somente as quinze tabelas compartilhadas: `automations`, `runs`,
-`run_transitions`, `step_runs`, `step_run_transitions`, `control_events`, `approvals`,
-`approval_events`, `artifacts`, `schedules`, `schedule_events`, `metric_points`, `ledger_entries`, `platform_alerts`
-e `platform_alert_events`; não criam nem alteram as tabelas
-legadas do Content Engine.
+Antes de iniciar o Compose, copie `.env.example` para o `.env` local, defina
+`POSTGRES_PASSWORD` e substitua `SET_IN_LOCAL_ENV` na `DATABASE_URL` pelo mesmo valor com
+URL-encoding. O arquivo `.env` permanece ignorado pelo Git. Sem `.env`, o código usa SQLite para
+bootstrap de processo único; esse fallback não deve ser usado por workers concorrentes.
+
+Com o `.env` configurado para PostgreSQL local, use o supervisor em foreground como caminho
+operacional canônico. Ele valida a configuração, inicia PostgreSQL e Redis quando necessário,
+executa migrations e abre workers, Beat e dashboard como processos ocultos:
+
+```powershell
+.venv\Scripts\automation-foundry-runtime start
+# Em outro terminal:
+.venv\Scripts\automation-foundry-runtime status --json
+.venv\Scripts\automation-foundry-runtime stop
+```
+
+O supervisor permanece em foreground para tornar falhas visíveis. Estado e logs operacionais ficam
+em `STORAGE_ROOT/runtime`; o status público não expõe PIDs. No shutdown ele sinaliza cada processo,
+aplica timeout e usa Job Object como fallback. Serviços Compose já ativos não são parados, e o
+supervisor nunca executa `docker compose down` nem remove volumes. Os entrypoints individuais
+continuam disponíveis para diagnóstico. Eles não expõem opções de pool ou concorrência: no Windows,
+cada worker usa `solo` e concorrência 1. Isso garante GPU serializada e permite paralelismo apenas
+entre os três processos.
+Os tasks Celery registrados são os probes sem efeito externo, o executor de dispatch durável e os
+ticks de schedules e reconciliação de health. Beat apenas publica os ticks; horários, ocorrências,
+consecutividade e alertas continuam no PostgreSQL.
+Runs publicadas por `enqueue-run` usam identidade estável, claim/lease no PostgreSQL e replay seguro;
+o executor inline permanece disponível para diagnóstico local.
+
+Esses comandos gerenciam as vinte e uma tabelas compartilhadas: `automations`, `runs`,
+`run_transitions`, `run_dispatches`, `run_dispatch_events`, `step_runs`, `step_run_transitions`, `control_events`, `approvals`,
+`approval_events`, `artifacts`, `schedules`, `schedule_events`, `schedule_occurrences`, `experiments`, `experiment_events`, `metric_points`, `ledger_entries`, `platform_alerts`,
+`platform_alert_events` e `health_conditions`;
+e as oito tabelas legadas do Content Engine: `channels`, `videos`,
+`jobs`, `metrics`, `costs`, `topics`, `alerts` e `ab_variants`.
 
 Depois da migration, a execução manual observável e sem efeito externo usa:
 
@@ -83,15 +114,15 @@ deliberadamente de processo único e não valida concorrência, Redis, Celery ou
 Controles locais explícitos usam um motivo obrigatório:
 
 ```powershell
-.venv\Scripts\automation-foundry kill-switch --automation-slug platform-smoke --enable --reason "maintenance"
-.venv\Scripts\automation-foundry kill-switch --automation-slug platform-smoke --disable --reason "review completed"
+.venv\Scripts\automation-foundry kill-switch --automation-slug platform-smoke --enable --actor "local-owner" --reason "maintenance"
+.venv\Scripts\automation-foundry kill-switch --automation-slug platform-smoke --disable --actor "local-owner" --reason "review completed"
 .venv\Scripts\automation-foundry cancel-run --run-id 1 --reason "operator request"
 ```
 
 Um gate para o payload atual da run usa:
 
 ```powershell
-.venv\Scripts\automation-foundry request-approval --run-id 1 --idempotency-key "publish:1" --action publish --summary "Review private upload"
+.venv\Scripts\automation-foundry request-approval --run-id 1 --idempotency-key "publish:1" --action publish --summary "Review private upload" --review '{"artifact":"Video #1","visibility":"Private"}'
 .venv\Scripts\automation-foundry decide-approval --approval-id 1 --approve --actor "local-owner" --reason "review passed"
 ```
 
@@ -119,8 +150,19 @@ Uma agenda recorrente é criada desabilitada e só recebe `next_run_at` após a�
 ```
 
 Cron usa exatamente cinco campos POSIX e timezone IANA. As datas são calculadas com timezone e
-persistidas em UTC. `allow_overlap` e `misfire_grace_seconds` já fazem parte do contrato, mas não
-são aplicados porque esta fatia não possui dispatcher nem Celery Beat ativo.
+persistidas em UTC. O tick cria uma ocorrência única por horário, aplica `allow_overlap` e
+`misfire_grace_seconds`, avança o calendário no banco e recupera publicação pendente em tick futuro.
+
+Um experimento mensurável nasce em draft e exige transição auditada antes de receber runs:
+
+```powershell
+.venv\Scripts\automation-foundry create-experiment --automation-slug platform-smoke --key smoke-v2 --name "Smoke V2" --hypothesis "A variante reduz falhas." --primary-metric smoke.success_rate --unit ratio --control baseline --candidate v2 --actor "local-owner" --reason "hipótese revisada"
+.venv\Scripts\automation-foundry set-experiment --experiment-id 1 --start --actor "local-owner" --reason "iniciar medição"
+```
+
+As transições suportam start, pause, retomada, conclusão e cancelamento. Estados terminais são
+imutáveis. O dashboard redige hipótese, actors e motivos; nenhuma análise estatística ou escolha
+automática de vencedor foi implementada.
 
 Uma observação numérica local pode ser atribuída somente à automação ou também a uma run/step:
 
@@ -160,8 +202,9 @@ operador sem notificação externa:
 
 Repetir a chave da ocorrência não aumenta a contagem. Uma nova ocorrência posterior ao
 reconhecimento ou à resolução reabre o alerta; uma ocorrência atrasada anterior ao tratamento é
-rejeitada. O summary fica no banco local e não é repetido na saída da CLI. Esta fatia ainda não
-coleta health checks nem envia email, mensagem ou webhook.
+rejeitada. O summary fica no banco local e não é repetido na saída da CLI. O monitor automático
+usa somente títulos e resumos allowlisted: duas observações `degraded/fail` abrem o alerta e duas
+`pass` o resolvem. Nenhum email, mensagem ou webhook é enviado.
 
 `automation-foundry doctor` é a execução canônica e sem efeitos colaterais da Fase 1. Use
 `doctor --json` para saída estruturada e `doctor --services` somente quando Redis e Ollama locais
@@ -173,11 +216,11 @@ Depois de `alembic upgrade head`, a primeira visão do control plane é iniciada
 .venv\Scripts\automation-foundry dashboard
 ```
 
-O host default é `127.0.0.1`; configuração e cabeçalho `Host` não-loopback são rejeitados. As páginas
-consultam o banco e não dependem de Redis, Ollama, Celery ou GPU. A única rota mutável solicita
-cancelamento de run com confirmação explícita, token CSRF por processo e evento persistido.
-Totais financeiros são calculados com `Decimal` em Python para preservar a precisão do SQLite e
-permanecem separados por moeda, sem conversão cambial.
+O host default é `127.0.0.1`; configuração e cabeçalho `Host` não-loopback são rejeitados. Visões de
+estado consultam o banco; `/health` faz probes limitados e somente leitura dos recursos locais.
+Controles mutáveis de run, kill switch e approval exigem confirmação explícita e token CSRF por
+processo. Totais financeiros são calculados com `Decimal` em Python para preservar a precisão do
+SQLite e permanecem separados por moeda, sem conversão cambial.
 
 ## Baseline observado neste checkpoint
 
@@ -192,11 +235,12 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 - `python -m pip install -e ".[dev]"`: concluído; a primeira tentativa foi bloqueada pela rede da
   sandbox e a repetição com acesso autorizado concluiu a instalação;
-- `python -m pytest -q`: **196 passed**;
+- `python -m pytest -q`: **280 passed, 6 skipped**; os skips são integrações opt-in que exigem
+  PostgreSQL e/ou Redis descartáveis;
 - `python -m ruff check .`: encontrou 7 ocorrências mecânicas preexistentes; o autofix removeu
   imports não usados, ordenou imports e simplificou um context manager; a repetição terminou com
   **All checks passed**;
-- `python -m mypy src`: **Success: no issues found in 50 source files**;
+- `python -m mypy src`: **Success: no issues found in 66 source files**;
 - `python -m pip check`: **No broken requirements found**;
 - validação estrutural de `pyproject.toml` e `docker-compose.yml` por `tomllib` e YAML:
   concluída, incluindo metadata, entry point `src.cli:main` e nome do container;
@@ -205,17 +249,53 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 - `automation-foundry doctor --json`: concluído com código 0 e payload redigido;
 - `automation-foundry doctor --services`: código 1 esperado neste ambiente de viagem, com Redis e
   Ollama reportados como indisponíveis em loopback;
-- `docker compose config`: bloqueado porque o executável Docker não está disponível neste
-  ambiente.
+- `docker compose config --quiet`: concluído com senha efêmera fornecida apenas ao processo de
+  validação; PostgreSQL e Redis publicam portas somente em loopback.
 - migrations Alembic em SQLite temporário: `upgrade head`, `alembic check` e roundtrip das revisions
-  de artifacts, schedules, métricas, alertas e ledger concluídos; somente as quinze tabelas compartilhadas e `alembic_version`
-  foram criadas.
+  de artifacts, schedules, experiments, métricas, alertas, ledger e baseline legado concluídos; as
+  vinte e uma tabelas compartilhadas, as oito tabelas do Content Engine e `alembic_version` foram criadas.
+- PostgreSQL 17 descartável: todas as migrations e `alembic check` concluídos; duas runs em sessões
+  concorrentes foram persistidas e o replay da mesma chave retornou a run original. O container e
+  seus dados efêmeros foram removidos após o teste. A repetição usa `TEST_POSTGRESQL_URL` com
+  `pytest -m postgresql` e exige um banco dedicado descartável.
+- Redis 7 descartável + Celery 5.6: workers reais `solo` consumiram sequencialmente as filas
+  `gpu`, `cpu` e `io`; cada probe retornou somente o nome da própria fila e um nonce de teste. O
+  container, mensagens e resultados efêmeros foram removidos. A repetição usa
+  `TEST_REDIS_URL`, `TEST_REDIS_RESULT_URL` e `pytest -m redis`.
+- PostgreSQL 17 + Redis 7 + Celery 5.6 descartáveis: uma run foi preparada e publicada, o worker
+  IO adquiriu a lease e concluiu run/step/dispatch; a repetição da mesma entrega não criou outro
+  step. Os containers e dados efêmeros foram removidos após o teste.
+- Schedule real: o worker IO consumiu `schedule.tick`, criou ocorrência e run com trigger
+  `schedule`, publicou o dispatch e concluiu a execução. Misfire, bloqueio de sobreposição e retry
+  de broker possuem testes locais. O PID lock isolado do Celery não recusou a segunda aquisição no
+  Windows; o entrypoint foi endurecido com named mutex, cuja exclusão mútua passou no teste.
+- Health real com Redis 7 descartável: três workers simultâneos, um para cada fila `gpu`, `cpu` e
+  `io`, foram contados sem expor seus nomes. O container e os resultados efêmeros foram removidos.
+- Snapshot desta máquina: CPU, memória, disco, SQLite e uma NVIDIA GeForce RTX 3090 de 24 GiB
+  foram detectados; Redis e Beat parados apareceram como falha e a inspeção de workers foi pulada
+  após a falha do Redis. O snapshot concluiu em 1,51 s sem retornar URL, hostname ou segredo.
+- Reconciliação real em memória: a primeira falha não abriu alerta e a segunda abriu apenas Redis e
+  Beat, os serviços efetivamente parados; oito condições foram persistidas sem endpoint ou segredo.
+- PostgreSQL 17 descartável: a consecutividade sobreviveu a sessões separadas, abriu o alerta após
+  duas falhas e o resolveu após dois resultados saudáveis. A revision 0017 e o downgrade/upgrade
+  também passaram; o container e seus dados efêmeros foram removidos.
+- Supervisor Windows isolado: mutex singleton, evento global de stop, Job Object kill-on-close,
+  processo oculto, arquivo de estado, proteção contra reutilização de PID e shutdown cooperativo
+  passaram em ciclo real. Infraestrutura e migrations foram substituídas no teste; Docker, banco e
+  volumes locais não foram tocados.
 
 ## Verificações bloqueadas ou adiadas
 
-- **Computador de casa:** confirmar Windows, CPU, RAM, disco e processo de startup/shutdown.
-- **GPU:** confirmar RTX 3090, VRAM, CUDA, modelos, consumo e fila GPU com concorrência 1.
-- **Serviços locais:** validar Ollama, Redis, PostgreSQL e recuperação após indisponibilidade.
+- **Computador de casa:** CPU, RAM e disco responderam ao snapshot; o lifecycle isolado do
+  supervisor passou. O boot completo real foi recusado corretamente pelo preflight porque a
+  configuração ativa ainda usa SQLite; depende de um `.env` PostgreSQL local válido.
+- **GPU:** RTX 3090 e VRAM responderam ao `nvidia-smi`; CUDA, modelos, carga prolongada e fila GPU
+  com trabalho real permanecem pendentes.
+- **Serviços locais:** validar Ollama, Redis, o volume PostgreSQL persistente e recuperação após
+  indisponibilidade no computador de casa. A integração PostgreSQL efêmera já foi validada.
+- **Timeouts de worker no Windows:** soft/hard limits estão configurados, mas o pool `solo` não
+  oferece todas as garantias de timeout dos pools baseados em processos. O task wrapper mantém seu
+  timeout assíncrono; preempção de código síncrono bloqueante continua pendente de validação local.
 - **Credenciais:** validar somente em modo opt-in as APIs oficiais de Google/YouTube, Reddit,
   bancos de mídia, X e demais provedores. Nenhuma credencial deve entrar no Git.
 - **Ações externas:** publicação, mensagens, gastos, exclusões materiais e ações financeiras
@@ -224,7 +304,6 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 ## Próxima fatia recomendada
 
-Definir uma projeção de revisão segura e específica para o payload protegido é pré-requisito para
-habilitar approval positiva pela UI sem criar aprovação às cegas. `Experiment`, o dispatcher de
-schedules e o caminho PostgreSQL concorrente permanecem pendentes; concorrência, Redis, Celery Beat
-e hard time limits continuam dependentes do computador de casa.
+Criar backup e restore coordenados de PostgreSQL, configuração sem secrets e artefatos, com
+manifesto verificável e sem exclusão implícita. Hard time limits, reinício durante task e recuperação
+do volume persistente continuam dependentes de validação local controlada.

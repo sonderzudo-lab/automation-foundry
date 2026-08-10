@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -29,6 +30,10 @@ from src.platform.run_service import (
 
 class ApprovalGateError(ValueError):
     """Raised when a protected action lacks a matching approved decision."""
+
+
+_REVIEW_KEY = re.compile(r"[a-z][a-z0-9_-]{0,39}")
+_SENSITIVE_REVIEW_KEY = re.compile(r"(?:secret|token|password|credential|key)", re.I)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +70,25 @@ def approval_payload_digest(payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _normalize_review_payload(review_payload: dict[str, str]) -> dict[str, str]:
+    """Validate the intentionally limited, operator-visible approval projection."""
+    if not 1 <= len(review_payload) <= 8:
+        raise ValueError("review_payload must contain between 1 and 8 fields")
+    normalized: dict[str, str] = {}
+    for key, value in review_payload.items():
+        if not isinstance(key, str) or not _REVIEW_KEY.fullmatch(key):
+            raise ValueError("review_payload contains an invalid field name")
+        if _SENSITIVE_REVIEW_KEY.search(key):
+            raise ValueError("review_payload field name suggests protected data")
+        if not isinstance(value, str):
+            raise ValueError("review_payload values must be strings")
+        text = value.strip()
+        if not text or len(text) > 300:
+            raise ValueError("review_payload values must be 1 to 300 characters")
+        normalized[key] = text
+    return normalized
+
+
 async def request_approval(
     session: AsyncSession,
     *,
@@ -73,6 +97,7 @@ async def request_approval(
     action: str,
     summary: str,
     input_payload: dict[str, Any],
+    review_payload: dict[str, str],
 ) -> ApprovalCreationResult:
     """Create one pending approval and move its running run to the waiting state."""
     if run.id is None:
@@ -81,6 +106,7 @@ async def request_approval(
     action = _require_text(action, "action")
     summary = _require_text(summary, "summary")
     digest = approval_payload_digest(input_payload)
+    review = _normalize_review_payload(review_payload)
 
     existing = await session.scalar(
         select(Approval).where(
@@ -89,8 +115,13 @@ async def request_approval(
         )
     )
     if existing is not None:
-        expected = (action, summary, digest)
-        actual = (existing.action, existing.summary, existing.payload_digest)
+        expected = (action, summary, digest, review)
+        actual = (
+            existing.action,
+            existing.summary,
+            existing.payload_digest,
+            existing.review_payload,
+        )
         if actual != expected:
             raise IdempotencyConflictError(
                 "approval idempotency key already exists with different inputs"
@@ -111,6 +142,7 @@ async def request_approval(
         action=action,
         summary=summary,
         payload_digest=digest,
+        review_payload=review,
         status=ApprovalStatus.PENDING.value,
     )
     session.add(approval)
@@ -156,6 +188,8 @@ async def decide_approval(
         raise IdempotencyConflictError(
             f"approval already has conflicting decision {current.value}"
         )
+    if decision is ApprovalStatus.APPROVED and approval.review_payload is None:
+        raise ApprovalGateError("approval has no safe review projection")
 
     run = await session.get(Run, approval.run_id)
     if run is None:

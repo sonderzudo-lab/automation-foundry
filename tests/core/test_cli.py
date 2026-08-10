@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from src import cli
 from src.core import database
 from src.core.config import Settings
+from src.platform.dispatch_service import DispatchPreparationResult
 from src.platform.example_run import ExampleRunResult
 from src.platform.models import (
     Alert,
@@ -23,6 +24,7 @@ from src.platform.models import (
     Artifact,
     Automation,
     MetricPoint,
+    QueueClass,
     Run,
     RunStatus,
     Schedule,
@@ -53,6 +55,7 @@ def test_doctor_static_checks_pass_without_services(
 
     assert not [result for result in results if result.status == "fail"]
     assert {result.name for result in results if result.status == "skip"} == {
+        "database_service",
         "redis_service",
         "ollama_service",
     }
@@ -122,8 +125,33 @@ def test_main_json_output_is_structured_and_redacted(
 
     assert exit_code == 0
     assert payload["ok"] is True
-    assert payload["summary"] == {"pass": 5, "fail": 0, "skip": 2}
+    assert payload["summary"] == {"pass": 5, "fail": 0, "skip": 3}
     assert "sqlite+aiosqlite" not in json.dumps(payload)
+
+
+def test_doctor_probes_configured_postgresql_without_exposing_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli.metadata, "version", lambda _name: "0.1.0")
+    settings = Settings(
+        _env_file=None,
+        database_url=(
+            "postgresql+asyncpg://foundry:private-password@127.0.0.1:55432/"
+            "automation_foundry"
+        ),
+    )
+    connection = Mock()
+    create_connection = Mock(return_value=connection)
+    monkeypatch.setattr(cli.socket, "create_connection", create_connection)
+
+    results = cli.run_doctor(settings, check_services=True)
+
+    create_connection.assert_any_call(("127.0.0.1", 55432), timeout=0.5)
+    database_check = next(
+        result for result in results if result.name == "database_service"
+    )
+    assert database_check.status == "pass"
+    assert "private-password" not in " ".join(result.detail for result in results)
 
 
 def test_main_returns_failure_when_local_services_are_unavailable(
@@ -190,6 +218,39 @@ def test_run_example_failure_is_redacted(
     assert "secret database details" not in output
 
 
+def test_enqueue_run_reports_stable_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def enqueue(slug: str, key: str) -> DispatchPreparationResult:
+        assert (slug, key) == ("platform-smoke", "queued-001")
+        return DispatchPreparationResult(
+            run_id=4,
+            dispatch_id=5,
+            delivery_id="delivery-001",
+            queue=QueueClass.IO,
+            created=True,
+        )
+
+    monkeypatch.setattr(cli, "_enqueue_run_command", enqueue)
+    exit_code = cli.main(
+        [
+            "enqueue-run",
+            "--automation-slug",
+            "platform-smoke",
+            "--idempotency-key",
+            "queued-001",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["dispatch_id"] == 5
+    assert payload["queue"] == "io"
+    assert payload["delivery_id"] == "delivery-001"
+
+
 def test_kill_switch_command_is_explicit_and_structured(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -200,9 +261,10 @@ def test_kill_switch_command_is_explicit_and_structured(
         slug: str,
         *,
         active: bool,
+        actor: str,
         reason: str,
     ) -> cli.ControlCommandResult:
-        received.update(slug=slug, active=active, reason=reason)
+        received.update(slug=slug, active=active, actor=actor, reason=reason)
         return cli.ControlCommandResult(
             action="kill_switch_enabled",
             target_id=7,
@@ -216,6 +278,8 @@ def test_kill_switch_command_is_explicit_and_structured(
             "--automation-slug",
             "platform-smoke",
             "--enable",
+            "--actor",
+            "local-owner",
             "--reason",
             "maintenance",
             "--json",
@@ -227,6 +291,7 @@ def test_kill_switch_command_is_explicit_and_structured(
     assert received == {
         "slug": "platform-smoke",
         "active": True,
+        "actor": "local-owner",
         "reason": "maintenance",
     }
     assert payload == {
@@ -274,9 +339,10 @@ def test_control_command_failure_is_redacted(
         _slug: str,
         *,
         active: bool,
+        actor: str,
         reason: str,
     ) -> cli.ControlCommandResult:
-        raise RuntimeError(f"private {active} {reason}")
+        raise RuntimeError(f"private {active} {actor} {reason}")
 
     monkeypatch.setattr(cli, "_set_kill_switch_command", fail)
     exit_code = cli.main(
@@ -285,6 +351,8 @@ def test_control_command_failure_is_redacted(
             "--automation-slug",
             "platform-smoke",
             "--disable",
+            "--actor",
+            "local-owner",
             "--reason",
             "sensitive detail",
         ]
@@ -332,6 +400,7 @@ async def test_control_command_helpers_persist_real_local_state(
     kill_result = await cli._set_kill_switch_command(
         "cli-controlled",
         active=True,
+        actor="local-owner",
         reason="integration test",
     )
     cancel_result = await cli._cancel_run_command(
@@ -362,6 +431,7 @@ def test_request_approval_command_renders_pending_gate(
         idempotency_key: str,
         action: str,
         summary: str,
+        review: str,
     ) -> cli.ApprovalCommandResult:
         assert (run_id, idempotency_key, action, summary) == (
             9,
@@ -369,6 +439,7 @@ def test_request_approval_command_renders_pending_gate(
             "publish",
             "Review private upload",
         )
+        assert review == '{"artifact":"Video #9"}'
         return cli.ApprovalCommandResult(
             approval_id=11,
             run_id=run_id,
@@ -388,6 +459,8 @@ def test_request_approval_command_renders_pending_gate(
             "publish",
             "--summary",
             "Review private upload",
+            "--review",
+            '{"artifact":"Video #9"}',
             "--json",
         ]
     )
@@ -480,6 +553,7 @@ async def test_approval_command_helpers_persist_real_decision(
         idempotency_key="cli-approval:publish",
         action="publish",
         summary="Review local artifact",
+        review='{"artifact":"Video #5"}',
     )
     decided = await cli._decide_approval_command(
         requested.approval_id,
@@ -792,6 +866,107 @@ def test_set_schedule_command_requires_explicit_state(
     assert exit_code == 0
     assert "enabled" in output
     assert "2026-07-24T12:00:00Z" in output
+
+
+def test_create_experiment_command_records_explicit_definition(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    received: dict[str, object] = {}
+
+    async def create(
+        automation_slug: str,
+        **kwargs: object,
+    ) -> cli.ExperimentCommandResult:
+        received.update(automation_slug=automation_slug, **kwargs)
+        return cli.ExperimentCommandResult(
+            experiment_id=31,
+            automation_id=7,
+            key="headline-v2",
+            status="draft",
+            changed=True,
+        )
+
+    monkeypatch.setattr(cli, "_create_experiment_command", create)
+    exit_code = cli.main(
+        [
+            "create-experiment",
+            "--automation-slug",
+            "platform-smoke",
+            "--key",
+            "headline-v2",
+            "--name",
+            "Headline V2",
+            "--hypothesis",
+            "Clearer wording improves completion.",
+            "--primary-metric",
+            "content.completion_rate",
+            "--unit",
+            "ratio",
+            "--control",
+            "current",
+            "--candidate",
+            "clearer-v2",
+            "--actor",
+            "local-owner",
+            "--reason",
+            "register reviewed hypothesis",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert received["automation_slug"] == "platform-smoke"
+    assert received["primary_metric"] == "content.completion_rate"
+    assert received["control"] == "current"
+    assert received["candidate"] == "clearer-v2"
+    assert payload["status"] == "draft"
+
+
+def test_set_experiment_command_maps_explicit_transition(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def change(
+        experiment_id: int,
+        *,
+        target: str,
+        actor: str,
+        reason: str,
+    ) -> cli.ExperimentCommandResult:
+        assert (experiment_id, target, actor, reason) == (
+            31,
+            "running",
+            "local-owner",
+            "start reviewed measurement",
+        )
+        return cli.ExperimentCommandResult(
+            experiment_id=experiment_id,
+            automation_id=7,
+            key="headline-v2",
+            status=target,
+            changed=True,
+        )
+
+    monkeypatch.setattr(cli, "_set_experiment_command", change)
+    exit_code = cli.main(
+        [
+            "set-experiment",
+            "--experiment-id",
+            "31",
+            "--start",
+            "--actor",
+            "local-owner",
+            "--reason",
+            "start reviewed measurement",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["status"] == "running"
 
 
 async def test_schedule_command_helpers_persist_real_local_state(
@@ -1407,6 +1582,44 @@ def test_dashboard_server_uses_validated_settings(
         "port": 8000,
         "reload": False,
     }
+
+
+def test_supervised_dashboard_honors_cooperative_stop_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import uvicorn
+
+    from src.runtime import cooperative
+
+    configuration = Settings(
+        _env_file=None,
+        dashboard_host="127.0.0.2",
+        dashboard_port=9010,
+        log_level="warning",
+    )
+    server = Mock(should_exit=False)
+    watcher = Mock()
+    config = Mock()
+    monkeypatch.setenv(
+        cooperative.STOP_EVENT_ENV,
+        "Local\\AutomationFoundryRuntimeChildStop-123-dashboard",
+    )
+    monkeypatch.setattr(cli, "get_settings", lambda: configuration)
+    monkeypatch.setattr(uvicorn, "Config", Mock(return_value=config))
+    monkeypatch.setattr(uvicorn, "Server", Mock(return_value=server))
+
+    def watch(callback: object) -> Mock:
+        assert callable(callback)
+        callback()
+        return watcher
+
+    monkeypatch.setattr(cooperative, "start_stop_event_watcher", watch)
+
+    cli._serve_dashboard_command()
+
+    assert server.should_exit is True
+    server.run.assert_called_once_with()
+    watcher.close.assert_called_once_with()
 
 
 def test_dashboard_command_failure_is_redacted(

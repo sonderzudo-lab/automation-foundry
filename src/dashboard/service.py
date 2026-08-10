@@ -10,12 +10,14 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.platform.executor_registry import automation_supports_retry
 from src.platform.models import (
     AlertStatus,
     Approval,
     ApprovalStatus,
     Artifact,
     Automation,
+    Experiment,
     LedgerEntry,
     LedgerEntryType,
     MetricPoint,
@@ -88,6 +90,23 @@ class LedgerCurrencySummary:
 
 
 @dataclass(frozen=True, slots=True)
+class ExperimentSummary:
+    """Operator-visible experiment definition without hypothesis or audit reasons."""
+
+    id: int
+    automation_slug: str
+    key: str
+    name: str
+    status: str
+    primary_metric: str
+    primary_metric_unit: str
+    control_variant: str
+    candidate_variant: str
+    started_at: datetime | None
+    ended_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     """Complete read-only state rendered on the dashboard home page."""
 
@@ -96,6 +115,7 @@ class DashboardSnapshot:
     pending_approvals: tuple[ApprovalSummary, ...]
     active_alerts: tuple[AlertSummary, ...]
     ledger_totals: tuple[LedgerCurrencySummary, ...]
+    experiments: tuple[ExperimentSummary, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +151,7 @@ class RunApprovalSummary:
     status: str
     requested_at: datetime
     decided_at: datetime | None
+    review_payload: dict[str, str] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +200,11 @@ class RunDetail:
     """Redacted, read-only execution evidence for one persisted run."""
 
     id: int
+    retry_of_run_id: int | None
+    can_retry: bool
+    experiment_id: int | None
+    experiment_key: str | None
+    experiment_name: str | None
     automation_slug: str
     automation_name: str
     status: str
@@ -211,9 +237,15 @@ async def load_dashboard_snapshot(
     recent_run_limit: int = 10,
     pending_limit: int = 20,
     alert_limit: int = 20,
+    experiment_limit: int = 50,
 ) -> DashboardSnapshot:
     """Load a bounded, redacted dashboard snapshot from durable state."""
-    if recent_run_limit < 1 or pending_limit < 1 or alert_limit < 1:
+    if (
+        recent_run_limit < 1
+        or pending_limit < 1
+        or alert_limit < 1
+        or experiment_limit < 1
+    ):
         raise ValueError("dashboard query limits must be positive")
 
     automations = tuple(
@@ -316,12 +348,38 @@ async def load_dashboard_snapshot(
         for currency, currency_totals in sorted(totals.items())
     )
 
+    experiment_rows = (
+        await session.execute(
+            select(Experiment, Automation.slug)
+            .join(Automation, Automation.id == Experiment.automation_id)
+            .order_by(Experiment.created_at.desc(), Experiment.id.desc())
+            .limit(experiment_limit)
+        )
+    ).all()
+    experiments = tuple(
+        ExperimentSummary(
+            id=experiment.id,
+            automation_slug=automation_slug,
+            key=experiment.key,
+            name=experiment.name,
+            status=experiment.status,
+            primary_metric=experiment.primary_metric,
+            primary_metric_unit=experiment.primary_metric_unit,
+            control_variant=experiment.control_variant,
+            candidate_variant=experiment.candidate_variant,
+            started_at=experiment.started_at,
+            ended_at=experiment.ended_at,
+        )
+        for experiment, automation_slug in experiment_rows
+    )
+
     return DashboardSnapshot(
         automations=automations,
         recent_runs=recent_runs,
         pending_approvals=pending_approvals,
         active_alerts=active_alerts,
         ledger_totals=ledger_totals,
+        experiments=experiments,
     )
 
 
@@ -332,14 +390,21 @@ async def load_run_detail(session: AsyncSession, *, run_id: int) -> RunDetail | 
 
     run_row = (
         await session.execute(
-            select(Run, Automation.slug, Automation.name)
+            select(
+                Run,
+                Automation.slug,
+                Automation.name,
+                Experiment.key,
+                Experiment.name,
+            )
             .join(Automation, Automation.id == Run.automation_id)
+            .outerjoin(Experiment, Experiment.id == Run.experiment_id)
             .where(Run.id == run_id)
         )
     ).first()
     if run_row is None:
         return None
-    run, automation_slug, automation_name = run_row
+    run, automation_slug, automation_name, experiment_key, experiment_name = run_row
 
     steps = tuple(
         StepRunSummary(
@@ -367,6 +432,7 @@ async def load_run_detail(session: AsyncSession, *, run_id: int) -> RunDetail | 
             status=approval.status,
             requested_at=approval.requested_at,
             decided_at=approval.decided_at,
+            review_payload=approval.review_payload,
         )
         for approval in await session.scalars(
             select(Approval)
@@ -427,6 +493,16 @@ async def load_run_detail(session: AsyncSession, *, run_id: int) -> RunDetail | 
 
     return RunDetail(
         id=run.id,
+        retry_of_run_id=run.retry_of_run_id,
+        can_retry=(
+            RunStatus(run.status) is RunStatus.FAILED
+            and isinstance(run.error, dict)
+            and run.error.get("retryable") is True
+            and automation_supports_retry(automation_slug)
+        ),
+        experiment_id=run.experiment_id,
+        experiment_key=experiment_key,
+        experiment_name=experiment_name,
         automation_slug=automation_slug,
         automation_name=automation_name,
         status=run.status,

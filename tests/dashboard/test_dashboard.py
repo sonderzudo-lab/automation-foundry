@@ -19,6 +19,11 @@ from sqlalchemy.ext.asyncio import (
 from src.core.database import Base, get_session
 from src.dashboard.main import create_app
 from src.dashboard.service import load_dashboard_snapshot, load_run_detail
+from src.operations.health import HealthCheck, HealthReport, HealthStatus
+from src.platform.experiment_service import (
+    get_or_create_experiment,
+    transition_experiment,
+)
 from src.platform.models import (
     AlertSeverity,
     AlertStatus,
@@ -30,6 +35,8 @@ from src.platform.models import (
     Automation,
     ControlEvent,
     ControlEventType,
+    Experiment,
+    ExperimentStatus,
     LedgerEntry,
     LedgerEntryType,
     MetricKind,
@@ -211,6 +218,8 @@ async def _seed_cancellable_run(factory: async_sessionmaker[AsyncSession]) -> in
 
 async def _seed_pending_approval(
     factory: async_sessionmaker[AsyncSession],
+    *,
+    with_review_projection: bool = False,
 ) -> tuple[int, int]:
     async with factory() as session:
         automation = Automation(
@@ -235,6 +244,11 @@ async def _seed_pending_approval(
             action="publish",
             summary="private protected approval summary",
             payload_digest="c" * 64,
+            review_payload=(
+                {"artifact": "Video #42", "visibility": "Private"}
+                if with_review_projection
+                else None
+            ),
             status=ApprovalStatus.PENDING.value,
         )
         session.add(approval)
@@ -281,7 +295,7 @@ async def test_snapshot_is_bounded_redacted_and_decimal_exact(
         assert private_value not in rendered
 
 
-async def test_dashboard_home_renders_read_only_redacted_state(
+async def test_dashboard_home_renders_redacted_state_and_safe_controls(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     run_id = await _seed_dashboard(session_factory)
@@ -305,7 +319,8 @@ async def test_dashboard_home_renders_read_only_redacted_state(
     assert ">0.3<" in response.text
     assert ">0.7<" in response.text
     assert f'href="/runs/{run_id}"' in response.text
-    assert "<form" not in response.text
+    assert "/kill-switch" in response.text
+    assert "Ativar kill switch" in response.text
     for private_value in (
         "private-owner",
         "private-run-key",
@@ -331,10 +346,317 @@ async def test_dashboard_home_renders_read_only_redacted_state(
     application_routes = [
         route for route in application.routes if isinstance(route, APIRoute)
     ]
-    assert len(application_routes) == 4
+    assert len(application_routes) == 9
     route_methods = [route.methods for route in application_routes]
-    assert route_methods.count({"GET"}) == 2
-    assert route_methods.count({"POST"}) == 2
+    assert route_methods.count({"GET"}) == 3
+    assert route_methods.count({"POST"}) == 6
+
+
+async def test_health_page_renders_only_redacted_probe_projection(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async def collect(_session: AsyncSession) -> HealthReport:
+        return HealthReport(
+            status=HealthStatus.DEGRADED,
+            checked_at=datetime(2026, 8, 10, 12, 0),
+            checks=(
+                HealthCheck(
+                    name="redis",
+                    status=HealthStatus.PASS,
+                    summary="broker respondeu ao ping",
+                    metrics={"latency_ms": 1.2},
+                ),
+                HealthCheck(
+                    name="workers",
+                    status=HealthStatus.DEGRADED,
+                    summary="filas sem worker: gpu",
+                    metrics={"gpu_workers": 0, "cpu_workers": 1, "io_workers": 1},
+                ),
+            ),
+        )
+
+    application = create_app(health_collector=collect)
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.get("/health")
+
+    assert response.status_code == 200
+    assert "Saúde operacional" in response.text
+    assert "latency_ms" in response.text
+    assert "gpu_workers" in response.text
+    assert "private-host" not in response.text
+
+
+async def test_dashboard_starts_idempotent_local_example_run(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    payload = {
+        "csrf_token": "test-csrf-token",
+        "confirmation": "start-example-run",
+        "idempotency_key": "dashboard-smoke-001",
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        first = await client.post("/automations/platform-smoke/runs", data=payload)
+        second = await client.post("/automations/platform-smoke/runs", data=payload)
+
+    assert first.status_code == 303
+    assert second.status_code == 303
+    assert second.headers["location"] == first.headers["location"]
+    async with session_factory() as session:
+        runs = list((await session.scalars(select(Run))).all())
+        steps = list((await session.scalars(select(StepRun))).all())
+    assert len(runs) == 1 and runs[0].status == RunStatus.SUCCEEDED.value
+    assert len(steps) == 1 and steps[0].status == RunStatus.SUCCEEDED.value
+
+
+async def test_dashboard_shows_experiment_and_attributes_manual_run(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        automation = Automation(
+            slug="platform-smoke",
+            name="Platform Smoke Automation",
+            owner="local-operator",
+        )
+        session.add(automation)
+        await session.flush()
+        experiment = (
+            await get_or_create_experiment(
+                session,
+                automation=automation,
+                key="smoke-variant",
+                name="Smoke Variant",
+                hypothesis="private hypothesis must remain redacted",
+                primary_metric="smoke.success_rate",
+                primary_metric_unit="ratio",
+                control_variant="baseline",
+                candidate_variant="candidate",
+                actor="local-owner",
+                reason="private creation reason",
+            )
+        ).experiment
+        await transition_experiment(
+            session,
+            experiment=experiment,
+            target=ExperimentStatus.RUNNING,
+            actor="local-owner",
+            reason="private start reason",
+        )
+        await session.commit()
+        experiment_id = experiment.id
+
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        dashboard = await client.get("/")
+        response = await client.post(
+            "/automations/platform-smoke/runs",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "start-example-run",
+                "idempotency_key": "experiment-smoke-001",
+                "experiment_id": str(experiment_id),
+            },
+        )
+        detail = await client.get(response.headers["location"])
+
+    assert dashboard.status_code == 200
+    assert "Smoke Variant" in dashboard.text
+    assert "smoke.success_rate" in dashboard.text
+    assert "private hypothesis must remain redacted" not in dashboard.text
+    assert "private creation reason" not in dashboard.text
+    assert response.status_code == 303
+    assert f"Experimento #{experiment_id}" in detail.text
+    async with session_factory() as session:
+        attributed_run = await session.scalar(
+            select(Run).where(Run.experiment_id == experiment_id)
+        )
+        stored_experiment = await session.get(Experiment, experiment_id)
+    assert attributed_run is not None
+    assert stored_experiment is not None
+
+
+async def test_dashboard_retries_only_eligible_registered_run(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        automation = Automation(
+            slug="platform-smoke",
+            name="Platform Smoke Automation",
+            owner="local-operator",
+        )
+        session.add(automation)
+        await session.flush()
+        source = Run(
+            automation_id=automation.id,
+            idempotency_key="dashboard-retry-source",
+            trigger="manual",
+            input_payload={"operation": "noop"},
+            status=RunStatus.FAILED.value,
+            error={"code": "TEMPORARY_FAILURE", "retryable": True},
+        )
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    payload = {
+        "csrf_token": "test-csrf-token",
+        "confirmation": "retry-run",
+        "idempotency_key": "dashboard-retry-001",
+        "actor": "local-owner",
+        "reason": "temporary dependency recovered",
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        detail = await client.get(f"/runs/{source_id}")
+        first = await client.post(f"/runs/{source_id}/retry", data=payload)
+        second = await client.post(f"/runs/{source_id}/retry", data=payload)
+
+    assert detail.status_code == 200
+    assert "Retentar run" in detail.text
+    assert first.status_code == 303
+    assert second.headers["location"] == first.headers["location"]
+    async with session_factory() as session:
+        retry = await session.scalar(
+            select(Run).where(Run.retry_of_run_id == source_id)
+        )
+    assert retry is not None
+    assert retry.status == RunStatus.SUCCEEDED.value
+    assert retry.retry_requested_by == "local-owner"
+    assert retry.retry_reason == "temporary dependency recovered"
+
+
+async def test_dashboard_kill_switch_is_confirmed_and_audited(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    run_id = await _seed_dashboard(session_factory)
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        assert run is not None
+        automation_id = run.automation_id
+
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.post(
+            f"/automations/{automation_id}/kill-switch",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "kill-switch-enable",
+                "target": "enable",
+                "actor": "local-owner",
+                "reason": "pause module for maintenance",
+            },
+        )
+        updated = await client.get("/")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+    assert "Desativar kill switch" in updated.text
+    async with session_factory() as session:
+        automation = await session.get(Automation, automation_id)
+        events = list(
+            (
+                await session.scalars(
+                    select(ControlEvent).where(
+                        ControlEvent.automation_id == automation_id
+                    )
+                )
+            ).all()
+        )
+    assert automation is not None and automation.kill_switch_active is True
+    assert len(events) == 1
+    assert events[0].event_type == ControlEventType.KILL_SWITCH_ENABLED.value
+    assert events[0].actor == "local-owner"
+
+
+async def test_dashboard_kill_switch_rejects_invalid_csrf_without_mutation(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    run_id = await _seed_dashboard(session_factory)
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        assert run is not None
+        automation_id = run.automation_id
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.post(
+            f"/automations/{automation_id}/kill-switch",
+            data={
+                "csrf_token": "wrong-token",
+                "confirmation": "kill-switch-enable",
+                "target": "enable",
+                "actor": "local-owner",
+                "reason": "must not persist",
+            },
+        )
+
+    assert response.status_code == 403
+    async with session_factory() as session:
+        automation = await session.get(Automation, automation_id)
+        events = list(
+            (
+                await session.scalars(
+                    select(ControlEvent).where(
+                        ControlEvent.automation_id == automation_id
+                    )
+                )
+            ).all()
+        )
+    assert automation is not None and automation.kill_switch_active is False
+    assert events == []
 
 
 async def test_run_detail_projection_is_ordered_exact_and_redacted(
@@ -689,6 +1011,46 @@ async def test_dashboard_approval_rejection_is_confirmed_immutable_and_audited(
     assert len(events) == 1
     assert events[0].to_status == ApprovalStatus.REJECTED.value
     assert events[0].actor == "local-owner"
+
+
+async def test_dashboard_approval_can_be_safely_reviewed_and_approved(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    run_id, approval_id = await _seed_pending_approval(
+        session_factory,
+        with_review_projection=True,
+    )
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        detail = await client.get(f"/runs/{run_id}")
+        response = await client.post(
+            f"/approvals/{approval_id}/approve",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "approve-approval",
+                "actor": "local-owner",
+                "reason": "reviewed private artifact",
+            },
+        )
+
+    assert detail.status_code == 200
+    assert "Video #42" in detail.text
+    assert "Aprovar approval" in detail.text
+    assert response.status_code == 303
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        approval = await session.get(Approval, approval_id)
+    assert run is not None and run.status == RunStatus.RUNNING.value
+    assert approval is not None and approval.status == ApprovalStatus.APPROVED.value
 
 
 @pytest.mark.parametrize(

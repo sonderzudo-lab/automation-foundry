@@ -29,21 +29,29 @@ Na data desta versÃ£o:
 - `src/core/config.py`, `database.py` e modelos SQLAlchemy formam a base inicial;
 - `src/pipeline/script_gen.py` implementa a geraÃ§Ã£o de roteiro do Content Engine e possui cobertura de testes relevante;
 - o schema atual ainda Ã© orientado a conteÃºdo;
-- Celery e grande parte dos mÃ³dulos planejados permanecem vazios ou incompletos; o dashboard cobre somente visÃµes read-only iniciais;
+- Celery possui topologia local, probes de infraestrutura e dispatch durÃ¡vel para executores registrados; grande parte dos mÃ³dulos planejados permanece vazia ou incompleta, e o dashboard cobre visÃµes iniciais e controles locais limitados;
 - metadata, defaults locais e nomes de serviÃ§os usam a identidade `automation-foundry`;
-- `src/cli.py` oferece o diagnÃ³stico local `automation-foundry doctor` e inicia o dashboard read-only com binding validado em loopback;
-- `src/platform/` implementa parcialmente o kernel com `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `LedgerEntry`, `Alert` e histÃ³ricos persistidos de transiÃ§Ãµes;
-- nove migrations Alembic incrementais cobrem somente essas tabelas compartilhadas; o schema legado do Content Engine ainda nÃ£o possui baseline;
+- `src/cli.py` oferece o diagnÃ³stico local `automation-foundry doctor` e inicia o dashboard com binding validado em loopback;
+- `src/platform/` implementa parcialmente o kernel com `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `Experiment`, `LedgerEntry`, `Alert` e histÃ³ricos persistidos de transiÃ§Ãµes;
+- dezessete migrations Alembic incrementais cobrem as tabelas compartilhadas, o dispatch durÃ¡vel, ocorrÃªncias de schedule, estado de health e o baseline das oito tabelas legadas do Content Engine, mantendo `platform_alerts` separado de `alerts`;
+- o caminho PostgreSQL local usa `asyncpg`, pool limitado, timeouts de conexÃ£o/comando e migrations validadas; SQLite permanece como bootstrap de processo Ãºnico e backend dos testes;
+- `src/core/celery_app.py` declara somente as filas `gpu`, `cpu` e `io`, usa Redis como broker e backend efÃªmero de probes e recusa criaÃ§Ã£o implÃ­cita de filas; o entrypoint de worker exige PostgreSQL e serializa cada fila no Windows;
+- `src/platform/dispatch_service.py` persiste a run e `delivery_id` antes da publicaÃ§Ã£o, registra tentativas e falhas de broker, concede claims com lease e impede que entregas duplicadas executem novamente uma run terminal;
 - `automation-foundry run-example` executa um Ãºnico passo `io` no-op, idempotente e com checkpoints transacionais, somente em processo local;
+- `src/platform/executor_registry.py` permite disparo e retry somente para executores registrados em cÃ³digo; retries elegÃ­veis criam uma nova run ligada Ã  falha retryable anterior e registram actor e motivo;
 - `src/platform/task_runner.py` aplica timeout assÃ­ncrono, retries limitados e backoff exponencial; pedidos de cancelamento e kill switch sÃ£o consultados antes e depois de cada corrotina e entre tentativas;
-- `control_events` mantÃ©m auditoria append-only de pedidos de cancelamento e mudanÃ§as do kill switch por automaÃ§Ã£o;
+- `control_events` mantÃ©m auditoria append-only de pedidos de cancelamento e mudanÃ§as do kill switch por automaÃ§Ã£o; mudanÃ§as novas de kill switch registram o actor local informado pelo operador;
 - approvals vinculam run, aÃ§Ã£o e digest do payload; uma decisÃ£o aprovada sÃ³ pode autorizar uma chave idempotente de task;
 - artifacts vinculam arquivo local a run e, opcionalmente, step; o registro persiste somente caminho relativo e metadados apÃ³s validar confinamento em `STORAGE_ROOT`, tamanho e SHA-256;
-- schedules nascem desabilitados, validam cron POSIX de cinco campos e timezone IANA, calculam `next_run_at` em UTC e auditam criaÃ§Ã£o, habilitaÃ§Ã£o e desabilitaÃ§Ã£o;
+- schedules nascem desabilitados, validam cron POSIX de cinco campos e timezone IANA, calculam `next_run_at` em UTC e auditam criaÃ§Ã£o, habilitaÃ§Ã£o, desabilitaÃ§Ã£o e cada ocorrÃªncia publicada ou ignorada;
 - metric points sÃ£o observaÃ§Ãµes decimais append-only, idempotentes e atribuÃ­veis a automation, run e step; unidade, fonte, confianÃ§a opcional e timestamp permanecem explÃ­citos;
+- experiments registram hipÃ³tese, variantes e mÃ©trica primÃ¡ria com lifecycle auditado; somente experiments em execuÃ§Ã£o podem receber novas runs atribuÃ­das, e hipÃ³teses e motivos permanecem redigidos no dashboard;
 - ledger entries sÃ£o observaÃ§Ãµes financeiras decimais append-only, idempotentes e atribuÃ­veis a automation e, opcionalmente, run, step e metric point; tipo, categoria, moeda, fonte, confianÃ§a opcional e timestamp permanecem explÃ­citos, sem executar pagamentos ou criar promessas;
 - platform alerts deduplicam ocorrÃªncias, escalam severidade enquanto abertos e auditam reconhecimento, resoluÃ§Ã£o e reabertura; nenhuma notificaÃ§Ã£o externa foi implementada;
-- `src/dashboard/` renderiza com FastAPI e Jinja uma visÃ£o geral read-only e detalhe de run com evidÃªncias vinculadas; cancelamento e rejeiÃ§Ã£o de approval usam POST com confirmaÃ§Ã£o, token CSRF por processo, Host loopback e serviÃ§os idempotentes/auditÃ¡veis; approval positiva permanece indisponÃ­vel enquanto o payload protegido nÃ£o possuir uma projeÃ§Ã£o de revisÃ£o segura;
+- `src/dashboard/` renderiza com FastAPI e Jinja uma visÃ£o geral e detalhe de run com evidÃªncias vinculadas; disparo registrado, retry elegÃ­vel, kill switch, cancelamento, rejeiÃ§Ã£o e aprovaÃ§Ã£o usam POST com confirmaÃ§Ã£o e token CSRF por processo; aprovaÃ§Ã£o positiva exige uma projeÃ§Ã£o limitada, validada e explicitamente segura do payload, enquanto registros legados sem essa projeÃ§Ã£o permanecem bloqueados;
+- `src/operations/health.py` coleta um snapshot somente leitura e redigido de CPU, memoria, disco, GPU/VRAM, banco, Redis, Beat e workers por fila; Redis indisponivel impede apenas a inspecao efemera dos workers e nunca substitui o estado duravel no banco;
+- `src/operations/health_alerts.py` mantem contadores consecutivos no banco; duas degradacoes abrem ou atualizam um alerta deduplicado e duas recuperacoes o resolvem, enquanto `skip` permanece inconclusivo; a task periodica roda na fila `io` e nao envia notificacoes externas;
+- `src/runtime/` e `src/runtime_cli.py` implementam um supervisor Windows singleton em foreground para PostgreSQL, Redis, os tres workers, Beat e dashboard; processos host usam eventos nomeados para shutdown cooperativo e um Job Object kill-on-close como fallback, enquanto o Compose para somente servicos iniciados pelo proprio supervisor e nunca remove volumes;
 - o runtime completo nÃ£o foi validado no computador de casa.
 
 O roadmap deve evoluir essa base sem confundir placeholders com funcionalidades prontas e sem reescrever a parte testada apenas por estÃ©tica arquitetural.
@@ -182,7 +190,9 @@ Celery executa as tarefas e Redis atua como broker e cache. Redis nÃ£o substit
 - `cpu`: FFmpeg, transformaÃ§Ã£o de arquivos e cÃ¡lculo paralelo.
 - `io`: APIs, scraping permitido, downloads, uploads e coleta de dados.
 
-Tasks devem ser idempotentes, reconhecer cancelamento, usar limites de tempo e produzir erros acionÃ¡veis. O wrapper inicial consulta controles persistidos antes e depois de cada corrotina e entre retries, mas nÃ£o preempta cÃ³digo sÃ­ncrono bloqueante nem substitui os soft/hard limits futuros do Celery. Schedules persistidos jÃ¡ possuem estado auditado, timezone, prÃ³xima ocorrÃªncia, tolerÃ¢ncia a atraso e polÃ­tica de sobreposiÃ§Ã£o; ainda nÃ£o existe dispatcher que crie runs a partir deles. Celery Beat Ã© o scheduler inicial e deve rodar como singleton. n8n sÃ³ entra se integraÃ§Ãµes entre aplicaÃ§Ãµes justificarem outra camada operacional.
+Tasks devem ser idempotentes, reconhecer cancelamento, usar limites de tempo e produzir erros acionÃ¡veis. O dispatch prepara estado no PostgreSQL antes de publicar, usa identidade estÃ¡vel, histÃ³rico append-only e claim com lease; uma mensagem concorrente aguarda a lease e uma mensagem terminal nÃ£o repete trabalho. O wrapper consulta controles persistidos antes e depois de cada corrotina e entre retries, mas nÃ£o preempta cÃ³digo sÃ­ncrono bloqueante. Um tick periÃ³dico do Beat consulta schedules no banco; cada horÃ¡rio previsto vira uma ocorrÃªncia Ãºnica, com misfire, sobreposiÃ§Ã£o e falha de publicaÃ§Ã£o observÃ¡veis. Beat roda por entrypoint separado, com PID file do Celery e named mutex adicional no Windows. n8n sÃ³ entra se integraÃ§Ãµes entre aplicaÃ§Ãµes justificarem outra camada operacional.
+
+No Windows, `automation-foundry-runtime start` e o caminho operacional canonico. O processo permanece visivel em foreground, executa preflight e migrations antes de abrir processos host ocultos, registra estado local com identidade PID protegida contra reutilizacao e encerra o conjunto ao receber `stop`, Ctrl+C ou uma falha de filho. PostgreSQL e Redis que ja estavam ativos nao sao reivindicados nem parados pelo supervisor.
 
 ## 9. Control plane
 

@@ -47,10 +47,11 @@ Objetivo: fazer a base atual representar Automation Foundry e obter um baseline 
 
 Objetivo: executar uma automaÃ§Ã£o mÃ­nima usando contratos genÃ©ricos e estado durÃ¡vel.
 
-- [ ] Introduzir os conceitos `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `Experiment`, `LedgerEntry` e `Alert`. `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `LedgerEntry` e `Alert` estÃ£o implementados; `Experiment` permanece pendente.
-- [ ] Criar migrations e separar tabelas compartilhadas das tabelas do Content Engine. Nove migrations incrementais cobrem o kernel compartilhado; o baseline legado permanece pendente.
-- [ ] Adotar PostgreSQL para o caminho concorrente; manter SQLite nos testes.
-- [ ] Configurar Celery + Redis e filas `gpu`, `cpu`, `io`.
+- [x] Introduzir os conceitos `Automation`, `Run`, `StepRun`, `Approval`, `Artifact`, `Schedule`, `MetricPoint`, `Experiment`, `LedgerEntry` e `Alert`.
+- [x] Criar migrations e separar tabelas compartilhadas das tabelas do Content Engine. Quinze migrations incrementais cobrem o kernel compartilhado, o dispatch durÃ¡vel e o baseline legado; `platform_alerts` e `alerts` permanecem domÃ­nios distintos.
+- [x] Adotar PostgreSQL para o caminho concorrente; manter SQLite nos testes. O runtime local usa `asyncpg`, pool limitado e Compose preso a loopback; migrations, sessÃµes concorrentes e replay idempotente foram validados em PostgreSQL 17 descartÃ¡vel.
+- [x] Configurar Celery + Redis e filas `gpu`, `cpu`, `io`. A topologia fail-closed, os trÃªs workers seriais e o roteamento foram validados contra Redis real; probes efÃªmeros e o task de dispatch durÃ¡vel estÃ£o registrados.
+- [x] Implementar dispatch durÃ¡vel de automaÃ§Ãµes. A run e sua identidade estÃ¡vel sÃ£o persistidas antes da publicaÃ§Ã£o; falhas de broker permanecem reenviÃ¡veis, claims usam lease no PostgreSQL e entregas duplicadas nÃ£o repetem o step. O fluxo foi validado com PostgreSQL, Redis e worker IO reais.
 - [x] Implementar task wrapper idempotente com retries limitados, timeout, backoff exponencial e transiÃ§Ãµes persistidas em processo Ãºnico.
 - [x] Implementar pedidos de cancelamento e kill switch persistentes, auditÃ¡veis e consultados pelo wrapper em processo Ãºnico.
 - [x] Registrar uma automaÃ§Ã£o de exemplo e executar um step manual observÃ¡vel em processo Ãºnico, sem efeito externo.
@@ -66,11 +67,11 @@ Objetivo: controlar a plataforma sem depender do terminal para a operaÃ§Ã£o 
 
 - [x] Criar FastAPI ligado a loopback por configuraÃ§Ã£o validada, com `127.0.0.1` como default.
 - [ ] Construir dashboard Jinja/HTMX para mÃ³dulos, runs, steps e alertas. A visÃ£o read-only mostra automaÃ§Ãµes, runs recentes e alertas ativos; o detalhe de run mostra status, trigger, duraÃ§Ã£o, steps/tentativas/filas e evidÃªncias vinculadas com redaction. InteraÃ§Ãµes HTMX e visÃµes operacionais adicionais permanecem pendentes.
-- [ ] Adicionar fila de aprovaÃ§Ãµes. A pÃ¡gina inicial liga pendÃªncias redigidas ao detalhe da run, que permite rejeiÃ§Ã£o imutÃ¡vel com actor, motivo, confirmaÃ§Ã£o e proteÃ§Ã£o CSRF. AprovaÃ§Ã£o positiva permanece pendente atÃ© existir contexto seguro para revisar o payload protegido.
-- [ ] Permitir iniciar, cancelar, retentar e acionar kill switch. O detalhe da run jÃ¡ permite solicitar cancelamento com confirmaÃ§Ã£o, motivo, proteÃ§Ã£o CSRF e auditoria; iniciar, retentar e kill switch pela UI permanecem pendentes.
+- [ ] Adicionar fila de aprovaÃ§Ãµes. A pÃ¡gina inicial liga pendÃªncias redigidas ao detalhe da run, que permite rejeiÃ§Ã£o imutÃ¡vel e aprovaÃ§Ã£o positiva com actor, motivo, confirmaÃ§Ã£o e proteÃ§Ã£o CSRF. AprovaÃ§Ã£o positiva sÃ³ aparece para uma projeÃ§Ã£o limitada e validada do payload; registros legados sem esse contexto permanecem bloqueados.
+- [ ] Permitir iniciar, cancelar, retentar e acionar kill switch. O dashboard dispara executores registrados por um contrato fail-closed, cria retry como nova run ligada a uma falha marcada retryable e permite cancelamento e kill switch com confirmaÃ§Ã£o, proteÃ§Ã£o CSRF e auditoria. Somente o executor smoke estÃ¡ registrado; os mÃ³dulos de domÃ­nio ainda precisam aderir ao contrato.
 - [x] Adicionar schedules persistidos, desabilitados por padrÃ£o e com mudanÃ§as auditadas.
-- [ ] Integrar os schedules ao Celery Beat singleton e validar dispatch idempotente. `bloqueado local`
-- [ ] Mostrar saÃºde de CPU, RAM, GPU/VRAM, disco, banco, Redis e workers.
+- [x] Integrar os schedules ao Celery Beat singleton e validar dispatch idempotente. O tick no worker IO usa ocorrÃªncias Ãºnicas no PostgreSQL, aplica misfire/sobreposiÃ§Ã£o e reutiliza o dispatch durÃ¡vel; o fluxo real PostgreSQL + Redis + worker passou. O entrypoint Beat combina PID file com named mutex no Windows, cuja segunda aquisiÃ§Ã£o foi recusada em teste.
+- [x] Mostrar saÃºde de CPU, RAM, GPU/VRAM, disco, banco, Redis, workers e Beat em snapshot redigido. O dashboard nÃ£o revela endpoints ou nomes de workers; integraÃ§Ã£o com trÃªs workers reais e o probe local da RTX 3090 passaram.
 - [ ] Mostrar custos e resultados atribuÃ­veis. Totais exatos do ledger aparecem por moeda, sem conversÃ£o, e observaÃ§Ãµes vinculadas aparecem no detalhe da run; agregaÃ§Ã£o por automaÃ§Ã£o e anÃ¡lise de resultado permanecem pendentes.
 
 **PortÃ£o:** pelo dashboard, o usuÃ¡rio dispara e acompanha uma run, resolve uma aprovaÃ§Ã£o, diagnostica uma falha e desabilita o mÃ³dulo.
@@ -94,8 +95,9 @@ Objetivo: transformar a implementaÃ§Ã£o existente em uma automaÃ§Ã£o edi
 
 Objetivo: deixar o sistema rodar no computador principal com recuperaÃ§Ã£o previsÃ­vel.
 
-- [ ] Definir startup e shutdown seguros no Windows.
-- [ ] Implementar health checks e alertas locais.
+- [x] Definir startup e shutdown seguros no Windows. O supervisor singleton executa preflight e migrations, inicia a topologia fixa em processos ocultos, usa shutdown cooperativo por eventos nomeados e Job Object como fallback, protege o status contra reutilizacao de PID e para somente os servicos Compose que iniciou, sem remover volumes. O ciclo completo isolado passou em Windows real; a ativacao com o volume PostgreSQL local depende de configurar o `.env`.
+- [x] Implementar health checks locais redigidos e com timeout limitado.
+- [x] Transformar degradaÃ§Ãµes persistentes de health em alertas locais deduplicados. Duas observaÃ§Ãµes degradadas abrem ou atualizam o alerta e duas saudÃ¡veis o resolvem; `skip` nÃ£o altera o tratamento. Estado e eventos ficam no PostgreSQL, a task roda na fila `io` e nÃ£o envia notificaÃ§Ãµes externas.
 - [ ] Criar backup e restore de banco, configuraÃ§Ã£o e artefatos.
 - [ ] Definir retenÃ§Ã£o e limpeza de storage.
 - [ ] Testar reinÃ­cio durante task, perda de Redis, falta de disco e indisponibilidade do Ollama.
