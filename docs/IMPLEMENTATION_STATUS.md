@@ -24,20 +24,25 @@ snapshot redigido da saúde. As demais etapas dos módulos continuam placeholder
 | Banco e sessão | Implementado no caminho local atual | `src/core/database.py` cria engine e sessão async com commit/rollback. PostgreSQL usa `asyncpg`, pool limitado, pre-ping e timeouts de conexão/comando; somente URLs em loopback são aceitas. SQLite permanece como default sem `.env`, bootstrap de processo único e backend dos testes. O dispatch concorrente foi validado em PostgreSQL. |
 | Modelos de domínio | Parcial | `src/core/models.py` implementa `Channel`, `Video`, `Job`, `Metric`, `Cost`, `Topic`, `Alert` e `ABVariant`. O schema é específico do Content Engine e não contém os contratos genéricos da Fase 2. |
 | Kernel compartilhado | Parcial | `src/platform/models.py` implementa `Automation`, `Run`, `StepRun`, `RunDispatch`, `Approval`, `Artifact`, `Schedule`, `ScheduleOccurrence`, `MetricPoint`, `Experiment`, `LedgerEntry`, `Alert`, `HealthCondition`, controles persistidos e históricos append-only. Cada horário de schedule possui resultado `pending`, `published` ou `skipped`; dispatch possui identidade estável, tentativas de publicação e claim/lease. |
-| Migrations | Implementado no baseline atual | `alembic.ini`, `alembic/env.py` e dezessete revisions incrementais formam um caminho verificável para as tabelas compartilhadas e as oito tabelas legadas do Content Engine. `platform_alerts` evita colisão com `alerts`, e os roundtrips são testados. Evoluções futuras de schema ainda exigem novas migrations. |
-| Content Engine — A1 | Implementado | `src/pipeline/script_gen.py` contém geração em quatro chamadas, retry limitado, saneamento de saída e persistência local de roteiro/narração. `tests/pipeline/test_script_gen.py` cobre o comportamento com Ollama mockado. |
-| Content Engine — mídia e publicação | Placeholder | `src/pipeline/tts.py`, `visuals.py`, `captions.py`, `assembly.py` e `upload.py` estão vazios. Nenhuma publicação real foi implementada. |
+| Migrations | Implementado no baseline atual | `alembic.ini`, `alembic/env.py` e dezenove revisions incrementais formam um caminho verificável para as tabelas compartilhadas e as oito tabelas legadas do Content Engine. `platform_alerts` evita colisão com `alerts`, e os roundtrips são testados em SQLite; controles administrativos e a continuação `requeued` permanecem auditados por constraints. A migration de controles administrativos também passou em PostgreSQL 17 descartável; a revision 0019 ainda não foi repetida em PostgreSQL. Evoluções futuras de schema ainda exigem novas migrations. |
+| Content Engine — A1 | Implementado, com validação real pendente | `src/pipeline/script_gen.py` mantém a geração em quatro chamadas, retry limitado e saneamento de saída. `src/pipeline/a1_executor.py` adiciona entrada tipada, run/step `gpu`, bundle JSON atômico e revisável em `STORAGE_ROOT`, artifact interno com retenção de 90 dias, métrica de tamanho e observação de custo de API externa zero. Depois da geração, a run aguarda approval editorial ligada ao ID e SHA-256 do bundle; a página de revisão mostra o resultado completo sem persona ou contexto privado, rejeição cancela e arquivo alterado reverte a decisão. Com TTS desabilitado, aprovação íntegra conclui A1; uma configuração futura habilitada acordará a mesma run para A2. O dashboard prepara dispatch durável e retry explícito sem bloquear a requisição; A1 não publica, envia mensagens nem gera gasto externo. Sucesso, idempotência, falha retryable, rollback da persistência parcial de evidências, retry, cancelamento, approval e entrega duplicada usam gerador mockado; Ollama e GPU reais continuam pendentes no computador local. |
+| Content Engine — TTS A2 | Parcial, teste local opt-in | `src/pipeline/tts.py` exige a approval exata do bundle A1, cria step `gpu` ordinal 2, recebe um adapter substituível, valida WAV PCM S16LE mono, publica por rename atômico e registra áudio interno com retenção de 90 dias, duração, energia estimada, proveniência/licença e custo externo zero. A mesma identidade de dispatch pode ser reaberta com evento `requeued` após a approval e entregas duplicadas não repetem A1 nem A2. O adapter `kokoro_quality_test` fixa Kokoro 0.9.4, revisão/peso/voz, exige CUDA e eSpeak NG externo, limita chunks e marca a voz como `provenance-unverified`/`quality-test-only`; `disabled` permanece o default. Retry, saída inválida, payload divergente e rollback de evidências usam fake. Escuta das três vozes e decisão comercial continuam bloqueadas na RTX 3090. |
+| Content Engine — visuais A3 | Parcial, importação local opt-in | `src/pipeline/visuals.py` consome o bundle A1 aprovado e o WAV A2 verificados por hash, calcula um visual a cada seis segundos, exige proveniência, licença, atribuição e direito comercial por asset, valida PNG completo nas dimensões short/long, publica imagens + manifesto por rename atômico e registra artifacts, contagem, cobertura e custo externo zero. Quando A3 está habilitado, A2 preserva a run em `running` e A3 a conclui sem alterar o áudio. Além dos fakes, `local_assets_quality_test` importa na fila `io` somente arquivos selecionados pelo operador dentro de raiz configurada, com manifesto estrito, quantidade exata, IDs únicos e SHA-256 por item; não baixa, repete nem altera a origem. `disabled` permanece o default, o pacote ainda exige revisão humana e a declaração de direitos não é prova jurídica independente. FLUX.1 e provedores stock seguem bloqueados. |
+| Content Engine — legendas A4 | Parcial, timing local opt-in | `src/pipeline/captions.py` consome o WAV A2 conferido por tamanho/SHA-256 e a narração ligada à approval A1, aceita somente timestamps por palavra monotônicos dentro da duração, idioma PT, similaridade mínima, proveniência/licença e `commercial_use=True`. Publica ASS com karaoke por rename atômico e registra artifact, palavras temporizadas, similaridade, energia GPU quando aplicável e custo externo zero. Além dos fakes, `approved_text_timing_quality_test` roda em `cpu` e distribui deterministicamente o texto aprovado pela duração real do WAV, sem modelo ou download. Ele viabiliza montagem local, mas não escuta o áudio, não detecta pausas/deriva e exige revisão humana. Faster-whisper e pesos continuam bloqueados. |
+| Content Engine — montagem A5 | Parcial, quality-test real opt-in | `src/pipeline/assembly.py` confere WAV, manifesto/imagens e ASS por tamanho/SHA-256, reconcilia o manifesto com cada artifact visual e executa na fila `cpu`. O resultado precisa declarar H.264, AAC, legendas queimadas, proveniência/licença e direito comercial; o parser interno e ffprobe validam estrutura, tracks, resolução e duração. Além dos adapters fake, `ffmpeg_quality_test` exige hashes exatos de FFmpeg/ffprobe externos, confirma flags GPLv3/libx264/libass, usa subprocess sem shell, timeout e stderr não persistido. O build Gyan 8.0.1 instalado por WinGet gerou um short 1080×1920 H.264/AAC reproduzível e a legenda foi confirmada em frame. O default continua `disabled`; não há redistribuição dos binários, e áudio real, long, revisão editorial e política de distribuição continuam pendentes. |
+| Content Engine — originalidade A6 | Parcial, gate lexical implementado | `src/intelligence/similarity.py` verifica o bundle A1 aprovado e o MP4 A5 por tamanho/SHA-256, compara unigramas por cosseno e trigramas por Jaccard na fila `cpu` e usa somente runs anteriores da mesma automação que já possuem relatório A6 e terminaram com sucesso. Limite e janela são configuráveis; relatório JSON, máximo/média, contagem, duração, energia estimada e custo zero ficam atribuíveis. Score máximo no limite ou acima abre alerta `warning` e falha a run com `CONTENT_ORIGINALITY_BLOCKED`, sem upload ou override automático. Duplicata, texto diferente, adulteração histórica, replay e rollback de evidências possuem testes. Escopo por canal e detecção semântica de paráfrases permanecem pendentes. |
+| Content Engine — publicação | Placeholder | `src/pipeline/upload.py` está vazio. Nenhum upload ou publicação real foi implementado. |
 | Orquestração e filas | Parcial | `src/core/celery_app.py` declara exclusivamente `gpu`, `cpu` e `io`, usa mensagens JSON persistentes, late ack, prefetch 1, publish retry limitado e timeouts configurados. `RunDispatch` protege a entrega e `ScheduleOccurrence` protege cada horário previsto. Beat publica ticks de schedule e health na fila IO. O entrypoint combina PID file e named mutex no Windows; uma segunda aquisição do mutex é recusada. |
-| CLI operacional | Parcial | `src/cli.py` expõe diagnóstico, dashboard operacional, execução inline, `enqueue-run`, controles, approvals, artifacts, schedules, métricas, ledger e alertas. `automation-foundry-runtime start/stop/status` opera a topologia fixa; os entrypoints de worker e Beat continuam disponíveis para diagnóstico. A CLI local ainda não autentica criptograficamente o actor. |
-| Control plane | Parcial | `src/dashboard/main.py`, `service.py` e os templates implementam visão geral, detalhe da run e saúde operacional redigida. O dashboard mostra experiments sem hipótese ou motivos privados e permite atribuir um disparo manual a um experiment `running`. Um registro fail-closed permite disparo e retry somente para executores declarados; por enquanto apenas o smoke local está registrado. Cancelamento, kill switch e approvals usam POST com CSRF, Host loopback e confirmação. Ainda não há atualização HTMX interativa. A identidade do actor local ainda não é autenticada. |
-| Inteligência | Placeholder | `src/intelligence/trends.py`, `competitors.py` e `similarity.py` estão vazios. |
+| CLI operacional | Parcial | `src/cli.py` expõe diagnóstico, dashboard operacional, execução inline, `enqueue-run`, controles, approvals, artifacts, schedules, métricas, ledger, alertas e `backup`/`verify-backup`/`restore-backup`. `automation-foundry-runtime start/stop/status` opera a topologia fixa; os entrypoints de worker e Beat continuam disponíveis para diagnóstico. A CLI local ainda não autentica criptograficamente o actor. |
+| Control plane | Parcial | `src/dashboard/main.py`, `service.py` e os templates implementam visão geral, detalhe da run, schedules e saúde operacional redigida. Schedules aparecem em ordem operacional com estado, cron, timezone, próxima execução e última ocorrência, sem payloads ou motivos internos. Approvals pendentes mostram idade calculada no servidor e continuam ligadas ao detalhe da run; o A1 adiciona uma página `no-store` que lê o bundle completo, verifica tamanho e SHA-256 e omite persona e contexto privado antes da decisão. O ledger mostra totais exatos globais e por automação e moeda, sem conversão cambial nem exposição de categoria ou fonte. Taxa de sucesso e duração média usam uma janela de até 50 resultados `succeeded`/`failed` por automação; canceladas e abertas ficam fora da taxa, e durações inválidas ficam fora apenas da média. `Automation.enabled` possui toggle idempotente e auditado com CSRF, confirmação, actor e motivo; desabilitar bloqueia novas runs e o início das enfileiradas sem interromper trabalho já ativo, mantendo o kill switch separado. O dashboard mostra experiments sem hipótese ou motivos privados e permite atribuir um disparo manual a um experiment `running`. Um registro fail-closed permite disparo e retry somente para executores declarados; o smoke roda inline e o Content Engine A1 usa dispatch durável em background na fila `gpu`, com campos de entrada allowlisted e redigidos das visões. Cancelamento, kill switch e approvals também usam POST com CSRF, Host loopback e confirmação. O detalhe atualiza status e steps de runs não terminais por um fragmento HTMX `no-store` que reutiliza a projeção redigida; HTMX 2.0.10 e sua licença 0BSD são distribuídos no próprio pacote, sem CDN, e os controles permanecem funcionais sem JavaScript. Ainda não há interações HTMX nas demais visões, análise de resultado nem resolução direta pela fila de approvals. A identidade do actor local ainda não é autenticada. |
+| Inteligência | Parcial | `src/intelligence/similarity.py` implementa o gate lexical A6. `src/intelligence/trends.py` e `competitors.py` continuam vazios; embeddings semânticos, tendências e inteligência competitiva não foram implementados. |
 | Engajamento | Placeholder | `src/engagement/comments.py` está vazio. |
-| Operações | Parcial | `src/operations/health.py` coleta CPU, memória, disco, GPU/VRAM, banco, Redis, Beat e workers `gpu`/`cpu`/`io` com timeout e saída redigida. `health_alerts.py` persiste somente consecutividade e alertas allowlisted: duas falhas abrem/atualizam e duas recuperações resolvem; `skip` é inconclusivo. Não há histórico de métricas nem notificação externa. `seo.py` e `repurpose.py` continuam vazios. |
+| Operações | Parcial | `health.py` coleta saúde redigida e `health_alerts.py` persiste consecutividade e alertas allowlisted. `backup.py` cria, verifica e restaura bundles SQLite/PostgreSQL com configuração sem segredos, ZIP de artefatos e manifesto SHA-256. Restore exige confirmação exata, runtime parado, storage vazio e backup automático prévio. Retenção, histórico de métricas e notificação externa permanecem ausentes. `seo.py` e `repurpose.py` continuam vazios. |
 | Receita e experimentos | Parcial | O contrato compartilhado de Experiment e sua atribuição de runs estão implementados. `src/revenue/aggregator.py`, `profit.py` e `ab_testing.py` continuam vazios; não há análise estatística nem decisão automática de vencedor. |
 | Extras e ações externas | Placeholder | `src/extras/affiliate.py`, `outreach.py` e `x_bot.py` estão vazios. Não há envio, gasto ou ação externa implementada. |
 | Trading Research Lab | Planejado | O domínio aparece em `ARQUITETURA.md` e `ROADMAP.md`, mas não possui implementação. Trading com dinheiro real permanece fora do escopo. |
 | Infraestrutura local | Parcial | `docker-compose.yml` define PostgreSQL 17 e Redis com volumes, health checks e portas publicadas somente em `127.0.0.1`. O supervisor Windows inicia três workers host, Beat e dashboard, reivindica somente serviços Compose que estavam parados e nunca remove volumes. Ollama permanece fora do Compose. |
-| Testes | Parcial | A suíte cobre publicação, falha de broker, claim, lease expirada, ownership, duplicatas, redaction de health e lifecycle do supervisor. Um ciclo isolado em Windows real validou mutex, processos ocultos, estado, sinal externo, shutdown cooperativo e fallback Job Object sem tocar Docker ou banco. Integrações opt-in validam PostgreSQL, Redis/Celery, dispatch, schedule e três workers. Restart durante task, modelos e carga GPU ainda não foram validados. |
+| Testes | Parcial | A suíte cobre publicação, falha de broker, claim, lease expirada, ownership, duplicatas, health, supervisor e backup/restore. Smokes reais cobrem SQLite e um PostgreSQL 17 Compose descartável com `pg_dump`, alteração e `pg_restore`; testes cobrem confirmação, pre-backup, corrupção, redaction, ZIP traversal, cleanup e ownership. Restart durante task, volume doméstico, modelos e carga GPU ainda não foram validados. |
 
 Arquivos `__init__.py` vazios são marcadores de pacote e não contam como funcionalidade.
 
@@ -86,11 +91,29 @@ supervisor nunca executa `docker compose down` nem remove volumes. Os entrypoint
 continuam disponíveis para diagnóstico. Eles não expõem opções de pool ou concorrência: no Windows,
 cada worker usa `solo` e concorrência 1. Isso garante GPU serializada e permite paralelismo apenas
 entre os três processos.
+
+Com o runtime parado, o backup local e sua verificação offline usam:
+
+```powershell
+.venv\Scripts\automation-foundry backup --json
+.venv\Scripts\automation-foundry verify-backup "storage/backups/<backup-id>" --json
+.venv\Scripts\automation-foundry restore-backup "storage/backups/<backup-id>" --confirm "RESTORE <backup-id>" --json
+```
+
+O default publica o bundle em `STORAGE_ROOT/backups`; um destino externo pode ser informado com
+`--destination`. O bundle inclui banco, configuração allowlisted e artefatos, mas exclui
+`STORAGE_ROOT/runtime`, backups anteriores e `.gitkeep`. PostgreSQL é exportado por `pg_dump` dentro
+do container; se o comando iniciou o serviço, ele tenta pará-lo ao final. A configuração não inclui
+senhas, tokens ou URLs com credenciais. Restore é deliberadamente restritivo: o runtime precisa
+estar parado, o storage de artefatos precisa estar vazio, a identidade do banco deve coincidir e a
+confirmação deve conter o ID exato. Antes de substituir o banco, outro bundle preserva o estado
+atual; falha do banco remove apenas os artefatos recém-instalados.
 Os tasks Celery registrados são os probes sem efeito externo, o executor de dispatch durável e os
 ticks de schedules e reconciliação de health. Beat apenas publica os ticks; horários, ocorrências,
 consecutividade e alertas continuam no PostgreSQL.
-Runs publicadas por `enqueue-run` usam identidade estável, claim/lease no PostgreSQL e replay seguro;
-o executor inline permanece disponível para diagnóstico local.
+Runs publicadas por `enqueue-run` ou pelo formulário A1 usam identidade estável, claim/lease no
+PostgreSQL e replay seguro; o executor inline permanece disponível para diagnóstico local. A1 usa a
+fila `gpu`, mas não publica conteúdo nem executa outro efeito externo.
 
 Esses comandos gerenciam as vinte e uma tabelas compartilhadas: `automations`, `runs`,
 `run_transitions`, `run_dispatches`, `run_dispatch_events`, `step_runs`, `step_run_transitions`, `control_events`, `approvals`,
@@ -218,6 +241,9 @@ Depois de `alembic upgrade head`, a primeira visão do control plane é iniciada
 
 O host default é `127.0.0.1`; configuração e cabeçalho `Host` não-loopback são rejeitados. Visões de
 estado consultam o banco; `/health` faz probes limitados e somente leitura dos recursos locais.
+O detalhe de uma run não terminal consulta `/runs/<id>/fragment` a cada dois segundos para atualizar
+somente status e steps. O asset HTMX é servido por `/static/htmx.min.js`; nenhum recurso externo é
+necessário e a página completa continua utilizável quando JavaScript está desabilitado.
 Controles mutáveis de run, kill switch e approval exigem confirmação explícita e token CSRF por
 processo. Totais financeiros são calculados com `Decimal` em Python para preservar a precisão do
 SQLite e permanecem separados por moeda, sem conversão cambial.
@@ -235,12 +261,13 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 - `python -m pip install -e ".[dev]"`: concluído; a primeira tentativa foi bloqueada pela rede da
   sandbox e a repetição com acesso autorizado concluiu a instalação;
-- `python -m pytest -q`: **280 passed, 6 skipped**; os skips são integrações opt-in que exigem
-  PostgreSQL e/ou Redis descartáveis;
+- `python -m pytest -q`: **402 passed, 9 skipped**; os skips são integrações opt-in que exigem
+  PostgreSQL/Redis descartáveis, FFmpeg/ffprobe fixados ou Kokoro, eSpeak NG, CUDA e escuta
+  humana local;
 - `python -m ruff check .`: encontrou 7 ocorrências mecânicas preexistentes; o autofix removeu
   imports não usados, ordenou imports e simplificou um context manager; a repetição terminou com
   **All checks passed**;
-- `python -m mypy src`: **Success: no issues found in 66 source files**;
+- `python -m mypy src`: **Success: no issues found in 68 source files**;
 - `python -m pip check`: **No broken requirements found**;
 - validação estrutural de `pyproject.toml` e `docker-compose.yml` por `tomllib` e YAML:
   concluída, incluindo metadata, entry point `src.cli:main` e nome do container;
@@ -252,8 +279,9 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 - `docker compose config --quiet`: concluído com senha efêmera fornecida apenas ao processo de
   validação; PostgreSQL e Redis publicam portas somente em loopback.
 - migrations Alembic em SQLite temporário: `upgrade head`, `alembic check` e roundtrip das revisions
-  de artifacts, schedules, experiments, métricas, alertas, ledger e baseline legado concluídos; as
-  vinte e uma tabelas compartilhadas, as oito tabelas do Content Engine e `alembic_version` foram criadas.
+  de artifacts, schedules, experiments, métricas, alertas, ledger, controles e dispatch `requeued`
+  concluídos; as vinte e uma tabelas compartilhadas, as oito tabelas do Content Engine e
+  `alembic_version` foram criadas.
 - PostgreSQL 17 descartável: todas as migrations e `alembic check` concluídos; duas runs em sessões
   concorrentes foram persistidas e o replay da mesma chave retornou a run original. O container e
   seus dados efêmeros foram removidos após o teste. A repetição usa `TEST_POSTGRESQL_URL` com
@@ -283,27 +311,45 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
   processo oculto, arquivo de estado, proteção contra reutilização de PID e shutdown cooperativo
   passaram em ciclo real. Infraestrutura e migrations foram substituídas no teste; Docker, banco e
   volumes locais não foram tocados.
+- Backup SQLite isolado: a CLI criou um bundle real, publicou-o por rename atômico e verificou
+  banco, configuração redigida, ZIP de artefatos e manifesto. Corrupção, path traversal, chave
+  sensível, runtime ativo e falha parcial foram recusados; o caminho PostgreSQL foi validado com
+  comandos mockados e sem senha na linha de comando.
+- Backup/restore PostgreSQL 17 descartável: um projeto Compose e volume exclusivos receberam dados,
+  executaram `pg_dump`, sofreram uma alteração e retornaram ao estado anterior por
+  `pg_restore --single-transaction`; o backup automático pré-restore e o artefato também foram
+  verificados. Container, rede e volume do teste foram removidos ao final.
 
 ## Verificações bloqueadas ou adiadas
 
 - **Computador de casa:** CPU, RAM e disco responderam ao snapshot; o lifecycle isolado do
   supervisor passou. O boot completo real foi recusado corretamente pelo preflight porque a
   configuração ativa ainda usa SQLite; depende de um `.env` PostgreSQL local válido.
-- **GPU:** RTX 3090 e VRAM responderam ao `nvidia-smi`; CUDA, modelos, carga prolongada e fila GPU
-  com trabalho real permanecem pendentes.
+- **GPU:** RTX 3090 e VRAM responderam ao `nvidia-smi`; o adapter Kokoro opt-in está implementado,
+  mas CUDA/PyTorch, eSpeak NG, download fixado, voz PT-BR, áudio audível,
+  duração longa, modelos, carga prolongada e fila GPU com trabalho real permanecem pendentes.
 - **Serviços locais:** validar Ollama, Redis, o volume PostgreSQL persistente e recuperação após
-  indisponibilidade no computador de casa. A integração PostgreSQL efêmera já foi validada.
+  indisponibilidade no computador de casa. Backup e restore passaram em PostgreSQL descartável,
+  mas ainda não foram executados contra o volume persistente doméstico.
 - **Timeouts de worker no Windows:** soft/hard limits estão configurados, mas o pool `solo` não
   oferece todas as garantias de timeout dos pools baseados em processos. O task wrapper mantém seu
   timeout assíncrono; preempção de código síncrono bloqueante continua pendente de validação local.
 - **Credenciais:** validar somente em modo opt-in as APIs oficiais de Google/YouTube, Reddit,
   bancos de mídia, X e demais provedores. Nenhuma credencial deve entrar no Git.
 - **Ações externas:** publicação, mensagens, gastos, exclusões materiais e ações financeiras
-  continuam sem implementação. O kill switch genérico existe; approval e gates específicos de
-  domínio ainda são obrigatórios antes de qualquer teste externo.
+  continuam sem implementação. O gate editorial do bundle A1 pode autorizar somente a
+  transformação TTS local do conteúdo exato; publicação e cada efeito externo futuro ainda exigem
+  seus próprios gates específicos.
 
 ## Próxima fatia recomendada
 
-Criar backup e restore coordenados de PostgreSQL, configuração sem secrets e artefatos, com
-manifesto verificável e sem exclusão implícita. Hard time limits, reinício durante task e recuperação
-do volume persistente continuam dependentes de validação local controlada.
+Executar a integração opt-in do Kokoro na RTX 3090, escutar amostras das três vozes PT-BR e
+registrar qualidade, desempenho e a decisão explícita sobre o risco residual de proveniência.
+FLUX.1 permanece bloqueado; A3 agora pode importar assets locais licenciados e A4 pode gerar timing
+proporcional de quality test sem modelo. O próximo marco técnico do Content Engine é executar o
+encadeamento opt-in A1→A6 com narração real, imagens revisadas e FFmpeg fixado, inspecionando áudio,
+sincronismo e vídeo no computador local. O gate lexical existe antes de qualquer upload. Depois desse
+ensaio, a próxima fatia de produto é criar a revisão humana do vídeo final vinculada aos hashes do MP4
+e do relatório A6, ainda sem upload; alinhamento real auditado, escopo por canal e análise semântica
+continuam como endurecimento futuro. Retenção e limpeza do storage permanecem como a próxima fatia
+de confiabilidade da Fase 5, primeiro como inventário e dry-run.

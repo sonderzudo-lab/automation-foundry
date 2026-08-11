@@ -1,4 +1,4 @@
-"""Persistent operator controls for cancellation and automation kill switches."""
+"""Persistent operator controls for automation state, cancellation, and kill switches."""
 
 from __future__ import annotations
 
@@ -97,6 +97,43 @@ async def set_automation_kill_switch(
             ControlEventType.KILL_SWITCH_ENABLED.value
             if active
             else ControlEventType.KILL_SWITCH_DISABLED.value
+        ),
+        actor=actor,
+        reason=reason,
+    )
+    session.add(event)
+    await session.flush()
+    return ControlChangeResult(changed=True, event=event)
+
+
+async def set_automation_enabled(
+    session: AsyncSession,
+    *,
+    automation: Automation,
+    enabled: bool,
+    actor: str,
+    reason: str,
+) -> ControlChangeResult:
+    """Set administrative admission for new runs and append audit evidence."""
+    if automation.id is None:
+        raise ValueError("automation must be persisted before changing enabled state")
+    reason = _require_reason(reason)
+    actor = _require_actor(actor)
+    current = await session.scalar(
+        select(Automation.enabled).where(Automation.id == automation.id)
+    )
+    if current is None:
+        raise ValueError("automation does not exist")
+    if current is enabled:
+        return ControlChangeResult(changed=False, event=None)
+
+    automation.enabled = enabled
+    event = ControlEvent(
+        automation_id=automation.id,
+        event_type=(
+            ControlEventType.AUTOMATION_ENABLED.value
+            if enabled
+            else ControlEventType.AUTOMATION_DISABLED.value
         ),
         actor=actor,
         reason=reason,

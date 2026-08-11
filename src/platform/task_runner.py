@@ -86,6 +86,8 @@ class TaskStepSpec:
     idempotency_key: str
     input_payload: dict[str, Any]
     required_approval_id: int | None = None
+    required_approval_action: str | None = None
+    approval_input_payload: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,14 +127,18 @@ async def execute_task_step(
     if RunStatus(run.status) is not RunStatus.RUNNING:
         raise InvalidRunTransitionError("tasks can only execute for a running run")
     if spec.required_approval_id is not None:
+        approval_action = spec.required_approval_action or spec.name
+        approval_input = spec.approval_input_payload or spec.input_payload
         await assert_approval_granted(
             session,
             approval_id=spec.required_approval_id,
             run_id=run.id,
-            action=spec.name,
+            action=approval_action,
             step_idempotency_key=spec.idempotency_key,
-            input_payload=spec.input_payload,
+            input_payload=approval_input,
         )
+    elif spec.required_approval_action is not None or spec.approval_input_payload is not None:
+        raise ValueError("approval details require required_approval_id")
 
     attempts = list(
         (

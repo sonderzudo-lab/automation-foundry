@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "automation-foundry"
 version = "0.1.0"
 description = "Plataforma local-first para automações modulares com controle humano"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 
 # ── Dependências de produção ────────────────────────────────────────────────
 
@@ -40,10 +40,10 @@ dependencies = [
 # ── IA / GPU ────────────────────────────────────────────────────────────────
 ai = [
     # openai já está em dependencies (core) — cliente do Ollama
-    "kokoro>=0.9",                   # TTS Apache 2.0 (PT-BR)
-    "faster-whisper>=1.0",           # transcrição word-level
+    "kokoro==0.9.4",                 # adapter PT-BR somente para quality test local
+    "faster-whisper>=1.0",           # candidato A4; nenhum peso/backend aprovado
     "sentence-transformers>=3.0",    # embeddings locais (similaridade D3)
-    "diffusers>=0.28",               # SDXL / FLUX Schnell
+    "diffusers>=0.30,<0.40",         # piso da FluxPipeline; nenhum backend visual aprovado
     "transformers>=4.41",            # backbone dos modelos HuggingFace
     "accelerate>=0.30",              # otimizações de inferência
     "torch>=2.3",                    # PyTorch (CUDA via instalação separada)

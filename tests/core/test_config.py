@@ -19,6 +19,18 @@ def test_defaults_use_automation_foundry_identity_and_loopback(
         "OLLAMA_BASE_URL",
         "REDDIT_USER_AGENT",
         "REDIS_URL",
+        "CONTENT_TTS_BACKEND",
+        "CONTENT_VISUAL_BACKEND",
+        "CONTENT_VISUAL_IMPORT_ROOT",
+        "CONTENT_VISUAL_MANIFEST_PATH",
+        "CONTENT_CAPTION_BACKEND",
+        "CONTENT_ASSEMBLY_BACKEND",
+        "CONTENT_FFMPEG_PATH",
+        "CONTENT_FFPROBE_PATH",
+        "CONTENT_FFMPEG_EXPECTED_SHA256",
+        "CONTENT_FFPROBE_EXPECTED_SHA256",
+        "CONTENT_SIMILARITY_THRESHOLD",
+        "CONTENT_SIMILARITY_WINDOW",
     ):
         monkeypatch.delenv(variable, raising=False)
 
@@ -30,6 +42,119 @@ def test_defaults_use_automation_foundry_identity_and_loopback(
     assert settings.ollama_base_url == "http://127.0.0.1:11434/v1"
     assert settings.reddit_user_agent == "automation-foundry/0.1"
     assert settings.redis_url == "redis://127.0.0.1:6379/0"
+    assert settings.content_tts_backend == "disabled"
+    assert settings.content_tts_voice_id == "pf_dora"
+    assert settings.content_visual_backend == "disabled"
+    assert settings.content_visual_import_root == "./imports/content-visuals"
+    assert settings.content_visual_manifest_path == "manifest.json"
+    assert settings.content_caption_backend == "disabled"
+    assert settings.content_assembly_backend == "disabled"
+    assert settings.content_ffmpeg_path == "ffmpeg"
+    assert settings.content_ffprobe_path == "ffprobe"
+    assert settings.content_similarity_threshold == 0.85
+    assert settings.content_similarity_window == 20
+
+
+def test_tts_backend_rejects_unscoped_kokoro_mode() -> None:
+    with pytest.raises(ValidationError, match="content_tts_backend"):
+        Settings(_env_file=None, content_tts_backend="kokoro")
+
+
+def test_tts_quality_test_accepts_only_reviewed_pt_br_profiles() -> None:
+    settings = Settings(
+        _env_file=None,
+        content_tts_backend="kokoro_quality_test",
+        content_tts_voice_id="pm_alex",
+        content_tts_language_code="p",
+    )
+
+    assert settings.content_tts_backend == "kokoro_quality_test"
+
+    with pytest.raises(ValidationError, match="language code"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="kokoro_quality_test",
+            content_tts_voice_id="pf_dora",
+            content_tts_language_code="a",
+        )
+    with pytest.raises(ValidationError, match="voice ID"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="kokoro_quality_test",
+            content_tts_voice_id="af_heart",
+            content_tts_language_code="p",
+        )
+
+
+@pytest.mark.parametrize(
+    "backend",
+    ["flux", "flux_schnell", "flux_schnell_quality_test", "flux_dev"],
+)
+def test_visual_backend_remains_fail_closed_after_flux_audit(backend: str) -> None:
+    with pytest.raises(ValidationError, match="content_visual_backend"):
+        Settings(_env_file=None, content_visual_backend=backend)
+
+
+def test_local_visual_asset_quality_test_is_explicitly_selectable() -> None:
+    settings = Settings(
+        _env_file=None,
+        content_visual_backend="local_assets_quality_test",
+        content_visual_import_root="./operator-imports",
+        content_visual_manifest_path="reviewed.json",
+    )
+
+    assert settings.content_visual_backend == "local_assets_quality_test"
+    assert settings.content_visual_import_root == "./operator-imports"
+    assert settings.content_visual_manifest_path == "reviewed.json"
+
+
+def test_caption_backend_remains_fail_closed_until_model_audit() -> None:
+    with pytest.raises(ValidationError, match="content_caption_backend"):
+        Settings(_env_file=None, content_caption_backend="faster_whisper")
+
+
+def test_approved_text_timing_quality_test_is_explicitly_selectable() -> None:
+    settings = Settings(
+        _env_file=None,
+        content_caption_backend="approved_text_timing_quality_test",
+    )
+
+    assert settings.content_caption_backend == "approved_text_timing_quality_test"
+
+
+def test_assembly_backend_remains_fail_closed_until_ffmpeg_audit() -> None:
+    with pytest.raises(ValidationError, match="content_assembly_backend"):
+        Settings(_env_file=None, content_assembly_backend="ffmpeg")
+
+
+def test_ffmpeg_quality_test_requires_pinned_binary_hashes() -> None:
+    digest = "a" * 64
+    settings = Settings(
+        _env_file=None,
+        content_assembly_backend="ffmpeg_quality_test",
+        content_ffmpeg_expected_sha256=digest,
+        content_ffprobe_expected_sha256=digest,
+    )
+    assert settings.content_assembly_backend == "ffmpeg_quality_test"
+
+    with pytest.raises(ValidationError, match="content_ffmpeg_expected_sha256"):
+        Settings(
+            _env_file=None,
+            content_assembly_backend="ffmpeg_quality_test",
+            content_ffmpeg_expected_sha256="",
+            content_ffprobe_expected_sha256=digest,
+        )
+
+
+def test_similarity_gate_configuration_is_bounded() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, content_similarity_threshold=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, content_similarity_threshold=1.01)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, content_similarity_window=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, content_similarity_window=101)
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "example.com"])

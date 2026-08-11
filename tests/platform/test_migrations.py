@@ -86,6 +86,76 @@ def test_health_condition_migration_downgrade_and_reupgrade(tmp_path: Path) -> N
     command.check(config)
 
 
+def test_automation_enabled_control_migration_roundtrip(tmp_path: Path) -> None:
+    database_path = tmp_path / "automation-enabled-control-roundtrip.db"
+    config = Config("alembic.ini")
+    config.set_main_option(
+        "sqlalchemy.url",
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+    )
+
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO automations (slug, name, owner, enabled) "
+            "VALUES ('migration-control', 'Migration Control', 'local-owner', 1)"
+        )
+        automation_id = connection.execute(
+            "SELECT id FROM automations WHERE slug = 'migration-control'"
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO control_events "
+            "(automation_id, event_type, actor, reason) VALUES (?, ?, ?, ?)",
+            (
+                automation_id,
+                "automation_disabled",
+                "local-owner",
+                "migration verification",
+            ),
+        )
+        connection.execute("DELETE FROM control_events")
+        connection.commit()
+
+    command.downgrade(config, "20260810_0017")
+    with sqlite3.connect(database_path) as connection:
+        table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'control_events'"
+        ).fetchone()[0]
+    assert "automation_disabled" not in table_sql
+
+    command.upgrade(config, "head")
+    command.check(config)
+
+
+def test_dispatch_requeued_event_migration_roundtrip(tmp_path: Path) -> None:
+    database_path = tmp_path / "dispatch-requeued-roundtrip.db"
+    config = Config("alembic.ini")
+    config.set_main_option(
+        "sqlalchemy.url",
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+    )
+
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'run_dispatch_events'"
+        ).fetchone()[0]
+    assert "requeued" in table_sql
+
+    command.downgrade(config, "20260810_0018")
+    with sqlite3.connect(database_path) as connection:
+        downgraded_sql = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'run_dispatch_events'"
+        ).fetchone()[0]
+    assert "requeued" not in downgraded_sql
+
+    command.upgrade(config, "head")
+    command.check(config)
+
+
 def test_approval_migration_downgrade_and_reupgrade(tmp_path: Path) -> None:
     database_path = tmp_path / "approval-roundtrip.db"
     config = Config("alembic.ini")

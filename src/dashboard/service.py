@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
-from decimal import Decimal
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.platform.executor_registry import automation_supports_retry
@@ -24,6 +24,9 @@ from src.platform.models import (
     PlatformAlert,
     Run,
     RunStatus,
+    Schedule,
+    ScheduleOccurrence,
+    ScheduleStatus,
     StepRun,
 )
 
@@ -55,6 +58,19 @@ class RunSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class AutomationExecutionSummary:
+    """Recent completed-run indicators for one automation."""
+
+    automation_slug: str
+    sample_size: int
+    succeeded_count: int
+    success_rate_percent: Decimal | None
+    duration_sample_size: int
+    average_duration_seconds: Decimal | None
+    sample_limit: int
+
+
+@dataclass(frozen=True, slots=True)
 class ApprovalSummary:
     """Redacted pending-approval projection without protected summaries."""
 
@@ -63,6 +79,8 @@ class ApprovalSummary:
     run_id: int
     action: str
     requested_at: datetime
+    pending_for_seconds: int
+    pending_for_label: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +108,18 @@ class LedgerCurrencySummary:
 
 
 @dataclass(frozen=True, slots=True)
+class AutomationLedgerSummary:
+    """Exact ledger totals attributable to one automation and currency."""
+
+    automation_slug: str
+    currency: str
+    cost: Decimal
+    revenue: Decimal
+    attributed_value: Decimal
+    net_revenue: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class ExperimentSummary:
     """Operator-visible experiment definition without hypothesis or audit reasons."""
 
@@ -107,15 +137,33 @@ class ExperimentSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class ScheduleSummary:
+    """Redacted schedule state without trigger payloads or skip reasons."""
+
+    id: int
+    automation_slug: str
+    name: str
+    status: str
+    cron_expression: str
+    timezone: str
+    next_run_at: datetime | None
+    latest_occurrence_status: str | None
+    latest_scheduled_for: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     """Complete read-only state rendered on the dashboard home page."""
 
     automations: tuple[AutomationSummary, ...]
     recent_runs: tuple[RunSummary, ...]
+    execution_summaries: tuple[AutomationExecutionSummary, ...]
     pending_approvals: tuple[ApprovalSummary, ...]
     active_alerts: tuple[AlertSummary, ...]
     ledger_totals: tuple[LedgerCurrencySummary, ...]
+    automation_ledger_totals: tuple[AutomationLedgerSummary, ...]
     experiments: tuple[ExperimentSummary, ...]
+    schedules: tuple[ScheduleSummary, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +278,15 @@ class RunDetail:
             RunStatus.CANCELLED,
         }
 
+    @property
+    def is_terminal(self) -> bool:
+        """Return whether live dashboard polling can stop for this run."""
+        return RunStatus(self.status) in {
+            RunStatus.SUCCEEDED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        }
+
 
 async def load_dashboard_snapshot(
     session: AsyncSession,
@@ -238,6 +295,9 @@ async def load_dashboard_snapshot(
     pending_limit: int = 20,
     alert_limit: int = 20,
     experiment_limit: int = 50,
+    schedule_limit: int = 50,
+    execution_sample_limit: int = 50,
+    now: datetime | None = None,
 ) -> DashboardSnapshot:
     """Load a bounded, redacted dashboard snapshot from durable state."""
     if (
@@ -245,8 +305,11 @@ async def load_dashboard_snapshot(
         or pending_limit < 1
         or alert_limit < 1
         or experiment_limit < 1
+        or schedule_limit < 1
+        or execution_sample_limit < 1
     ):
         raise ValueError("dashboard query limits must be positive")
+    observed_at = _as_utc_naive(now or datetime.now(UTC))
 
     automations = tuple(
         AutomationSummary(
@@ -281,6 +344,63 @@ async def load_dashboard_snapshot(
         for run, automation_slug in run_rows
     )
 
+    ranked_runs = (
+        select(
+            Run.automation_id.label("automation_id"),
+            Run.status.label("status"),
+            Run.started_at.label("started_at"),
+            Run.finished_at.label("finished_at"),
+            func.row_number()
+            .over(
+                partition_by=Run.automation_id,
+                order_by=(Run.finished_at.desc(), Run.id.desc()),
+            )
+            .label("sample_rank"),
+        )
+        .where(
+            Run.status.in_(
+                (
+                    RunStatus.SUCCEEDED.value,
+                    RunStatus.FAILED.value,
+                )
+            ),
+            Run.finished_at.is_not(None),
+        )
+        .subquery()
+    )
+    execution_rows = (
+        await session.execute(
+            select(
+                Automation.slug,
+                ranked_runs.c.status,
+                ranked_runs.c.started_at,
+                ranked_runs.c.finished_at,
+            )
+            .join(
+                ranked_runs,
+                ranked_runs.c.automation_id == Automation.id,
+            )
+            .where(ranked_runs.c.sample_rank <= execution_sample_limit)
+            .order_by(Automation.slug, ranked_runs.c.sample_rank)
+        )
+    ).all()
+    execution_samples: dict[
+        str,
+        list[tuple[str, datetime | None, datetime | None]],
+    ] = {}
+    for automation_slug, status, started_at, finished_at in execution_rows:
+        execution_samples.setdefault(automation_slug, []).append(
+            (status, started_at, finished_at)
+        )
+    execution_summaries = tuple(
+        _execution_summary(
+            automation_slug=automation.slug,
+            samples=execution_samples.get(automation.slug, []),
+            sample_limit=execution_sample_limit,
+        )
+        for automation in automations
+    )
+
     approval_rows = (
         await session.execute(
             select(Approval, Automation.slug)
@@ -292,12 +412,10 @@ async def load_dashboard_snapshot(
         )
     ).all()
     pending_approvals = tuple(
-        ApprovalSummary(
-            id=approval.id,
+        _approval_summary(
+            approval=approval,
             automation_slug=automation_slug,
-            run_id=approval.run_id,
-            action=approval.action,
-            requested_at=approval.requested_at,
+            observed_at=observed_at,
         )
         for approval, automation_slug in approval_rows
     )
@@ -325,15 +443,28 @@ async def load_dashboard_snapshot(
     )
 
     totals: dict[str, dict[LedgerEntryType, Decimal]] = {}
-    ledger_entries = await session.scalars(
-        select(LedgerEntry).order_by(LedgerEntry.id)
-    )
-    for entry in ledger_entries:
+    automation_totals: dict[
+        tuple[str, str],
+        dict[LedgerEntryType, Decimal],
+    ] = {}
+    ledger_rows = (
+        await session.execute(
+            select(LedgerEntry, Automation.slug)
+            .join(Automation, Automation.id == LedgerEntry.automation_id)
+            .order_by(Automation.slug, LedgerEntry.currency, LedgerEntry.id)
+        )
+    ).all()
+    for entry, automation_slug in ledger_rows:
         currency_totals = totals.setdefault(
             entry.currency,
             {entry_type: Decimal(0) for entry_type in LedgerEntryType},
         )
         currency_totals[LedgerEntryType(entry.entry_type)] += entry.amount
+        attributed_totals = automation_totals.setdefault(
+            (automation_slug, entry.currency),
+            {entry_type: Decimal(0) for entry_type in LedgerEntryType},
+        )
+        attributed_totals[LedgerEntryType(entry.entry_type)] += entry.amount
     ledger_totals = tuple(
         LedgerCurrencySummary(
             currency=currency,
@@ -346,6 +477,23 @@ async def load_dashboard_snapshot(
             ),
         )
         for currency, currency_totals in sorted(totals.items())
+    )
+    automation_ledger_totals = tuple(
+        AutomationLedgerSummary(
+            automation_slug=automation_slug,
+            currency=currency,
+            cost=currency_totals[LedgerEntryType.COST],
+            revenue=currency_totals[LedgerEntryType.REVENUE],
+            attributed_value=currency_totals[LedgerEntryType.ATTRIBUTED_VALUE],
+            net_revenue=(
+                currency_totals[LedgerEntryType.REVENUE]
+                - currency_totals[LedgerEntryType.COST]
+            ),
+        )
+        for (
+            automation_slug,
+            currency,
+        ), currency_totals in sorted(automation_totals.items())
     )
 
     experiment_rows = (
@@ -373,13 +521,76 @@ async def load_dashboard_snapshot(
         for experiment, automation_slug in experiment_rows
     )
 
+    latest_occurrence_status = (
+        select(ScheduleOccurrence.status)
+        .where(ScheduleOccurrence.schedule_id == Schedule.id)
+        .order_by(
+            ScheduleOccurrence.scheduled_for.desc(),
+            ScheduleOccurrence.id.desc(),
+        )
+        .limit(1)
+        .correlate(Schedule)
+        .scalar_subquery()
+    )
+    latest_scheduled_for = (
+        select(ScheduleOccurrence.scheduled_for)
+        .where(ScheduleOccurrence.schedule_id == Schedule.id)
+        .order_by(
+            ScheduleOccurrence.scheduled_for.desc(),
+            ScheduleOccurrence.id.desc(),
+        )
+        .limit(1)
+        .correlate(Schedule)
+        .scalar_subquery()
+    )
+    schedule_rows = (
+        await session.execute(
+            select(
+                Schedule,
+                Automation.slug,
+                latest_occurrence_status.label("latest_occurrence_status"),
+                latest_scheduled_for.label("latest_scheduled_for"),
+            )
+            .join(Automation, Automation.id == Schedule.automation_id)
+            .order_by(
+                case(
+                    (Schedule.status == ScheduleStatus.ENABLED.value, 0),
+                    else_=1,
+                ),
+                case((Schedule.next_run_at.is_(None), 1), else_=0),
+                Schedule.next_run_at,
+                Automation.slug,
+                Schedule.name,
+                Schedule.id,
+            )
+            .limit(schedule_limit)
+        )
+    ).all()
+    schedules = tuple(
+        ScheduleSummary(
+            id=schedule.id,
+            automation_slug=automation_slug,
+            name=schedule.name,
+            status=schedule.status,
+            cron_expression=schedule.cron_expression,
+            timezone=schedule.timezone,
+            next_run_at=schedule.next_run_at,
+            latest_occurrence_status=occurrence_status,
+            latest_scheduled_for=scheduled_for,
+        )
+        for schedule, automation_slug, occurrence_status, scheduled_for in schedule_rows
+    )
+
     return DashboardSnapshot(
         automations=automations,
         recent_runs=recent_runs,
+        execution_summaries=execution_summaries,
         pending_approvals=pending_approvals,
         active_alerts=active_alerts,
         ledger_totals=ledger_totals,
+        automation_ledger_totals=automation_ledger_totals,
         experiments=experiments,
+        schedules=schedules,
     )
 
 
@@ -533,6 +744,91 @@ def _duration_seconds(
         + duration.microseconds
     )
     return Decimal(microseconds) / Decimal(1_000_000)
+
+
+def _execution_summary(
+    *,
+    automation_slug: str,
+    samples: list[tuple[str, datetime | None, datetime | None]],
+    sample_limit: int,
+) -> AutomationExecutionSummary:
+    sample_size = len(samples)
+    succeeded_count = sum(
+        status == RunStatus.SUCCEEDED.value for status, _, _ in samples
+    )
+    durations = [
+        duration
+        for _, started_at, finished_at in samples
+        if (duration := _duration_seconds(started_at, finished_at)) is not None
+    ]
+    success_rate_percent = (
+        (
+            Decimal(succeeded_count)
+            * Decimal(100)
+            / Decimal(sample_size)
+        ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        if sample_size
+        else None
+    )
+    average_duration_seconds = (
+        (sum(durations, Decimal(0)) / Decimal(len(durations))).quantize(
+            Decimal("0.001"),
+            rounding=ROUND_HALF_UP,
+        )
+        if durations
+        else None
+    )
+    return AutomationExecutionSummary(
+        automation_slug=automation_slug,
+        sample_size=sample_size,
+        succeeded_count=succeeded_count,
+        success_rate_percent=success_rate_percent,
+        duration_sample_size=len(durations),
+        average_duration_seconds=average_duration_seconds,
+        sample_limit=sample_limit,
+    )
+
+
+def _approval_summary(
+    *,
+    approval: Approval,
+    automation_slug: str,
+    observed_at: datetime,
+) -> ApprovalSummary:
+    requested_at = _as_utc_naive(approval.requested_at)
+    pending_for_seconds = max(
+        0,
+        int((observed_at - requested_at).total_seconds()),
+    )
+    return ApprovalSummary(
+        id=approval.id,
+        automation_slug=automation_slug,
+        run_id=approval.run_id,
+        action=approval.action,
+        requested_at=requested_at,
+        pending_for_seconds=pending_for_seconds,
+        pending_for_label=_format_pending_age(pending_for_seconds),
+    )
+
+
+def _as_utc_naive(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _format_pending_age(total_seconds: int) -> str:
+    if total_seconds < 60:
+        return "menos de 1 min"
+    if total_seconds < 3_600:
+        return f"{total_seconds // 60} min"
+    if total_seconds < 86_400:
+        hours, remainder = divmod(total_seconds, 3_600)
+        minutes = remainder // 60
+        return f"{hours} h {minutes} min" if minutes else f"{hours} h"
+    days, remainder = divmod(total_seconds, 86_400)
+    hours = remainder // 3_600
+    return f"{days} d {hours} h" if hours else f"{days} d"
 
 
 def _redacted_failure(error: dict[str, object] | None) -> FailureSummary | None:

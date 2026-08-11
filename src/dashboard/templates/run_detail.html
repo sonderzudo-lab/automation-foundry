@@ -18,6 +18,7 @@
       code { color: #d2a8ff; }
       .local { color: #7ee787; font-size: .85rem; }
       .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 1rem; }
+      .live-fragment { display: contents; }
       section { grid-column: span 6; background: #13171c; border: 1px solid #262d36; border-radius: 14px; padding: 1.15rem; overflow: auto; }
       section.wide { grid-column: 1 / -1; }
       .facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
@@ -41,6 +42,7 @@
       button:hover { background: #47201c; }
       @media (max-width: 820px) { section { grid-column: 1 / -1; } header { align-items: start; flex-direction: column; } .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     </style>
+    <script src="/static/htmx.min.js" defer></script>
   </head>
   <body>
     <main>
@@ -54,19 +56,7 @@
       </header>
 
       <div class="grid">
-        <section class="wide">
-          <h2>Execução</h2>
-          <div class="facts">
-            <div class="fact"><span>Status</span><strong class="badge">{{ run.status }}</strong></div>
-            <div class="fact"><span>Trigger</span>{{ run.trigger }}</div>
-            <div class="fact"><span>Duração</span>{{ run.duration_seconds if run.duration_seconds is not none else "—" }}{% if run.duration_seconds is not none %} s{% endif %}</div>
-            <div class="fact"><span>Enfileirada UTC</span>{{ run.queued_at.isoformat() }}Z</div>
-          </div>
-          {% if run.retry_of_run_id %}<p class="note">Retry da <a href="/runs/{{ run.retry_of_run_id }}">run #{{ run.retry_of_run_id }}</a>.</p>{% endif %}
-          {% if run.experiment_id %}<p class="note">Experimento #{{ run.experiment_id }} · {{ run.experiment_name }} · <code>{{ run.experiment_key }}</code>.</p>{% endif %}
-          {% if run.failure %}<p class="danger note">Falha: <code>{{ run.failure.code }}</code>{% if run.failure.exception_type %} · {{ run.failure.exception_type }}{% endif %}</p>{% endif %}
-          {% if run.cancellation_requested_at %}<p class="danger note">Cancelamento solicitado em {{ run.cancellation_requested_at.isoformat() }}Z. O motivo permanece redigido.</p>{% endif %}
-        </section>
+        {% include "run_status_fragment.html" %}
 
         {% if run.can_retry %}
         <section class="wide control">
@@ -101,17 +91,6 @@
         {% endif %}
 
         <section class="wide">
-          <h2>Steps e tentativas</h2>
-          {% if run.steps %}
-          <table><thead><tr><th>Ordem</th><th>Step</th><th>Tentativa</th><th>Fila</th><th>Status</th><th>Duração</th><th>Falha redigida</th></tr></thead><tbody>
-          {% for step in run.steps %}
-            <tr><td>{{ step.ordinal }}</td><td>{{ step.name }}</td><td>{{ step.attempt }}</td><td><code>{{ step.queue }}</code></td><td><span class="badge">{{ step.status }}</span></td><td>{{ step.duration_seconds if step.duration_seconds is not none else "—" }}{% if step.duration_seconds is not none %} s{% endif %}</td><td>{% if step.failure %}<code>{{ step.failure.code }}</code>{% if step.failure.exception_type %} · {{ step.failure.exception_type }}{% endif %}{% else %}—{% endif %}</td></tr>
-          {% endfor %}
-          </tbody></table>
-          {% else %}<div class="empty">Nenhum step registrado.</div>{% endif %}
-        </section>
-
-        <section class="wide">
           <h2>Approvals vinculadas</h2>
           {% if run.approvals %}
           <table><thead><tr><th>ID</th><th>Ação</th><th>Status</th><th>Solicitada UTC</th><th>Decidida UTC</th></tr></thead><tbody>
@@ -126,6 +105,9 @@
             {% if approval.review_payload %}
             <p>Contexto seguro para revisão:</p>
             <table><tbody>{% for key, value in approval.review_payload.items() %}<tr><th>{{ key }}</th><td>{{ value }}</td></tr>{% endfor %}</tbody></table>
+            {% if approval.action == "review_content_script_a1" %}
+            <p><a href="/approvals/{{ approval.id }}/review">Abrir roteiro completo e verificado antes de decidir</a></p>
+            {% endif %}
             <form method="post" action="/approvals/{{ approval.id }}/approve">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <label for="approve-actor-{{ approval.id }}">Actor local</label>

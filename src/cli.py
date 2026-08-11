@@ -20,6 +20,11 @@ from urllib.parse import urlsplit
 from src.core.config import Settings, get_settings
 
 if TYPE_CHECKING:
+    from src.operations.backup import (
+        BackupResult,
+        BackupVerificationResult,
+        RestoreResult,
+    )
     from src.platform.dispatch_service import DispatchPreparationResult
     from src.platform.example_run import ExampleRunResult
     from src.platform.models import Alert, Experiment, Schedule
@@ -348,6 +353,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "dashboard",
         help="Inicia o dashboard operacional local em loopback.",
     )
+    backup = subparsers.add_parser(
+        "backup",
+        help="Cria um bundle local atômico com banco, configuração e artefatos.",
+    )
+    backup.add_argument(
+        "--destination",
+        help="Diretório de bundles; default STORAGE_ROOT/backups.",
+    )
+    backup.add_argument("--json", action="store_true")
+    verify_backup = subparsers.add_parser(
+        "verify-backup",
+        help="Verifica offline a integridade de um bundle local.",
+    )
+    verify_backup.add_argument("path")
+    verify_backup.add_argument("--json", action="store_true")
+    restore_backup = subparsers.add_parser(
+        "restore-backup",
+        help="Restaura um bundle após confirmação explícita e backup de segurança.",
+    )
+    restore_backup.add_argument("path")
+    restore_backup.add_argument(
+        "--confirm",
+        required=True,
+        help='Confirmação exata no formato "RESTORE <backup-id>".',
+    )
+    restore_backup.add_argument("--json", action="store_true")
     run_example = subparsers.add_parser(
         "run-example",
         help="Executa um passo no-op local e persiste seu ciclo de vida.",
@@ -1458,6 +1489,79 @@ def _render_command_failure(command: str, exc: Exception, *, as_json: bool) -> i
     return 1
 
 
+def _create_backup_command(destination: str | None) -> BackupResult:
+    from src.operations.backup import create_backup
+
+    settings = get_settings()
+    return create_backup(
+        settings,
+        destination_root=Path(destination) if destination is not None else None,
+    )
+
+
+def _verify_backup_command(path: str) -> BackupVerificationResult:
+    from src.operations.backup import verify_backup
+
+    return verify_backup(Path(path))
+
+
+def _restore_backup_command(path: str, confirmation: str) -> RestoreResult:
+    from src.operations.backup import restore_backup
+
+    settings = get_settings()
+    return restore_backup(
+        settings,
+        bundle_path=Path(path),
+        confirmation=confirmation,
+    )
+
+
+def _render_backup_result(
+    result: BackupResult | BackupVerificationResult,
+    *,
+    as_json: bool,
+) -> None:
+    payload: dict[str, str | int | bool] = {
+        "ok": True,
+        "backup_id": result.backup_id,
+        "database_format": result.database_format,
+        "artifact_count": result.artifact_count,
+        "total_bytes": result.total_bytes,
+    }
+    bundle_path = getattr(result, "bundle_path", None)
+    if isinstance(bundle_path, Path):
+        payload["bundle_path"] = str(bundle_path)
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    action = "criado" if bundle_path is not None else "verificado"
+    location = f" em {bundle_path}" if bundle_path is not None else ""
+    print(
+        f"Backup {result.backup_id} {action}{location}; "
+        f"banco={result.database_format}, artefatos={result.artifact_count}, "
+        f"bytes={result.total_bytes}"
+    )
+
+
+def _render_restore_result(result: RestoreResult, *, as_json: bool) -> None:
+    payload = {
+        "ok": True,
+        "backup_id": result.backup_id,
+        "pre_restore_backup_id": result.pre_restore_backup_id,
+        "pre_restore_bundle_path": str(result.pre_restore_bundle_path),
+        "database_format": result.database_format,
+        "artifact_count": result.artifact_count,
+    }
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    print(
+        f"Backup {result.backup_id} restaurado; "
+        f"backup de segurança={result.pre_restore_backup_id} em "
+        f"{result.pre_restore_bundle_path}"
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Automation Foundry CLI and return a process exit code."""
     args = _build_parser().parse_args(argv)
@@ -1502,6 +1606,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(detail)
             return 1
         _render_example_result(example_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "backup":
+        try:
+            backup_result = _create_backup_command(args.destination)
+        except Exception as exc:
+            return _render_command_failure("backup", exc, as_json=bool(args.json))
+        _render_backup_result(backup_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "verify-backup":
+        try:
+            verification_result = _verify_backup_command(args.path)
+        except Exception as exc:
+            return _render_command_failure(
+                "verify-backup",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_backup_result(verification_result, as_json=bool(args.json))
+        return 0
+
+    if args.command == "restore-backup":
+        try:
+            restore_result = _restore_backup_command(args.path, args.confirm)
+        except Exception as exc:
+            return _render_command_failure(
+                "restore-backup",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_restore_result(restore_result, as_json=bool(args.json))
         return 0
 
     if args.command == "enqueue-run":

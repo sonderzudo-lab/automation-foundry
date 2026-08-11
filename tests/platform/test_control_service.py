@@ -13,6 +13,7 @@ from src.core.database import Base
 from src.platform.control_service import (
     get_execution_control_state,
     request_run_cancellation,
+    set_automation_enabled,
     set_automation_kill_switch,
 )
 from src.platform.models import (
@@ -109,6 +110,101 @@ async def test_kill_switch_changes_are_idempotent_and_audited(
         "local-owner",
         "local-owner",
     ]
+
+
+async def test_automation_enabled_changes_are_idempotent_and_audited(
+    session: AsyncSession,
+) -> None:
+    automation = await _automation(session)
+    disabled = await set_automation_enabled(
+        session,
+        automation=automation,
+        enabled=False,
+        actor="local-owner",
+        reason="pause new intake",
+    )
+    duplicate = await set_automation_enabled(
+        session,
+        automation=automation,
+        enabled=False,
+        actor="different-actor",
+        reason="duplicate must not append evidence",
+    )
+    enabled = await set_automation_enabled(
+        session,
+        automation=automation,
+        enabled=True,
+        actor="local-owner",
+        reason="resume reviewed intake",
+    )
+    await session.commit()
+
+    fetched = await session.scalar(
+        select(Automation)
+        .where(Automation.id == automation.id)
+        .options(selectinload(Automation.control_events))
+    )
+    assert fetched is not None
+    assert disabled.changed is True
+    assert duplicate.changed is False
+    assert duplicate.event is None
+    assert enabled.changed is True
+    assert fetched.enabled is True
+    assert [event.event_type for event in fetched.control_events] == [
+        ControlEventType.AUTOMATION_DISABLED.value,
+        ControlEventType.AUTOMATION_ENABLED.value,
+    ]
+    assert [event.actor for event in fetched.control_events] == [
+        "local-owner",
+        "local-owner",
+    ]
+
+
+async def test_disabled_automation_blocks_new_and_queued_runs_but_not_active_run(
+    session: AsyncSession,
+) -> None:
+    automation = await _automation(session)
+    queued = await _run(session, automation)
+    await set_automation_enabled(
+        session,
+        automation=automation,
+        enabled=False,
+        actor="local-owner",
+        reason="administrative pause",
+    )
+
+    with pytest.raises(InvalidRunTransitionError, match="administratively disabled"):
+        await get_or_create_run(
+            session,
+            automation=automation,
+            idempotency_key="blocked-new-run",
+        )
+    with pytest.raises(InvalidRunTransitionError, match="administratively disabled"):
+        await transition_run(session, queued, RunStatus.RUNNING)
+
+    await set_automation_enabled(
+        session,
+        automation=automation,
+        enabled=True,
+        actor="local-owner",
+        reason="allow reviewed work",
+    )
+    await transition_run(session, queued, RunStatus.RUNNING)
+    await set_automation_enabled(
+        session,
+        automation=automation,
+        enabled=False,
+        actor="local-owner",
+        reason="pause future intake only",
+    )
+    await transition_run(session, queued, RunStatus.SUCCEEDED)
+    await session.commit()
+
+    assert queued.status == RunStatus.SUCCEEDED.value
+    blocked = await session.scalar(
+        select(Run).where(Run.idempotency_key == "blocked-new-run")
+    )
+    assert blocked is None
 
 
 async def test_cancellation_request_is_idempotent_audited_and_blocks_start(

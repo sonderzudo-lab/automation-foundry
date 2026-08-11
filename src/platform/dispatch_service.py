@@ -20,6 +20,7 @@ from src.platform.models import (
     Run,
     RunDispatch,
     RunDispatchEvent,
+    RunStatus,
 )
 
 DISPATCH_TASK_NAME = "automation_foundry.dispatch.execute"
@@ -50,6 +51,16 @@ class DispatchClaimResult:
     claim_token: str | None
     retry_after_seconds: int | None
     run_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchRequeueResult:
+    """Durable wake-up state for a run that gained approved continuation work."""
+
+    dispatch_id: int
+    queue: QueueClass
+    should_publish: bool
+    changed: bool
 
 
 def _utcnow() -> datetime:
@@ -89,6 +100,9 @@ async def prepare_registered_dispatch(
     experiment_id: int | None = None,
     trigger: str = "manual",
     input_payload: dict[str, object] | None = None,
+    retry_of_run_id: int | None = None,
+    retry_requested_by: str | None = None,
+    retry_reason: str | None = None,
 ) -> DispatchPreparationResult:
     """Prepare a run and its durable delivery before any broker side effect."""
     executor = get_automation_executor(slug)
@@ -100,6 +114,9 @@ async def prepare_registered_dispatch(
         experiment_id=experiment_id,
         trigger=trigger,
         input_payload=input_payload,
+        retry_of_run_id=retry_of_run_id,
+        retry_requested_by=retry_requested_by,
+        retry_reason=retry_reason,
     )
     run_id = _persisted_id(run_result.run.id, "run")
     existing = await session.scalar(
@@ -166,6 +183,9 @@ async def publish_registered_dispatch(
     experiment_id: int | None = None,
     trigger: str = "manual",
     input_payload: dict[str, object] | None = None,
+    retry_of_run_id: int | None = None,
+    retry_requested_by: str | None = None,
+    retry_reason: str | None = None,
 ) -> DispatchPreparationResult:
     """Commit preparation, publish, then persist the observable outcome."""
     prepared = await prepare_registered_dispatch(
@@ -175,6 +195,9 @@ async def publish_registered_dispatch(
         experiment_id=experiment_id,
         trigger=trigger,
         input_payload=input_payload,
+        retry_of_run_id=retry_of_run_id,
+        retry_requested_by=retry_requested_by,
+        retry_reason=retry_reason,
     )
     await session.commit()
     await publish_prepared_dispatch(
@@ -245,6 +268,70 @@ async def publish_prepared_dispatch(
     )
     await session.commit()
     return target
+
+
+async def requeue_completed_run_dispatch(
+    session: AsyncSession,
+    *,
+    run_id: int,
+    actor: str = "control-plane",
+) -> DispatchRequeueResult:
+    """Wake a completed run dispatch after a durable human approval."""
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise ValueError("dispatch run does not exist")
+    if RunStatus(run.status) is not RunStatus.RUNNING:
+        raise ValueError("only a running run can requeue approved continuation work")
+    dispatch = await session.scalar(
+        select(RunDispatch)
+        .where(RunDispatch.run_id == run_id)
+        .with_for_update()
+    )
+    if dispatch is None:
+        raise ValueError("run has no durable dispatch to requeue")
+    current = DispatchStatus(dispatch.status)
+    queue = QueueClass(dispatch.queue)
+    if current is DispatchStatus.PENDING:
+        return DispatchRequeueResult(
+            _persisted_id(dispatch.id, "dispatch"),
+            queue,
+            should_publish=True,
+            changed=False,
+        )
+    if current in {DispatchStatus.PUBLISHED, DispatchStatus.CLAIMED}:
+        return DispatchRequeueResult(
+            _persisted_id(dispatch.id, "dispatch"),
+            queue,
+            should_publish=False,
+            changed=False,
+        )
+    if current is DispatchStatus.FAILED:
+        raise ValueError("failed run dispatch cannot be requeued as an approval continuation")
+
+    dispatch.status = DispatchStatus.PENDING.value
+    dispatch.claimed_by = None
+    dispatch.claim_token = None
+    dispatch.lease_expires_at = None
+    dispatch.finished_at = None
+    dispatch.last_error_code = None
+    dispatch.updated_at = _utcnow()
+    session.add(
+        _event(
+            dispatch,
+            DispatchEventType.REQUEUED,
+            from_status=DispatchStatus.COMPLETED,
+            to_status=DispatchStatus.PENDING,
+            actor=actor.strip() or "control-plane",
+            reason_code="APPROVED_CONTINUATION",
+        )
+    )
+    await session.flush()
+    return DispatchRequeueResult(
+        _persisted_id(dispatch.id, "dispatch"),
+        queue,
+        should_publish=True,
+        changed=True,
+    )
 
 
 async def claim_dispatch(
@@ -376,6 +463,10 @@ async def execute_claimed_dispatch(
             idempotency_key=run.idempotency_key,
             trigger=run.trigger,
             input_payload=run.input_payload,
+            retry_of_run_id=run.retry_of_run_id,
+            retry_requested_by=run.retry_requested_by,
+            retry_reason=run.retry_reason,
+            experiment_id=run.experiment_id,
         )
         if result.run_id != claim.run_id:
             raise ValueError("executor returned a different run")

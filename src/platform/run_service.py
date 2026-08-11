@@ -187,6 +187,14 @@ async def get_or_create_run(
         )
         return RunCreationResult(existing, created=False)
 
+    automation_enabled = await session.scalar(
+        select(Automation.enabled).where(Automation.id == automation.id)
+    )
+    if automation_enabled is not True:
+        raise InvalidRunTransitionError(
+            "cannot create run while automation is administratively disabled"
+        )
+
     if retry_of_run_id is not None:
         successor = await session.scalar(
             select(Run).where(Run.retry_of_run_id == retry_of_run_id)
@@ -292,6 +300,7 @@ async def transition_run(
         control = (
             await session.execute(
                 select(
+                    Automation.enabled,
                     Automation.kill_switch_active,
                     Run.cancellation_requested_at,
                 )
@@ -301,6 +310,10 @@ async def transition_run(
         ).one_or_none()
         if control is None:
             raise ValueError("run does not exist")
+        if not control.enabled:
+            raise InvalidRunTransitionError(
+                "cannot start run while automation is administratively disabled"
+            )
         if control.kill_switch_active:
             raise InvalidRunTransitionError(
                 "cannot start run while automation kill switch is active"

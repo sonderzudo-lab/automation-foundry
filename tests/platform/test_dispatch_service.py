@@ -2,23 +2,43 @@
 
 from __future__ import annotations
 
+import wave
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.core.database import Base
+from src.pipeline import a1_executor
+from src.pipeline.a1_executor import finalize_content_script_approval
+from src.pipeline.script_gen import ScriptResult
+from src.pipeline.tts import TTSAdapterResult
+from src.platform.approval_service import decide_approval
 from src.platform.dispatch_service import (
     DispatchClaimError,
     DispatchPublishError,
     claim_dispatch,
     execute_claimed_dispatch,
     finish_dispatch,
+    publish_prepared_dispatch,
     publish_registered_dispatch,
+    requeue_completed_run_dispatch,
 )
-from src.platform.models import Run, RunDispatch, RunDispatchEvent, StepRun
+from src.platform.models import (
+    Approval,
+    ApprovalStatus,
+    Artifact,
+    QueueClass,
+    Run,
+    RunDispatch,
+    RunDispatchEvent,
+    RunStatus,
+    StepRun,
+)
 
 
 @pytest.fixture
@@ -177,3 +197,231 @@ async def test_duplicate_delivery_executes_run_only_once(session: AsyncSession) 
     assert run is not None and run.status == "succeeded"
     assert dispatch is not None and dispatch.status == "completed"
     assert len(steps) == 1
+
+
+async def test_claimed_content_a1_dispatch_produces_gpu_evidence_without_external_effects(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def generate(*_args: object) -> ScriptResult:
+        nonlocal calls
+        calls += 1
+        return ScriptResult(
+            angle="Ângulo seguro",
+            outline="Outline seguro",
+            full_script="Roteiro revisável gerado localmente.",
+            hook="Hook seguro",
+            narration="Roteiro revisável gerado localmente.",
+        )
+
+    monkeypatch.setattr(a1_executor, "generate_script", generate)
+    monkeypatch.setattr(
+        a1_executor,
+        "settings",
+        SimpleNamespace(
+            storage_root=str(tmp_path / "storage"),
+            ollama_model="fake-local-model",
+            celery_soft_time_limit_seconds=300,
+        ),
+    )
+    prepared = await publish_registered_dispatch(
+        session,
+        slug="content-engine",
+        idempotency_key="dispatch-content-a1",
+        input_payload={
+            "topic": "Sono e memória",
+            "persona": "Ciência acessível",
+            "format": "short",
+            "recent_openings": [],
+        },
+        publish=lambda *_args: None,
+    )
+    assert prepared.queue is QueueClass.GPU
+
+    claimed = await execute_claimed_dispatch(
+        session,
+        dispatch_id=prepared.dispatch_id,
+        delivery_id=prepared.delivery_id,
+        worker_id="gpu-worker",
+        lease_seconds=600,
+    )
+    duplicate = await execute_claimed_dispatch(
+        session,
+        dispatch_id=prepared.dispatch_id,
+        delivery_id=prepared.delivery_id,
+        worker_id="gpu-worker",
+        lease_seconds=600,
+    )
+
+    run = await session.get(Run, prepared.run_id)
+    dispatch = await session.get(RunDispatch, prepared.dispatch_id)
+    steps = list((await session.scalars(select(StepRun))).all())
+    artifacts = list((await session.scalars(select(Artifact))).all())
+    assert calls == 1
+    assert claimed.acquired is True
+    assert duplicate.terminal is True
+    assert run is not None and run.status == RunStatus.AWAITING_APPROVAL.value
+    assert dispatch is not None and dispatch.status == "completed"
+    assert len(steps) == 1 and steps[0].queue == QueueClass.GPU.value
+    assert len(artifacts) == 1
+    assert (tmp_path / "storage" / artifacts[0].relative_path).is_file()
+
+
+async def test_approved_a1_requeues_same_dispatch_and_completes_tts_once(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script_calls = 0
+    tts_calls = 0
+
+    def generate(*_args: object) -> ScriptResult:
+        nonlocal script_calls
+        script_calls += 1
+        return ScriptResult(
+            angle="Ângulo seguro",
+            outline="Outline seguro",
+            full_script="Roteiro revisável gerado localmente.",
+            hook="Hook seguro",
+            narration="Narração aprovada para o adapter TTS.",
+        )
+
+    def synthesize(
+        _text: str,
+        destination: Path,
+        voice_id: str,
+        language_code: str,
+    ) -> TTSAdapterResult:
+        nonlocal tts_calls
+        tts_calls += 1
+        with wave.open(str(destination), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(24_000)
+            audio.writeframes(b"\x00\x00" * 12_000)
+        return TTSAdapterResult(
+            backend="fake-local",
+            model_id="fake-model-v1",
+            voice_id=voice_id,
+            language_code=language_code,
+            license_id="TEST-ONLY",
+        )
+
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(a1_executor, "generate_script", generate)
+    monkeypatch.setattr(
+        a1_executor,
+        "get_configured_tts_synthesizer",
+        lambda _backend: synthesize,
+    )
+    monkeypatch.setattr(
+        a1_executor,
+        "settings",
+        SimpleNamespace(
+            storage_root=str(storage_root),
+            ollama_model="fake-local-model",
+            celery_soft_time_limit_seconds=300,
+            content_tts_backend="test",
+            content_tts_voice_id="pf_test",
+            content_tts_language_code="p",
+            gpu_power_watts=400,
+        ),
+    )
+    published: list[tuple[int, str, QueueClass]] = []
+    prepared = await publish_registered_dispatch(
+        session,
+        slug="content-engine",
+        idempotency_key="dispatch-content-a2",
+        input_payload={
+            "topic": "Sono e memória",
+            "persona": "Ciência acessível",
+            "format": "short",
+            "recent_openings": [],
+        },
+        publish=lambda dispatch_id, delivery_id, queue: published.append(
+            (dispatch_id, delivery_id, queue)
+        ),
+    )
+    await execute_claimed_dispatch(
+        session,
+        dispatch_id=prepared.dispatch_id,
+        delivery_id=prepared.delivery_id,
+        worker_id="gpu-worker-a1",
+        lease_seconds=600,
+    )
+    approval = await session.scalar(
+        select(Approval).where(Approval.run_id == prepared.run_id)
+    )
+    assert approval is not None
+    await decide_approval(
+        session,
+        approval=approval,
+        decision=ApprovalStatus.APPROVED,
+        actor="local-owner",
+        reason="roteiro integral revisado",
+    )
+    assert await finalize_content_script_approval(session, approval=approval) is True
+    requeued = await requeue_completed_run_dispatch(
+        session,
+        run_id=prepared.run_id,
+        actor="local-owner",
+    )
+    await session.commit()
+    await publish_prepared_dispatch(
+        session,
+        dispatch_id=requeued.dispatch_id,
+        publish=lambda dispatch_id, delivery_id, queue: published.append(
+            (dispatch_id, delivery_id, queue)
+        ),
+    )
+    continuation = await execute_claimed_dispatch(
+        session,
+        dispatch_id=prepared.dispatch_id,
+        delivery_id=prepared.delivery_id,
+        worker_id="gpu-worker-a2",
+        lease_seconds=600,
+    )
+    duplicate = await execute_claimed_dispatch(
+        session,
+        dispatch_id=prepared.dispatch_id,
+        delivery_id=prepared.delivery_id,
+        worker_id="gpu-worker-a2",
+        lease_seconds=600,
+    )
+
+    run = await session.get(Run, prepared.run_id)
+    dispatch = await session.get(RunDispatch, prepared.dispatch_id)
+    steps = list(
+        (
+            await session.scalars(
+                select(StepRun)
+                .where(StepRun.run_id == prepared.run_id)
+                .order_by(StepRun.ordinal)
+            )
+        ).all()
+    )
+    artifacts = list(
+        (await session.scalars(select(Artifact).where(Artifact.run_id == prepared.run_id))).all()
+    )
+    events = list(
+        (
+            await session.scalars(
+                select(RunDispatchEvent).where(
+                    RunDispatchEvent.dispatch_id == prepared.dispatch_id
+                )
+            )
+        ).all()
+    )
+    assert script_calls == 1 and tts_calls == 1
+    assert len(published) == 2
+    assert requeued.changed is True and requeued.should_publish is True
+    assert continuation.acquired is True and duplicate.terminal is True
+    assert run is not None and run.status == RunStatus.SUCCEEDED.value
+    assert dispatch is not None and dispatch.status == "completed"
+    assert [step.name for step in steps] == ["generate-script-a1", "synthesize-tts-a2"]
+    assert steps[1].approval_id == approval.id
+    assert len(artifacts) == 2
+    assert any(event.event_type == "requeued" for event in events)

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from src import cli
 from src.core import database
 from src.core.config import Settings
+from src.operations.backup import BackupResult, BackupVerificationResult, RestoreResult
 from src.platform.dispatch_service import DispatchPreparationResult
 from src.platform.example_run import ExampleRunResult
 from src.platform.models import (
@@ -1638,3 +1639,113 @@ def test_dashboard_command_failure_is_redacted(
     assert exit_code == 1
     assert "RuntimeError" in output
     assert private_detail not in output
+
+
+def test_backup_command_renders_redacted_json_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = BackupResult(
+        backup_id="20260810T120000Z-deadbeef",
+        bundle_path=tmp_path / "backup",
+        database_format="sqlite3",
+        artifact_count=2,
+        total_bytes=321,
+    )
+    monkeypatch.setattr(cli, "_create_backup_command", lambda _destination: result)
+
+    exit_code = cli.main(["backup", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload == {
+        "ok": True,
+        "backup_id": result.backup_id,
+        "database_format": "sqlite3",
+        "artifact_count": 2,
+        "total_bytes": 321,
+        "bundle_path": str(result.bundle_path),
+    }
+
+
+def test_verify_backup_command_renders_summary_without_source_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = BackupVerificationResult(
+        backup_id="20260810T120000Z-deadbeef",
+        database_format="postgres-custom",
+        artifact_count=4,
+        total_bytes=987,
+    )
+    monkeypatch.setattr(cli, "_verify_backup_command", lambda _path: result)
+
+    exit_code = cli.main(["verify-backup", "private/location", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["backup_id"] == result.backup_id
+    assert "bundle_path" not in payload
+    assert "private/location" not in json.dumps(payload)
+
+
+def test_backup_failure_does_not_echo_private_detail(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    private_detail = "private database password"
+
+    def fail(_destination: str | None) -> BackupResult:
+        raise RuntimeError(private_detail)
+
+    monkeypatch.setattr(cli, "_create_backup_command", fail)
+
+    exit_code = cli.main(["backup"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "RuntimeError" in output
+    assert private_detail not in output
+
+
+def test_restore_backup_command_renders_safety_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = RestoreResult(
+        backup_id="20260810T120000Z-deadbeef",
+        pre_restore_backup_id="20260810T130000Z-cafebabe",
+        pre_restore_bundle_path=tmp_path / "pre-restore",
+        database_format="sqlite3",
+        artifact_count=3,
+    )
+    received: dict[str, str] = {}
+
+    def restore(path: str, confirmation: str) -> RestoreResult:
+        received.update(path=path, confirmation=confirmation)
+        return result
+
+    monkeypatch.setattr(cli, "_restore_backup_command", restore)
+
+    exit_code = cli.main(
+        [
+            "restore-backup",
+            "portable-backup",
+            "--confirm",
+            f"RESTORE {result.backup_id}",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert received == {
+        "path": "portable-backup",
+        "confirmation": f"RESTORE {result.backup_id}",
+    }
+    assert payload["pre_restore_backup_id"] == result.pre_restore_backup_id
+    assert payload["pre_restore_bundle_path"] == str(
+        result.pre_restore_bundle_path
+    )

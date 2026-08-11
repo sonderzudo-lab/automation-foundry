@@ -12,6 +12,7 @@ from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,24 +21,53 @@ from src.core.database import get_session
 from src.dashboard.service import load_dashboard_snapshot, load_run_detail
 from src.operations.health import HealthReport, collect_health_report
 from src.platform.approval_service import decide_approval
-from src.platform.control_service import request_run_cancellation, set_automation_kill_switch
+from src.platform.control_service import (
+    request_run_cancellation,
+    set_automation_enabled,
+    set_automation_kill_switch,
+)
+from src.platform.dispatch_service import (
+    DispatchPublishError,
+    publish_prepared_dispatch,
+    publish_registered_dispatch,
+    requeue_completed_run_dispatch,
+)
 from src.platform.executor_registry import (
+    AutomationExecutor,
+    AutomationExecutorNotFoundError,
+    finalize_registered_approval,
+    get_automation_executor,
     list_automation_executors,
+    load_registered_approval_review,
+    parse_registered_manual_input,
     retry_registered_automation,
     start_registered_automation,
 )
-from src.platform.models import Approval, ApprovalStatus, Automation, Run
+from src.platform.models import Approval, ApprovalStatus, Automation, QueueClass, Run
 from src.platform.run_service import IdempotencyConflictError, InvalidRunTransitionError
 
 _TEMPLATE_DIRECTORY = Path(__file__).resolve().parent / "templates"
+_STATIC_DIRECTORY = Path(__file__).resolve().parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIRECTORY))
 HealthCollector = Callable[[AsyncSession], Awaitable[HealthReport]]
+DispatchPublisher = Callable[[int, str, QueueClass], None]
+
+
+def _publish_dispatch_message(
+    dispatch_id: int,
+    delivery_id: str,
+    queue: QueueClass,
+) -> None:
+    from src.core.celery_app import publish_dispatch_message
+
+    publish_dispatch_message(dispatch_id, delivery_id, queue)
 
 
 def create_app(
     *,
     csrf_token: str | None = None,
     health_collector: HealthCollector = collect_health_report,
+    dispatch_publisher: DispatchPublisher = _publish_dispatch_message,
 ) -> FastAPI:
     """Create the loopback dashboard with a process-local CSRF token."""
     control_token = csrf_token or secrets.token_urlsafe(32)
@@ -48,6 +78,11 @@ def create_app(
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+    )
+    application.mount(
+        "/static",
+        StaticFiles(directory=str(_STATIC_DIRECTORY)),
+        name="static",
     )
 
     @application.middleware("http")
@@ -90,6 +125,53 @@ def create_app(
             context={"run": detail, "csrf_token": control_token},
         )
 
+    @application.get("/runs/{run_id}/fragment", response_class=HTMLResponse)
+    async def run_status_fragment(
+        request: Request,
+        run_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        detail = await load_run_detail(session, run_id=run_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return templates.TemplateResponse(
+            request=request,
+            name="run_status_fragment.html",
+            context={"run": detail},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/approvals/{approval_id}/review", response_class=HTMLResponse)
+    async def approval_review(
+        request: Request,
+        approval_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        try:
+            review = await load_registered_approval_review(
+                session,
+                approval=approval,
+            )
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="approval has no complete review page",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="approval review evidence is unavailable",
+            ) from exc
+        return templates.TemplateResponse(
+            request=request,
+            name="content_script_review.html",
+            context={"review": review},
+            headers={"Cache-Control": "no-store"},
+        )
+
     @application.get("/health", response_class=HTMLResponse)
     async def health_page(
         request: Request,
@@ -108,26 +190,47 @@ def create_app(
         automation_slug: str,
         session: Annotated[AsyncSession, Depends(get_session)],
     ) -> RedirectResponse:
-        submitted_token, confirmation, idempotency_key, experiment_id = await _parse_example_run_form(request)
+        try:
+            executor = get_automation_executor(automation_slug)
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="automation executor not found") from exc
+        submitted_token, confirmation, idempotency_key, experiment_id, input_payload = (
+            await _parse_manual_run_form(request, executor=executor)
+        )
         if not hmac.compare_digest(submitted_token, control_token):
             raise HTTPException(status_code=403, detail="invalid csrf token")
         if confirmation != "start-example-run":
             raise HTTPException(status_code=400, detail="explicit confirmation required")
         try:
-            result = await start_registered_automation(
-                session,
-                slug=automation_slug,
-                idempotency_key=idempotency_key,
-                experiment_id=experiment_id,
-            )
+            if executor.runs_in_background:
+                prepared = await publish_registered_dispatch(
+                    session,
+                    slug=automation_slug,
+                    idempotency_key=idempotency_key,
+                    experiment_id=experiment_id,
+                    input_payload=input_payload,
+                    publish=dispatch_publisher,
+                )
+                run_id = prepared.run_id
+            else:
+                execution = await start_registered_automation(
+                    session,
+                    slug=automation_slug,
+                    idempotency_key=idempotency_key,
+                    experiment_id=experiment_id,
+                    input_payload=input_payload,
+                )
+                run_id = execution.run_id
             await session.commit()
+        except DispatchPublishError as exc:
+            raise HTTPException(status_code=503, detail="dispatch broker unavailable") from exc
         except ValueError as exc:
             await session.rollback()
-            raise HTTPException(status_code=409, detail="example run cannot start") from exc
+            raise HTTPException(status_code=409, detail="automation run cannot start") from exc
         except Exception:
             await session.rollback()
             raise
-        return RedirectResponse(url=f"/runs/{result.run_id}", status_code=303)
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
 
     @application.post("/runs/{run_id}/retry", response_class=HTMLResponse)
     async def retry_run(
@@ -151,22 +254,43 @@ def create_app(
             raise HTTPException(status_code=404, detail="run not found")
         run, automation_slug = row
         try:
-            result = await retry_registered_automation(
-                session,
-                slug=automation_slug,
-                retry_of_run_id=run.id,
-                idempotency_key=idempotency_key,
-                actor=actor,
-                reason=reason,
-            )
+            executor = get_automation_executor(automation_slug)
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(status_code=409, detail="automation cannot be retried") from exc
+        try:
+            if executor.runs_in_background:
+                prepared = await publish_registered_dispatch(
+                    session,
+                    slug=automation_slug,
+                    idempotency_key=idempotency_key,
+                    publish=dispatch_publisher,
+                    trigger="retry",
+                    input_payload=run.input_payload,
+                    retry_of_run_id=run.id,
+                    retry_requested_by=actor,
+                    retry_reason=reason,
+                )
+                retry_run_id = prepared.run_id
+            else:
+                execution = await retry_registered_automation(
+                    session,
+                    slug=automation_slug,
+                    retry_of_run_id=run.id,
+                    idempotency_key=idempotency_key,
+                    actor=actor,
+                    reason=reason,
+                )
+                retry_run_id = execution.run_id
             await session.commit()
+        except DispatchPublishError as exc:
+            raise HTTPException(status_code=503, detail="dispatch broker unavailable") from exc
         except ValueError as exc:
             await session.rollback()
             raise HTTPException(status_code=409, detail="run cannot be retried") from exc
         except Exception:
             await session.rollback()
             raise
-        return RedirectResponse(url=f"/runs/{result.run_id}", status_code=303)
+        return RedirectResponse(url=f"/runs/{retry_run_id}", status_code=303)
 
     @application.post("/runs/{run_id}/cancel", response_class=HTMLResponse)
     async def cancel_run(
@@ -267,6 +391,43 @@ def create_app(
             raise
         return RedirectResponse(url="/", status_code=303)
 
+    @application.post("/automations/{automation_id}/enabled", response_class=HTMLResponse)
+    async def change_automation_enabled(
+        request: Request,
+        automation_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> RedirectResponse:
+        submitted_token, confirmation, target, actor, reason = (
+            await _parse_automation_enabled_form(request)
+        )
+        if not hmac.compare_digest(submitted_token, control_token):
+            raise HTTPException(status_code=403, detail="invalid csrf token")
+        enabled = target == "enable"
+        if target not in {"enable", "disable"} or confirmation != f"automation-{target}":
+            raise HTTPException(status_code=400, detail="explicit confirmation required")
+        automation = await session.get(Automation, automation_id)
+        if automation is None:
+            raise HTTPException(status_code=404, detail="automation not found")
+        try:
+            await set_automation_enabled(
+                session,
+                automation=automation,
+                enabled=enabled,
+                actor=actor,
+                reason=reason,
+            )
+            await session.commit()
+        except ValueError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail="invalid automation enabled change",
+            ) from exc
+        except Exception:
+            await session.rollback()
+            raise
+        return RedirectResponse(url="/", status_code=303)
+
     @application.post("/approvals/{approval_id}/approve", response_class=HTMLResponse)
     async def approve_approval(
         request: Request,
@@ -283,8 +444,39 @@ def create_app(
             raise HTTPException(status_code=404, detail="approval not found")
         run_id = approval.run_id
         try:
-            await decide_approval(session, approval=approval, decision=ApprovalStatus.APPROVED, actor=actor, reason=reason)
+            await decide_approval(
+                session,
+                approval=approval,
+                decision=ApprovalStatus.APPROVED,
+                actor=actor,
+                reason=reason,
+            )
+            continuation_required = await finalize_registered_approval(
+                session,
+                approval=approval,
+            )
+            continuation_dispatch_id: int | None = None
+            if continuation_required:
+                requeued = await requeue_completed_run_dispatch(
+                    session,
+                    run_id=run_id,
+                    actor=actor,
+                )
+                if requeued.should_publish:
+                    continuation_dispatch_id = requeued.dispatch_id
             await session.commit()
+            if continuation_dispatch_id is not None:
+                await publish_prepared_dispatch(
+                    session,
+                    dispatch_id=continuation_dispatch_id,
+                    publish=dispatch_publisher,
+                    only_if_pending=True,
+                )
+        except DispatchPublishError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="approval persisted; continuation broker unavailable",
+            ) from exc
         except (IdempotencyConflictError, InvalidRunTransitionError) as exc:
             await session.rollback()
             raise HTTPException(status_code=409, detail="approval cannot be approved") from exc
@@ -307,10 +499,15 @@ async def _parse_cancellation_form(request: Request) -> tuple[str, str, str]:
     return csrf_token, confirmation, reason
 
 
-async def _parse_example_run_form(
+async def _parse_manual_run_form(
     request: Request,
-) -> tuple[str, str, str, int | None]:
-    fields = await _parse_form_fields(request, maximum_fields=4)
+    *,
+    executor: AutomationExecutor,
+) -> tuple[str, str, str, int | None, dict[str, object]]:
+    fields = await _parse_form_fields(
+        request,
+        maximum_fields=4 + len(executor.manual_input_fields),
+    )
     csrf_token = _single_form_value(fields, "csrf_token", maximum_length=128)
     confirmation = _single_form_value(fields, "confirmation", maximum_length=40)
     idempotency_key = _single_form_value(fields, "idempotency_key", maximum_length=255)
@@ -328,7 +525,40 @@ async def _parse_example_run_form(
             raise HTTPException(status_code=400, detail="invalid experiment_id field") from exc
         if experiment_id < 1:
             raise HTTPException(status_code=400, detail="invalid experiment_id field")
-    return csrf_token, confirmation, idempotency_key, experiment_id
+    raw_input: dict[str, str] = {}
+    for field in executor.manual_input_fields:
+        if field.required:
+            raw_input[field.name] = _single_form_value(
+                fields,
+                field.name,
+                maximum_length=field.max_length,
+            )
+        else:
+            raw_input[field.name] = (
+                _optional_single_form_value(
+                    fields,
+                    field.name,
+                    maximum_length=field.max_length,
+                )
+                or ""
+            )
+    allowed_fields = {
+        "csrf_token",
+        "confirmation",
+        "idempotency_key",
+        "experiment_id",
+        *(field.name for field in executor.manual_input_fields),
+    }
+    if set(fields) - allowed_fields:
+        raise HTTPException(status_code=400, detail="unexpected manual run field")
+    try:
+        input_payload = parse_registered_manual_input(
+            slug=executor.slug,
+            values=raw_input,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid automation input") from exc
+    return csrf_token, confirmation, idempotency_key, experiment_id, input_payload
 
 
 async def _parse_retry_form(request: Request) -> tuple[str, str, str, str, str]:
@@ -362,6 +592,12 @@ async def _parse_kill_switch_form(
     actor = _single_form_value(fields, "actor", maximum_length=200)
     reason = _single_form_value(fields, "reason", maximum_length=500)
     return csrf_token, confirmation, target, actor, reason
+
+
+async def _parse_automation_enabled_form(
+    request: Request,
+) -> tuple[str, str, str, str, str]:
+    return await _parse_kill_switch_form(request)
 
 
 async def _parse_approval_decision_form(

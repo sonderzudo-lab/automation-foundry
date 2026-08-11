@@ -79,8 +79,8 @@ O sistema tem **quatro planos** (layers):
 | ORM | SQLAlchemy 2.0 + Alembic | Tipado; migrações versionadas |
 | Frontend | HTMX + Jinja2 (ou React) | HTMX = rápido de construir; React se quiser SPA |
 | LLM local | Ollama (Qwen3 / Gemma) | API OpenAI-compatível, licença permissiva |
-| TTS | Kokoro-82M (Apache 2.0) | Comercial livre, PT-BR, rápido |
-| Imagem | SDXL ou FLUX Schnell (Apache 2.0) | Comercial livre (FLUX **Dev** não!) |
+| TTS | Kokoro-82M (pesos Apache 2.0) | PT-BR usa eSpeak NG externo GPL-3.0-or-later; vozes PT-BR exigem validação e decisão de proveniência antes de monetização |
+| Imagem | FLUX.1 Schnell reprovado para uso monetizado; SDXL requer análise separada | Nenhum backend aprovado; consulte `docs/licensing/content-visuals.md` |
 | Legendas | faster-whisper / WhisperX | Timing palavra-a-palavra |
 | Montagem | FFmpeg | Padrão da indústria |
 | Containers | Docker + docker-compose | Reprodutibilidade |
@@ -88,8 +88,8 @@ O sistema tem **quatro planos** (layers):
 | Embeddings (similaridade) | sentence-transformers (local) | Roda na sua GPU, sem custo de API |
 
 **Licenças que o Cursor costuma ignorar — você fiscaliza:**
-- TTS: use **Kokoro** ou **Fish Speech** (Apache 2.0). **NÃO** use XTTS v2 / F5-TTS para conteúdo monetizado (não-comerciais).
-- Imagem: use **SDXL** ou **FLUX Schnell** (Apache 2.0). **NÃO** use **FLUX Dev** (proíbe vender o output).
+- TTS: Kokoro só pode usar o perfil licenciado e documentado em `docs/licensing/content-tts.md`; Fish Speech ainda exige auditoria própria. **NÃO** use XTTS v2 / F5-TTS para conteúdo monetizado (não-comerciais).
+- Imagem: nenhum backend está aprovado por nome genérico. A auditoria do FLUX.1 Schnell não fechou o gate comercial; SDXL exige análise separada. Siga `docs/licensing/content-visuals.md`. FLUX Dev permanece fora do escopo.
 
 ---
 
@@ -283,7 +283,7 @@ Leia ARQUITETURA.md antes de qualquer tarefa. Ele é a fonte da verdade.
 
 ## Stack fixa (não substitua)
 Python 3.12, FastAPI, Celery+Redis, SQLAlchemy 2.0, Ollama, Kokoro TTS,
-SDXL/FLUX Schnell, faster-whisper, FFmpeg. NÃO troque essas escolhas.
+backend visual auditado, faster-whisper e FFmpeg. Não habilite modelos apenas por estarem citados neste documento histórico.
 
 ## Convenções
 - Type hints obrigatórios em toda função.
@@ -294,8 +294,8 @@ SDXL/FLUX Schnell, faster-whisper, FFmpeg. NÃO troque essas escolhas.
 - Escreva testes pytest junto com o código. Não entregue módulo sem teste.
 
 ## Licenças (CRÍTICO)
-- TTS: só Kokoro ou Fish Speech (Apache 2.0). NUNCA XTTS/F5-TTS para monetização.
-- Imagem: só SDXL ou FLUX Schnell. NUNCA FLUX Dev (proíbe venda do output).
+- TTS: Kokoro somente conforme o gate em `docs/licensing/content-tts.md`; Fish Speech continua não auditado. NUNCA XTTS/F5-TTS para monetização.
+- Imagem: somente backend fixado e aprovado em `docs/licensing/content-visuals.md`; FLUX Dev permanece bloqueado.
 
 ## O que NÃO fazer
 - Não criar pipeline "do tópico ao upload" sem ponto de revisão humana.
@@ -368,7 +368,7 @@ NÃO chame o Ollama de verdade nos testes.
 **Objetivo:** converter o roteiro em narração (áudio), com voz consistente por canal.
 
 **Responsabilidades:**
-- Usar **Kokoro-82M** (Apache 2.0). Voz/idioma configurável por canal (PT-BR = `'p'`).
+- Usar **Kokoro-82M** somente conforme `docs/licensing/content-tts.md`. PT-BR = `'p'`, depende de eSpeak NG externo e as vozes atuais permanecem bloqueadas para monetização até validação humana e decisão de proveniência.
 - Rodar na fila `gpu`.
 - Salvar `audio_path` em `storage/...` e retornar duração total (para timing posterior).
 
@@ -378,7 +378,7 @@ Leia @ARQUITETURA.md (Seção A2). Implemente src/pipeline/tts.py:
 
     def synthesize(script_text: str, voice: str, lang_code: str = "p") -> TTSResult
 
-Use Kokoro-82M (pip install kokoro). NÃO use XTTS nem F5-TTS (licença não-comercial).
+Use o Kokoro-82M fixado pelo projeto com Python 3.12 e o gate de licença/qualidade documentado. NÃO use XTTS nem F5-TTS (licença não-comercial).
 Quebre o texto em sentenças, sintetize cada uma, concatene em um WAV/MP3 único via
 ffmpeg ou pydub. Retorne TTSResult com audio_path e duration_seconds.
 Mantenha o modelo carregado em memória entre chamadas (singleton) para não recarregar pesos.
@@ -391,7 +391,7 @@ Escreva teste que sintetiza uma frase curta e verifica que o arquivo existe e te
 - [ ] A voz é a mesma entre execuções do mesmo canal (consistência).
 - [ ] `duration_seconds` bate com a duração real do arquivo.
 - [ ] Roda na fila `gpu` (não concorre com outra tarefa GPU).
-- [ ] Confirmado: usa Kokoro, não XTTS/F5-TTS.
+- [ ] Confirmado: usa o perfil Kokoro fixado e aprovado por voz, não XTTS/F5-TTS.
 - [ ] Texto longo (>2 min) não estoura memória nem corta no fim.
 
 ---
@@ -401,8 +401,8 @@ Escreva teste que sintetiza uma frase curta e verifica que o arquivo existe e te
 **Objetivo:** gerar/obter os visuais do vídeo (imagens IA + B-roll de stock).
 
 **Responsabilidades:**
-- Imagens via **SDXL** ou **FLUX Schnell** (Apache 2.0) na fila `gpu`.
-- B-roll via **Pexels/Pixabay API** (uso comercial livre; baixar para `storage/`, sem hotlinking).
+- Imagens somente por modelo/revisão aprovado em `docs/licensing/content-visuals.md`, na fila `gpu`.
+- B-roll via API oficial somente após auditoria de termos; baixar para `storage/`, persistir autoria/página/licença e nunca fazer hotlink permanente.
 - Decidir quantos visuais por duração de áudio (ex.: 1 a cada ~5-8s).
 
 **Prompt para o Cursor:**
@@ -412,9 +412,9 @@ Leia @ARQUITETURA.md (Seção A3). Implemente src/pipeline/visuals.py com duas e
     def generate_images(prompts: list[str], out_dir: str) -> list[str]   # SDXL/FLUX Schnell local
     def fetch_stock(query: str, count: int, out_dir: str) -> list[str]    # Pexels/Pixabay API
 
-Para geração local, use diffusers com SDXL ou FLUX Schnell (NUNCA FLUX Dev — proíbe venda).
-Para stock, use as APIs Pexels e Pixabay (chaves via config). Baixe os arquivos para
-out_dir (NÃO hotlink — o Pixabay proíbe). Respeite rate limits com backoff.
+Para geração local, use somente o modelo fixado e aprovado no inventário de licenças.
+Para stock, use a API oficial auditada (chaves via config). Baixe os arquivos para
+out_dir, registre autoria/página/licença, não faça hotlink e respeite cache/rate limits.
 Uma função orquestradora visuals_for_video(script, audio_duration, mode) decide a
 quantidade de visuais e chama a estratégia escolhida.
 Escreva testes mockando as APIs de stock; para geração local, um teste marcado @gpu
@@ -424,7 +424,7 @@ que pode ser pulado em CI.
 **Checklist de checkpoint A3:**
 - [ ] `fetch_stock` baixa arquivos reais para `storage/` (não URLs).
 - [ ] `generate_images` produz imagens coerentes com os prompts.
-- [ ] Confirmado: usa SDXL ou FLUX **Schnell**, nunca FLUX Dev.
+- [ ] Confirmado: usa somente revisão visual fixada e aprovada, nunca FLUX Dev.
 - [ ] Rate limit das APIs tratado (não toma 429).
 - [ ] Número de visuais é proporcional à duração do áudio.
 - [ ] Geração local roda na fila `gpu`.
@@ -434,6 +434,12 @@ que pode ser pulado em CI.
 ## A4 — Legendas (`pipeline/captions.py`)
 
 **Objetivo:** gerar legendas com timing palavra-a-palavra a partir do áudio.
+
+**Estado atual:** o contrato adapter-driven A4 está implementado e testado com
+timings falsos: verifica o WAV A2 por hash, liga a narração à approval A1,
+valida idioma, ordem/duração das palavras, similaridade e direitos comerciais,
+publica ASS atomicamente e registra evidências. Nenhum backend real está
+selecionável; consulte `docs/licensing/content-captions.md`.
 
 **Prompt para o Cursor:**
 ```
@@ -458,6 +464,13 @@ tem timestamps válidos e não-sobrepostos.
 ## A5 — Montagem (`pipeline/assembly.py`)
 
 **Objetivo:** combinar áudio + visuais + legendas em um vídeo final via FFmpeg.
+
+**Estado atual:** o contrato adapter-driven A5 está implementado e testado com
+um MP4 sintético: verifica todos os artifacts de entrada, reconcilia o manifesto
+visual, exige H.264/AAC e legendas queimadas, inspeciona estrutura, tracks,
+resolução e duração e registra um export local observável. Nenhum build FFmpeg
+está selecionável; a inspeção estrutural não substitui um teste real de
+decodificação com ffprobe. Consulte `docs/licensing/content-assembly.md`.
 
 **Prompt para o Cursor:**
 ```
@@ -668,6 +681,8 @@ Roda na fila 'io'. Testes mockando a API.
 
 **Objetivo:** medir quão parecidos são seus vídeos recentes e **alertar antes** de cair no padrão "template replicável" que o YouTube pune. (Esta feature sozinha justifica o dashboard.)
 
+> **Estado atual:** A6 possui um primeiro gate local e determinístico integrado após A5. Ele usa cosseno de unigramas + Jaccard de trigramas, compara somente runs anteriores bem-sucedidas da mesma automação que já passaram pelo gate, persiste relatório/métricas e bloqueia a run com alerta a partir do limite configurado. O escopo histórico desta seção — embeddings multilíngues e separação pelo `channel_id` — ainda não foi implementado; portanto o gate atual detecta cópia lexical, não toda paráfrase semântica.
+
 **Prompt para o Cursor:**
 ```
 Leia @ARQUITETURA.md (Seções 4, D3, 10). Implemente src/intelligence/similarity.py:
@@ -875,7 +890,7 @@ Estas regras estão embutidas nos checkpoints acima, mas valem como princípio t
 2. **Detector de similaridade (D3) bloqueia** publicação automática quando vídeos ficam parecidos demais (padrão "template replicável" = alvo da política de conteúdo inautêntico do YouTube).
 3. **Variação real entre canais.** Multi-canal não é o mesmo esqueleto clonado N vezes — voz, estrutura e identidade diferentes por canal (senão, "cascade demonetization").
 4. **Rótulo de IA** aplicado quando exigido (voz/eventos sintéticos realistas); narração com sua própria voz/voz licenciada não precisa.
-5. **Licenças respeitadas:** Kokoro/Fish Speech (TTS), SDXL/FLUX Schnell (imagem). Nunca XTTS/F5-TTS/FLUX Dev para conteúdo monetizado.
+5. **Licenças respeitadas:** cada engine, peso, voz, G2P, imagem, provider e dataset possui evidência própria. Kokoro segue `docs/licensing/content-tts.md`; visuais seguem `docs/licensing/content-visuals.md`. Nunca XTTS/F5-TTS/FLUX Dev para conteúdo monetizado.
 6. **TikTok:** sem autopostar via API não-auditada nem automação de browser (viola ToS).
 7. **Diversifique a renda:** o AdSense é uma fonte, não a única. O código já prevê afiliados e métricas consolidadas justamente por isso.
 8. **LGPD no outreach (H3):** B2B, segmentado, opt-out, baixo volume, sender isolado.

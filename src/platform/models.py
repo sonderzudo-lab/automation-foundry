@@ -104,6 +104,7 @@ class DispatchEventType(StrEnum):
     PUBLISH_FAILED = "publish_failed"
     CLAIMED = "claimed"
     LEASE_RECLAIMED = "lease_reclaimed"
+    REQUEUED = "requeued"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -113,6 +114,8 @@ class ControlEventType(StrEnum):
 
     KILL_SWITCH_ENABLED = "kill_switch_enabled"
     KILL_SWITCH_DISABLED = "kill_switch_disabled"
+    AUTOMATION_ENABLED = "automation_enabled"
+    AUTOMATION_DISABLED = "automation_disabled"
     CANCELLATION_REQUESTED = "cancellation_requested"
 
 
@@ -231,7 +234,7 @@ _QUEUE_CLASS_SQL = "'gpu', 'cpu', 'io'"
 _DISPATCH_STATUS_SQL = "'pending', 'published', 'claimed', 'completed', 'failed'"
 _DISPATCH_EVENT_TYPE_SQL = (
     "'prepared', 'publish_succeeded', 'publish_failed', 'claimed', "
-    "'lease_reclaimed', 'completed', 'failed'"
+    "'lease_reclaimed', 'requeued', 'completed', 'failed'"
 )
 _APPROVAL_STATUS_SQL = "'pending', 'approved', 'rejected', 'cancelled'"
 _ARTIFACT_SENSITIVITY_SQL = "'public', 'internal', 'confidential', 'restricted'"
@@ -251,7 +254,8 @@ _ALERT_EVENT_TYPE_SQL = (
 )
 _HEALTH_STATUS_SQL = "'pass', 'degraded', 'fail', 'skip'"
 _CONTROL_EVENT_TYPE_SQL = (
-    "'kill_switch_enabled', 'kill_switch_disabled', 'cancellation_requested'"
+    "'kill_switch_enabled', 'kill_switch_disabled', 'automation_enabled', "
+    "'automation_disabled', 'cancellation_requested'"
 )
 
 
@@ -1405,7 +1409,8 @@ class ControlEvent(Base):
         ),
         CheckConstraint(
             "(automation_id IS NOT NULL AND run_id IS NULL AND "
-            "event_type IN ('kill_switch_enabled', 'kill_switch_disabled')) OR "
+            "event_type IN ('kill_switch_enabled', 'kill_switch_disabled', "
+            "'automation_enabled', 'automation_disabled')) OR "
             "(automation_id IS NULL AND run_id IS NOT NULL AND "
             "event_type = 'cancellation_requested')",
             name="ck_control_events_target",

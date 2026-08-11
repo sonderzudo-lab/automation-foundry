@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -60,6 +61,43 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3:14b"
     ollama_timeout: int = 120
 
+    # ── Content Engine TTS ───────────────────────────────────────────────────
+
+    # Kokoro permanece apenas em modo de teste local até a qualidade PT-BR e o
+    # risco residual de proveniência por voz serem aceitos explicitamente.
+    content_tts_backend: Literal["disabled", "kokoro_quality_test"] = "disabled"
+    content_tts_voice_id: str = Field(default="pf_dora", min_length=1, max_length=100)
+    content_tts_language_code: str = Field(default="p", min_length=1, max_length=20)
+    # FLUX.1 permanece bloqueado. O único modo opt-in importa PNGs escolhidos
+    # pelo operador e exige manifesto de direitos + SHA-256 por arquivo.
+    content_visual_backend: Literal["disabled", "local_assets_quality_test"] = (
+        "disabled"
+    )
+    content_visual_import_root: str = Field(
+        default="./imports/content-visuals",
+        min_length=1,
+        max_length=1000,
+    )
+    content_visual_manifest_path: str = Field(
+        default="manifest.json",
+        min_length=1,
+        max_length=1000,
+    )
+    # O modo opt-in estima timings a partir do texto aprovado; não transcreve o áudio.
+    content_caption_backend: Literal[
+        "disabled",
+        "approved_text_timing_quality_test",
+    ] = "disabled"
+    # A5 aceita adapters injetados em testes; o build FFmpeg local ainda não foi auditado.
+    content_assembly_backend: Literal["disabled", "ffmpeg_quality_test"] = "disabled"
+    content_ffmpeg_path: str = Field(default="ffmpeg", min_length=1, max_length=1000)
+    content_ffprobe_path: str = Field(default="ffprobe", min_length=1, max_length=1000)
+    content_ffmpeg_expected_sha256: str | None = None
+    content_ffprobe_expected_sha256: str | None = None
+    # A6 usa comparação lexical determinística local; o escopo inicial é a automação.
+    content_similarity_threshold: float = Field(default=0.85, gt=0, le=1)
+    content_similarity_window: int = Field(default=20, ge=1, le=100)
+
     # ── YouTube / Google APIs ─────────────────────────────────────────────────
 
     google_client_id: str | None = None
@@ -110,6 +148,7 @@ class Settings(BaseSettings):
     # ── Hardware / custos (Bloco E2) ──────────────────────────────────────────
 
     gpu_power_watts: int = 400
+    cpu_power_watts: int = 150
     energy_tariff_brl_per_kwh: float = 0.75
 
     # ── Ambiente ──────────────────────────────────────────────────────────────
@@ -162,6 +201,31 @@ class Settings(BaseSettings):
     def _health_thresholds_must_be_ordered(self) -> Settings:
         if self.health_warning_percent >= self.health_critical_percent:
             raise ValueError("health warning threshold must be below critical threshold")
+        return self
+
+    @model_validator(mode="after")
+    def _tts_quality_test_must_use_reviewed_pt_br_profile(self) -> Settings:
+        if self.content_tts_backend != "kokoro_quality_test":
+            return self
+        if self.content_tts_language_code != "p":
+            raise ValueError("Kokoro quality test requires language code 'p'")
+        if self.content_tts_voice_id not in {"pf_dora", "pm_alex", "pm_santa"}:
+            raise ValueError("Kokoro quality test requires an audited PT-BR voice ID")
+        return self
+
+    @model_validator(mode="after")
+    def _ffmpeg_quality_test_must_pin_external_binaries(self) -> Settings:
+        if self.content_assembly_backend != "ffmpeg_quality_test":
+            return self
+        for field, value in (
+            ("content_ffmpeg_expected_sha256", self.content_ffmpeg_expected_sha256),
+            ("content_ffprobe_expected_sha256", self.content_ffprobe_expected_sha256),
+        ):
+            normalized = value.strip().casefold() if isinstance(value, str) else ""
+            if len(normalized) != 64 or any(
+                character not in "0123456789abcdef" for character in normalized
+            ):
+                raise ValueError(f"{field} must pin one SHA-256 digest")
         return self
 
     @property

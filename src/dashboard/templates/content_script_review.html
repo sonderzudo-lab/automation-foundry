@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Revisão A1 #{{ review.approval_id }} · Automation Foundry</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      body { margin: 0; background: #0b0d10; color: #f2f4f7; }
+      main { width: min(980px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+      header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin-bottom: 1.5rem; }
+      h1, h2 { margin: 0; letter-spacing: -.03em; }
+      h2 { margin-bottom: .7rem; color: #b7c0cc; font-size: 1rem; text-transform: uppercase; letter-spacing: .08em; }
+      p { color: #c7d0da; line-height: 1.6; }
+      a { color: #8ab4f8; text-decoration: none; }
+      code { color: #d2a8ff; overflow-wrap: anywhere; }
+      section { margin-bottom: 1rem; padding: 1.2rem; border: 1px solid #262d36; border-radius: 14px; background: #13171c; }
+      dl { display: grid; grid-template-columns: max-content 1fr; gap: .4rem .8rem; margin: 0; }
+      dt { color: #8995a3; } dd { margin: 0; }
+      pre { margin: 0; color: #f2f4f7; font: inherit; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .notice { color: #f2cc60; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <div>Approval #{{ review.approval_id }} · artefato #{{ review.artifact_id }}</div>
+          <h1>Revisão editorial A1</h1>
+        </div>
+        <a href="/runs/{{ review.run_id }}">Voltar à run</a>
+      </header>
+      <section>
+        <h2>Integridade</h2>
+        <p class="notice">O conteúdo abaixo foi lido do bundle local e validado contra o SHA-256 registrado na approval.</p>
+        <dl><dt>Tema</dt><dd>{{ review.topic }}</dd><dt>Formato</dt><dd>{{ review.format }}</dd><dt>SHA-256</dt><dd><code>{{ review.sha256 }}</code></dd></dl>
+      </section>
+      <section><h2>Ângulo</h2><pre>{{ review.angle }}</pre></section>
+      <section><h2>Estrutura</h2><pre>{{ review.outline }}</pre></section>
+      <section><h2>Hook</h2><pre>{{ review.hook }}</pre></section>
+      <section><h2>Roteiro completo</h2><pre>{{ review.full_script }}</pre></section>
+      <section><h2>Narração</h2><pre>{{ review.narration }}</pre></section>
+    </main>
+  </body>
+</html>
