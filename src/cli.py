@@ -25,6 +25,9 @@ if TYPE_CHECKING:
         BackupVerificationResult,
         RestoreResult,
     )
+    from src.operations.purge import PurgeExecutionResult, PurgePlan
+    from src.operations.retention import RetentionInventory
+    from src.pipeline.caption_alignment import CaptionAlignmentResult
     from src.platform.dispatch_service import DispatchPreparationResult
     from src.platform.example_run import ExampleRunResult
     from src.platform.models import Alert, Experiment, Schedule
@@ -379,6 +382,61 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Confirmação exata no formato "RESTORE <backup-id>".',
     )
     restore_backup.add_argument("--json", action="store_true")
+    storage_inventory = subparsers.add_parser(
+        "storage-inventory",
+        help="Inventaria STORAGE_ROOT e classifica retenção sem apagar nada.",
+    )
+    storage_inventory.add_argument(
+        "--dry-run",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Único modo suportado. Exclusão material ainda não existe e exigirá "
+            "uma fatia separada com aprovação humana."
+        ),
+    )
+    storage_inventory.add_argument(
+        "--max-items",
+        type=int,
+        help="Limite de itens detalhados na saída; os totais cobrem tudo.",
+    )
+    storage_inventory.add_argument("--json", action="store_true")
+    retention_policy = subparsers.add_parser(
+        "retention-policy",
+        help=(
+            "Mostra a política declarativa de retenção por tipo de artifact. "
+            "Somente leitura: não registra, altera nem apaga nada."
+        ),
+    )
+    retention_policy.add_argument("--json", action="store_true")
+    caption_alignment = subparsers.add_parser(
+        "caption-alignment",
+        help=(
+            "Diagnostica localmente o alinhamento da legenda A4 contra o áudio "
+            "aprovado, sem alterar a run nem consultar serviços externos."
+        ),
+    )
+    caption_alignment.add_argument("--run-id", type=int, required=True)
+    caption_alignment.add_argument("--json", action="store_true")
+    plan_purge = subparsers.add_parser(
+        "plan-purge",
+        help="Propõe o expurgo dos artefatos expirados e abre a approval humana.",
+    )
+    plan_purge.add_argument("--actor", required=True)
+    plan_purge.add_argument("--reason", required=True)
+    plan_purge.add_argument("--json", action="store_true")
+    execute_purge = subparsers.add_parser(
+        "execute-purge",
+        help="Apaga os arquivos exatos de um plano aprovado, com backup prévio.",
+    )
+    execute_purge.add_argument("--approval-id", type=int, required=True)
+    execute_purge.add_argument(
+        "--confirm",
+        required=True,
+        help='Confirmação exata no formato "PURGE <plan-digest>".',
+    )
+    execute_purge.add_argument("--actor", required=True)
+    execute_purge.add_argument("--json", action="store_true")
     run_example = subparsers.add_parser(
         "run-example",
         help="Executa um passo no-op local e persiste seu ciclo de vida.",
@@ -463,7 +521,15 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("public", "internal", "confidential", "restricted"),
         default="internal",
     )
-    register_artifact.add_argument("--retention-days", type=int)
+    register_artifact.add_argument(
+        "--retention-days",
+        type=int,
+        help=(
+            "Sobrescreve a política declarativa. Sem este argumento, o tipo "
+            "resolve sua retenção em src/operations/retention_policy.py e um "
+            "tipo não declarado fica com retenção indefinida."
+        ),
+    )
     register_artifact.add_argument("--expected-sha256")
     register_artifact.add_argument("--json", action="store_true")
 
@@ -782,6 +848,7 @@ async def _decide_approval_command(
     reason: str,
 ) -> ApprovalCommandResult:
     from src.core.database import AsyncSessionLocal
+    from src.pipeline.thumbnail_review import THUMBNAIL_REVIEW_APPROVAL_ACTION
     from src.platform.approval_service import decide_approval
     from src.platform.models import Approval, ApprovalStatus
 
@@ -790,6 +857,10 @@ async def _decide_approval_command(
             approval = await session.get(Approval, approval_id)
             if approval is None:
                 raise ValueError("approval does not exist")
+            if approve and approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
+                raise ValueError(
+                    "A8 thumbnail approval requires one verified dashboard selection"
+                )
             decision = await decide_approval(
                 session,
                 approval=approval,
@@ -837,10 +908,13 @@ async def _register_artifact_command(
     expected_sha256: str | None,
 ) -> ArtifactCommandResult:
     from src.core.database import AsyncSessionLocal
+    from src.operations.retention_policy import resolve_retention_days
     from src.platform.artifact_service import register_local_artifact
     from src.platform.models import ArtifactSensitivity, Run, StepRun
 
     settings = get_settings()
+    if retention_days is None:
+        retention_days = resolve_retention_days(artifact_type)
     async with AsyncSessionLocal() as session:
         try:
             run = await session.get(Run, run_id)
@@ -1543,6 +1617,322 @@ def _render_backup_result(
     )
 
 
+async def _storage_inventory_command() -> RetentionInventory:
+    from src.core.database import AsyncSessionLocal
+    from src.operations.retention import collect_retention_inventory
+
+    configuration = get_settings()
+    async with AsyncSessionLocal() as session:
+        return await collect_retention_inventory(session, configuration=configuration)
+
+
+def _render_retention_policy(*, as_json: bool) -> None:
+    from src.operations.retention_policy import declared_retention_policies
+
+    entries = declared_retention_policies()
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "dry_run": True,
+                    "undeclared_behaviour": "indefinite_retention",
+                    "policies": [
+                        {
+                            "artifact_type": entry.artifact_type,
+                            "retention_days": entry.retention_days,
+                            "producer": entry.producer,
+                            "rationale": entry.rationale,
+                        }
+                        for entry in entries
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    print("Política declarativa de retenção por tipo de artifact:")
+    for entry in entries:
+        retention = (
+            "indefinida"
+            if entry.retention_days is None
+            else f"{entry.retention_days} dias"
+        )
+        print(f"  {entry.artifact_type}: {retention} · {entry.producer}")
+        print(f"    {entry.rationale}")
+    print(
+        "  tipo não declarado: retenção indefinida, nunca expira e nunca entra "
+        "em um plano de expurgo"
+    )
+    print(
+        "  a política vale para registros novos; artefatos já registrados "
+        "mantêm o prazo gravado no próprio registro"
+    )
+
+
+async def _caption_alignment_command(run_id: int) -> CaptionAlignmentResult:
+    from src.core.database import AsyncSessionLocal
+    from src.pipeline.caption_alignment import (
+        build_alignment_parameters,
+        evaluate_caption_alignment,
+    )
+
+    configuration = get_settings()
+    async with AsyncSessionLocal() as session:
+        result = await evaluate_caption_alignment(
+            session,
+            run_id=run_id,
+            storage_root=Path(configuration.storage_root),
+            parameters=build_alignment_parameters(configuration),
+        )
+        await session.commit()
+        return result
+
+
+def _render_caption_alignment(
+    result: CaptionAlignmentResult,
+    *,
+    as_json: bool,
+) -> None:
+    measurement = result.measurement
+    payload: dict[str, object] = {
+        "ok": True,
+        "run_id": result.run_id,
+        "status": measurement.status,
+        "reasons": list(measurement.reasons),
+        "caption_artifact_id": result.caption_artifact_id,
+        "audio_artifact_id": result.audio_artifact_id,
+        "report_artifact_id": result.report_artifact_id,
+        "report_sha256": result.report_sha256,
+        "parameters_digest": result.parameters_digest,
+        "alert_id": result.alert_id,
+        "replayed": result.replayed,
+        "audio_duration_seconds": str(measurement.audio_duration_seconds),
+        "speech_seconds": str(measurement.speech_seconds),
+        "caption_seconds": str(measurement.caption_seconds),
+        "speech_coverage_ratio": str(measurement.speech_coverage_ratio),
+        "caption_outside_speech_ratio": str(measurement.caption_outside_speech_ratio),
+        "onset_offset_seconds": str(measurement.onset_offset_seconds),
+        "end_offset_seconds": str(measurement.end_offset_seconds),
+        "speech_segment_count": measurement.speech_segment_count,
+        "caption_block_count": measurement.caption_block_count,
+        "caption_event_count": measurement.caption_event_count,
+        "events_beyond_audio": measurement.events_beyond_audio,
+        "published": False,
+    }
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False))
+        return
+    print(f"run {result.run_id}: alinhamento {measurement.status}")
+    if measurement.reasons:
+        print(f"  motivos: {', '.join(measurement.reasons)}")
+    print(f"  fala coberta pela legenda: {measurement.speech_coverage_ratio}")
+    print(f"  legenda sobre silêncio: {measurement.caption_outside_speech_ratio}")
+    print(f"  desvio de início: {measurement.onset_offset_seconds} s")
+    print(f"  desvio de fim: {measurement.end_offset_seconds} s")
+    print(
+        f"  trechos de fala: {measurement.speech_segment_count} · "
+        f"blocos de legenda: {measurement.caption_block_count}"
+    )
+    print(f"  relatório: artifact {result.report_artifact_id}")
+    print("  nenhum serviço externo foi consultado e nada foi publicado")
+
+
+def _render_retention_inventory(
+    inventory: RetentionInventory,
+    *,
+    max_items: int,
+    as_json: bool,
+) -> None:
+    shown = inventory.items[:max_items]
+    payload: dict[str, object] = {
+        "ok": True,
+        "dry_run": inventory.dry_run,
+        "deleted_file_count": inventory.deleted_file_count,
+        "deleted_bytes": inventory.deleted_bytes,
+        "generated_at": inventory.generated_at.isoformat(),
+        "storage_root_present": inventory.storage_root_present,
+        "scanned_file_count": inventory.scanned_file_count,
+        "scanned_bytes": inventory.scanned_bytes,
+        "excluded_file_count": inventory.excluded_file_count,
+        "excluded_bytes": inventory.excluded_bytes,
+        "classes": [
+            {
+                "classification": entry.classification.value,
+                "file_count": entry.file_count,
+                "total_bytes": entry.total_bytes,
+            }
+            for entry in inventory.classes
+        ],
+        "automations": [
+            {
+                "automation_slug": entry.automation_slug,
+                "file_count": entry.file_count,
+                "total_bytes": entry.total_bytes,
+                "expired_file_count": entry.expired_file_count,
+                "expired_bytes": entry.expired_bytes,
+                "hold_file_count": entry.hold_file_count,
+                "missing_file_count": entry.missing_file_count,
+            }
+            for entry in inventory.automations
+        ],
+        "item_total": len(inventory.items),
+        "item_truncated": len(shown) < len(inventory.items),
+        "items": [
+            {
+                "classification": item.classification.value,
+                "reason": item.reason,
+                "relative_path": item.relative_path,
+                "size_bytes": item.size_bytes,
+                "artifact_id": item.artifact_id,
+                "run_id": item.run_id,
+                "automation_slug": item.automation_slug,
+                "artifact_type": item.artifact_type,
+                "sensitivity": item.sensitivity,
+                "registered_size_bytes": item.registered_size_bytes,
+                "retention_days": item.retention_days,
+                "retention_until": (
+                    item.retention_until.isoformat()
+                    if item.retention_until is not None
+                    else None
+                ),
+                "evidence_matches": item.evidence_matches,
+            }
+            for item in shown
+        ],
+    }
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    if not inventory.storage_root_present:
+        print("STORAGE_ROOT ainda não existe; nada foi criado ou alterado.")
+    print(
+        f"Inventário dry-run em {inventory.generated_at.isoformat()}Z; "
+        f"arquivos={inventory.scanned_file_count}, bytes={inventory.scanned_bytes}, "
+        f"excluídos={inventory.excluded_file_count} ({inventory.excluded_bytes} bytes), "
+        f"apagados={inventory.deleted_file_count}"
+    )
+    for entry in inventory.classes:
+        print(
+            f"  {entry.classification.value:<15} "
+            f"arquivos={entry.file_count:<6} bytes={entry.total_bytes}"
+        )
+    for automation in inventory.automations:
+        print(
+            f"  automação {automation.automation_slug}: "
+            f"arquivos={automation.file_count}, bytes={automation.total_bytes}, "
+            f"expirados={automation.expired_file_count} "
+            f"({automation.expired_bytes} bytes), "
+            f"retidos={automation.hold_file_count}, "
+            f"ausentes={automation.missing_file_count}"
+        )
+    for item in shown:
+        print(
+            f"  {item.classification.value}/{item.reason} "
+            f"{item.relative_path} ({item.size_bytes} bytes)"
+        )
+    if len(shown) < len(inventory.items):
+        print(
+            f"  ... {len(inventory.items) - len(shown)} itens omitidos; "
+            "use --max-items para ampliar."
+        )
+
+
+async def _plan_purge_command(actor: str, reason: str) -> PurgePlan:
+    from src.core.database import AsyncSessionLocal
+    from src.operations.purge import plan_retention_purge
+
+    configuration = get_settings()
+    async with AsyncSessionLocal() as session:
+        try:
+            plan = await plan_retention_purge(
+                session,
+                actor=actor,
+                reason=reason,
+                configuration=configuration,
+            )
+        except Exception:
+            await session.rollback()
+            raise
+        await session.commit()
+    return plan
+
+
+async def _execute_purge_command(
+    approval_id: int,
+    confirmation: str,
+    actor: str,
+) -> PurgeExecutionResult:
+    from src.core.database import AsyncSessionLocal
+    from src.operations.purge import execute_approved_purge
+
+    configuration = get_settings()
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await execute_approved_purge(
+                session,
+                approval_id=approval_id,
+                confirmation=confirmation,
+                actor=actor,
+                configuration=configuration,
+            )
+        except Exception:
+            await session.rollback()
+            raise
+        await session.commit()
+    return result
+
+
+def _render_purge_plan(plan: PurgePlan, *, as_json: bool) -> None:
+    payload = {
+        "ok": True,
+        "plan_digest": plan.plan_digest,
+        "entry_count": plan.entry_count,
+        "total_bytes": plan.total_bytes,
+        "run_id": plan.run_id,
+        "approval_id": plan.approval_id,
+        "created": plan.created,
+        "requires_decision": plan.requires_decision,
+        "deleted_file_count": 0,
+    }
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    if plan.approval_id is None:
+        print("Nenhum artefato expirado elegível; nada foi proposto nem apagado.")
+        return
+    print(
+        f"Plano {plan.plan_digest} aguardando decisão humana: "
+        f"{plan.entry_count} arquivo(s), {plan.total_bytes} bytes, "
+        f"run={plan.run_id}, approval={plan.approval_id}. Nada foi apagado."
+    )
+    print(f'Após aprovar, confirme com: --confirm "PURGE {plan.plan_digest}"')
+
+
+def _render_purge_result(result: PurgeExecutionResult, *, as_json: bool) -> None:
+    payload = {
+        "ok": result.failed_entry_count == 0,
+        "run_id": result.run_id,
+        "approval_id": result.approval_id,
+        "plan_digest": result.plan_digest,
+        "backup_id": result.backup_id,
+        "deleted_file_count": result.deleted_file_count,
+        "deleted_bytes": result.deleted_bytes,
+        "failed_entry_count": result.failed_entry_count,
+        "replayed": result.replayed,
+    }
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    action = "replay" if result.replayed else "concluído"
+    print(
+        f"Expurgo {action}: {result.deleted_file_count} arquivo(s) removido(s), "
+        f"{result.deleted_bytes} bytes, falhas={result.failed_entry_count}, "
+        f"backup={result.backup_id}, run={result.run_id}"
+    )
+
+
 def _render_restore_result(result: RestoreResult, *, as_json: bool) -> None:
     payload = {
         "ok": True,
@@ -1639,6 +2029,105 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         _render_restore_result(restore_result, as_json=bool(args.json))
         return 0
+
+    if args.command == "storage-inventory":
+        detail = ""
+        if not args.dry_run:
+            detail = (
+                "storage-inventory opera somente em dry-run; a exclusão material "
+                "de artefatos exige uma fatia separada com aprovação humana"
+            )
+        elif args.max_items is not None and args.max_items < 1:
+            detail = "--max-items deve ser pelo menos 1"
+        if detail:
+            if args.json:
+                print(json.dumps({"ok": False, "error": detail}, ensure_ascii=False))
+            else:
+                print(detail)
+            return 2
+        try:
+            inventory = asyncio.run(_storage_inventory_command())
+        except Exception as exc:
+            return _render_command_failure(
+                "storage-inventory",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_retention_inventory(
+            inventory,
+            max_items=(
+                args.max_items
+                if args.max_items is not None
+                else get_settings().retention_inventory_max_items
+            ),
+            as_json=bool(args.json),
+        )
+        return 0
+
+    if args.command == "retention-policy":
+        try:
+            _render_retention_policy(as_json=bool(args.json))
+        except Exception as exc:
+            return _render_command_failure(
+                "retention-policy",
+                exc,
+                as_json=bool(args.json),
+            )
+        return 0
+
+    if args.command == "caption-alignment":
+        if args.run_id < 1:
+            detail = "--run-id deve ser positivo"
+            if args.json:
+                print(json.dumps({"ok": False, "error": detail}, ensure_ascii=False))
+            else:
+                print(detail)
+            return 2
+        from src.pipeline.caption_alignment import CaptionAlignmentError
+
+        try:
+            alignment = asyncio.run(_caption_alignment_command(args.run_id))
+        except CaptionAlignmentError as exc:
+            # Todos os códigos são constantes fechadas do módulo, nunca dados da run.
+            if args.json:
+                print(
+                    json.dumps({"ok": False, "error": exc.code}, ensure_ascii=False)
+                )
+            else:
+                print(f"caption-alignment falhou ({exc.code})")
+            return 1
+        except Exception as exc:
+            return _render_command_failure(
+                "caption-alignment",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_caption_alignment(alignment, as_json=bool(args.json))
+        return 0 if alignment.measurement.status == "pass" else 1
+
+    if args.command == "plan-purge":
+        try:
+            purge_plan = asyncio.run(
+                _plan_purge_command(args.actor, args.reason)
+            )
+        except Exception as exc:
+            return _render_command_failure("plan-purge", exc, as_json=bool(args.json))
+        _render_purge_plan(purge_plan, as_json=bool(args.json))
+        return 0
+
+    if args.command == "execute-purge":
+        try:
+            purge_result = asyncio.run(
+                _execute_purge_command(args.approval_id, args.confirm, args.actor)
+            )
+        except Exception as exc:
+            return _render_command_failure(
+                "execute-purge",
+                exc,
+                as_json=bool(args.json),
+            )
+        _render_purge_result(purge_result, as_json=bool(args.json))
+        return 0 if purge_result.failed_entry_count == 0 else 1
 
     if args.command == "enqueue-run":
         try:

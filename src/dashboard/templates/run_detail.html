@@ -90,6 +90,14 @@
         </section>
         {% endif %}
 
+        {% if run.has_local_export %}
+        <section class="wide">
+          <h2>Export local</h2>
+          <p>O pacote local reconfere as approvals e os SHA-256 do vídeo e da thumbnail antes de disponibilizar qualquer download.</p>
+          <p><a href="/runs/{{ run.id }}/local-export">Abrir export local revisável</a></p>
+        </section>
+        {% endif %}
+
         <section class="wide">
           <h2>Approvals vinculadas</h2>
           {% if run.approvals %}
@@ -107,7 +115,12 @@
             <table><tbody>{% for key, value in approval.review_payload.items() %}<tr><th>{{ key }}</th><td>{{ value }}</td></tr>{% endfor %}</tbody></table>
             {% if approval.action == "review_content_script_a1" %}
             <p><a href="/approvals/{{ approval.id }}/review">Abrir roteiro completo e verificado antes de decidir</a></p>
+            {% elif approval.action == "review_content_final_video_a7" %}
+            <p><a href="/approvals/{{ approval.id }}/review">Assistir ao vídeo final verificado antes de decidir</a></p>
+            {% elif approval.action == "select_content_thumbnail_a8" %}
+            <p><a href="/approvals/{{ approval.id }}/review">Escolher uma thumbnail entre os PNGs A3 verificados</a></p>
             {% endif %}
+            {% if approval.action != "select_content_thumbnail_a8" %}
             <form method="post" action="/approvals/{{ approval.id }}/approve">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <label for="approve-actor-{{ approval.id }}">Actor local</label>
@@ -117,6 +130,9 @@
               <label class="confirm"><input type="checkbox" name="confirmation" value="approve-approval" required> Confirmo a aprovação desta ação conforme a revisão acima.</label>
               <button type="submit">Aprovar approval</button>
             </form>
+            {% else %}
+            <p>A aprovação A8 exige uma escolha na página dedicada; nenhum ID enviado fora desse conjunto será aceito.</p>
+            {% endif %}
             {% else %}<p>Sem contexto seguro de revisão; somente a rejeição está disponível.</p>{% endif %}
             <form method="post" action="/approvals/{{ approval.id }}/reject">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -132,6 +148,63 @@
           {% endfor %}
           {% else %}<div class="empty">Nenhuma approval vinculada.</div>{% endif %}
         </section>
+
+        {% if run.content_outcome %}
+        <section class="wide">
+          <h2>Resultado local do conteúdo</h2>
+          <div class="facts">
+            <div class="fact"><span>Publicação</span>{% if run.content_outcome.published is sameas false %}não publicado{% elif run.content_outcome.published is sameas true %}publicado{% else %}não registrada{% endif %}</div>
+            <div class="fact"><span>Energia estimada</span>{{ run.content_outcome.estimated_energy_kwh ~ " kWh" if run.content_outcome.estimated_energy_kwh is not none else "—" }}</div>
+            <div class="fact"><span>Evidência observada até</span>{{ run.content_outcome.observed_through.isoformat() ~ "Z" if run.content_outcome.observed_through else "—" }}</div>
+            <div class="fact"><span>Escopo</span>run #{{ run.id }}</div>
+          </div>
+          {% if run.content_outcome.indicators %}
+          <table><thead><tr><th>Step</th><th>Indicador</th><th>Valor</th><th>Unidade</th><th>Confiança</th></tr></thead><tbody>
+          {% for indicator in run.content_outcome.indicators %}
+            <tr><td>{{ "#" ~ indicator.step_run_id if indicator.step_run_id else "run" }}</td><td>{{ indicator.label }}</td><td>{{ indicator.value }}</td><td>{{ indicator.unit }}</td><td>{{ indicator.confidence if indicator.confidence is not none else "—" }}</td></tr>
+          {% endfor %}
+          </tbody></table>
+          {% else %}<div class="empty">Nenhum indicador editorial allowlisted foi observado nesta run.</div>{% endif %}
+          {% if run.content_outcome.ledger_totals %}
+          <table><thead><tr><th>Moeda</th><th>Custo observado</th><th>Receita observada</th><th>Valor atribuído</th><th>Receita líquida observada</th></tr></thead><tbody>
+          {% for total in run.content_outcome.ledger_totals %}
+            <tr><td><code>{{ total.currency }}</code></td><td>{{ total.cost }}</td><td>{{ total.revenue }}</td><td>{{ total.attributed_value }}</td><td>{{ total.net_revenue }}</td></tr>
+          {% endfor %}
+          </tbody></table>
+          {% else %}<div class="empty">Nenhuma observação financeira foi atribuída a esta run.</div>{% endif %}
+          <p class="note">Consolidação somente leitura de métricas e ledger locais atribuídos à run. Nenhuma plataforma externa foi consultada; não há conversão cambial, pagamento ou promessa de resultado.</p>
+        </section>
+        {% endif %}
+
+        {% if caption_alignment or caption_alignment_unavailable %}
+        <section class="wide">
+          <h2>Alinhamento da legenda</h2>
+          {% if caption_alignment_unavailable %}
+          <div class="empty">O relatório de alinhamento registrado não pôde ser reconferido. Execute o diagnóstico local novamente pela CLI.</div>
+          {% else %}
+          <div class="facts">
+            <div class="fact"><span>Resultado</span>{{ "dentro da tolerância" if caption_alignment.status == "pass" else "fora da tolerância" }}</div>
+            <div class="fact"><span>Fala coberta</span>{{ caption_alignment.speech_coverage_ratio }}</div>
+            <div class="fact"><span>Legenda sobre silêncio</span>{{ caption_alignment.caption_outside_speech_ratio }}</div>
+            <div class="fact"><span>Desvio de início</span>{{ caption_alignment.onset_offset_seconds ~ " s" }}</div>
+            <div class="fact"><span>Desvio de fim</span>{{ caption_alignment.end_offset_seconds ~ " s" }}</div>
+            <div class="fact"><span>Duração do áudio</span>{{ caption_alignment.audio_duration_seconds ~ " s" }}</div>
+            <div class="fact"><span>Fala medida</span>{{ caption_alignment.speech_seconds ~ " s" }}</div>
+            <div class="fact"><span>Trechos de fala</span>{{ caption_alignment.speech_segment_count }}</div>
+            <div class="fact"><span>Blocos de legenda</span>{{ caption_alignment.caption_block_count }}</div>
+            <div class="fact"><span>Eventos além do áudio</span>{{ caption_alignment.events_beyond_audio }}</div>
+          </div>
+          {% if caption_alignment.reasons %}
+          <table><thead><tr><th>Motivo registrado</th></tr></thead><tbody>
+          {% for reason in caption_alignment.reasons %}
+            <tr><td><code>{{ reason }}</code></td></tr>
+          {% endfor %}
+          </tbody></table>
+          {% endif %}
+          <p class="note">Diagnóstico local somente leitura sobre o WAV e o ASS desta run, reconferidos por SHA-256 antes desta exibição (relatório #{{ caption_alignment.report_artifact_id }}, parâmetros <code>{{ caption_alignment.parameters_digest }}</code>). Ele mede sincronismo observável, não substitui revisão humana e não publica nada.</p>
+          {% endif %}
+        </section>
+        {% endif %}
 
         <section>
           <h2>Artefatos vinculados</h2>

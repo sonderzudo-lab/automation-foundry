@@ -11,15 +11,48 @@ from typing import Annotated
 from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_session
-from src.dashboard.service import load_dashboard_snapshot, load_run_detail
+from src.dashboard.service import (
+    load_connector_summaries,
+    load_dashboard_snapshot,
+    load_run_detail,
+)
 from src.operations.health import HealthReport, collect_health_report
+from src.operations.retention import (
+    RetentionInventory,
+    RetentionInventoryError,
+    collect_retention_inventory,
+)
+from src.operations.retention_policy import declared_retention_policies
+from src.pipeline.a1_executor import ContentScriptReview, load_content_local_export
+from src.pipeline.caption_alignment import (
+    CaptionAlignmentError,
+    CaptionAlignmentReportView,
+    load_caption_alignment_report,
+)
+from src.pipeline.final_review import FinalVideoReview
+from src.pipeline.local_export import (
+    LocalExportIntegrityError,
+    LocalExportNotAvailableError,
+    LocalExportPackage,
+)
+from src.pipeline.thumbnail_review import (
+    THUMBNAIL_REVIEW_APPROVAL_ACTION,
+    ThumbnailReview,
+    thumbnail_decision_payload,
+)
 from src.platform.approval_service import decide_approval
 from src.platform.control_service import (
     request_run_cancellation,
@@ -43,14 +76,42 @@ from src.platform.executor_registry import (
     retry_registered_automation,
     start_registered_automation,
 )
-from src.platform.models import Approval, ApprovalStatus, Automation, QueueClass, Run
+from src.platform.models import (
+    Approval,
+    ApprovalStatus,
+    Automation,
+    QueueClass,
+    Run,
+    Schedule,
+)
 from src.platform.run_service import IdempotencyConflictError, InvalidRunTransitionError
+from src.platform.schedule_service import (
+    ScheduleControlError,
+    set_schedule_enabled,
+)
 
+_REVIEW_TEMPLATES: dict[type, str] = {
+    ContentScriptReview: "content_script_review.html",
+    FinalVideoReview: "content_final_video_review.html",
+    ThumbnailReview: "content_thumbnail_review.html",
+}
+_DASHBOARD_NOTICES = {
+    "schedule-change-blocked": (
+        "O schedule não foi habilitado. Verifique se o módulo está ativo, "
+        "sem kill switch e possui executor local registrado."
+    ),
+}
 _TEMPLATE_DIRECTORY = Path(__file__).resolve().parent / "templates"
 _STATIC_DIRECTORY = Path(__file__).resolve().parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIRECTORY))
 HealthCollector = Callable[[AsyncSession], Awaitable[HealthReport]]
+RetentionCollector = Callable[[AsyncSession], Awaitable[RetentionInventory]]
 DispatchPublisher = Callable[[int, str, QueueClass], None]
+
+
+def _csrf_token_matches(submitted: str, expected: str) -> bool:
+    """Compare arbitrary Unicode form input without leaking token timing."""
+    return hmac.compare_digest(submitted.encode("utf-8"), expected.encode("utf-8"))
 
 
 def _publish_dispatch_message(
@@ -67,6 +128,7 @@ def create_app(
     *,
     csrf_token: str | None = None,
     health_collector: HealthCollector = collect_health_report,
+    retention_collector: RetentionCollector = collect_retention_inventory,
     dispatch_publisher: DispatchPublisher = _publish_dispatch_message,
 ) -> FastAPI:
     """Create the loopback dashboard with a process-local CSRF token."""
@@ -107,7 +169,25 @@ def create_app(
                 "snapshot": snapshot,
                 "csrf_token": control_token,
                 "executors": list_automation_executors(),
+                "notice": _DASHBOARD_NOTICES.get(request.query_params.get("notice", "")),
             },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/data-observability/fragment", response_class=HTMLResponse)
+    async def data_observability_fragment(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        connector_page = await load_connector_summaries(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="data_observability_fragment.html",
+            context={
+                "connectors": connector_page.items,
+                "connectors_truncated": connector_page.truncated,
+            },
+            headers={"Cache-Control": "no-store"},
         )
 
     @application.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -119,10 +199,131 @@ def create_app(
         detail = await load_run_detail(session, run_id=run_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="run not found")
+        alignment: CaptionAlignmentReportView | None = None
+        alignment_unavailable = False
+        try:
+            alignment = await load_caption_alignment_report(session, run_id=run_id)
+        except CaptionAlignmentError:
+            # A tampered or unreadable report must never break the run page; the
+            # operator sees a safe notice and re-runs the local diagnostic.
+            alignment_unavailable = True
         return templates.TemplateResponse(
             request=request,
             name="run_detail.html",
-            context={"run": detail, "csrf_token": control_token},
+            context={
+                "run": detail,
+                "csrf_token": control_token,
+                "caption_alignment": alignment,
+                "caption_alignment_unavailable": alignment_unavailable,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def verified_local_export(
+        session: AsyncSession,
+        *,
+        run_id: int,
+    ) -> LocalExportPackage:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        automation = await session.get(Automation, run.automation_id)
+        if automation is None or automation.slug != "content-engine":
+            raise HTTPException(status_code=404, detail="local export not available")
+        try:
+            return await load_content_local_export(session, run=run)
+        except LocalExportNotAvailableError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="local export not available",
+            ) from exc
+        except LocalExportIntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="local export evidence is unavailable",
+            ) from exc
+
+    @application.get("/runs/{run_id}/local-export", response_class=HTMLResponse)
+    async def local_export_page(
+        request: Request,
+        run_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        package = await verified_local_export(session, run_id=run_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="content_local_export.html",
+            context={
+                "run_id": package.run_id,
+                "manifest_sha256": package.manifest_sha256,
+                "video": {
+                    "artifact_id": package.video.artifact_id,
+                    "size_bytes": package.video.size_bytes,
+                    "sha256": package.video.sha256,
+                },
+                "thumbnail": (
+                    None
+                    if package.thumbnail is None
+                    else {
+                        "artifact_id": package.thumbnail.artifact_id,
+                        "size_bytes": package.thumbnail.size_bytes,
+                        "sha256": package.thumbnail.sha256,
+                    }
+                ),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/runs/{run_id}/local-export/manifest.json")
+    async def local_export_manifest(
+        run_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> Response:
+        package = await verified_local_export(session, run_id=run_id)
+        return Response(
+            content=package.manifest_bytes,
+            media_type="application/json",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": (
+                    f'attachment; filename="run-{run_id}-local-export.json"'
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @application.get("/runs/{run_id}/local-export/video")
+    async def local_export_video(
+        run_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> FileResponse:
+        package = await verified_local_export(session, run_id=run_id)
+        return FileResponse(
+            package.video.path,
+            media_type=package.video.media_type,
+            filename=package.video.filename,
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @application.get("/runs/{run_id}/local-export/thumbnail")
+    async def local_export_thumbnail(
+        run_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> FileResponse:
+        package = await verified_local_export(session, run_id=run_id)
+        if package.thumbnail is None:
+            raise HTTPException(status_code=404, detail="thumbnail not selected")
+        return FileResponse(
+            package.thumbnail.path,
+            media_type=package.thumbnail.media_type,
+            filename=package.thumbnail.filename,
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     @application.get("/runs/{run_id}/fragment", response_class=HTMLResponse)
@@ -165,11 +366,106 @@ def create_app(
                 status_code=409,
                 detail="approval review evidence is unavailable",
             ) from exc
+        template = _REVIEW_TEMPLATES.get(type(review))
+        if template is None:
+            raise HTTPException(
+                status_code=404,
+                detail="approval has no complete review page",
+            )
         return templates.TemplateResponse(
             request=request,
-            name="content_script_review.html",
-            context={"review": review},
+            name=template,
+            context={
+                "review": review,
+                "csrf_token": control_token,
+                "approval_status": approval.status,
+            },
             headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/approvals/{approval_id}/final-video")
+    async def approval_final_video(
+        approval_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> FileResponse:
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        try:
+            review = await load_registered_approval_review(
+                session,
+                approval=approval,
+            )
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="approval has no video") from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="approval review evidence is unavailable",
+            ) from exc
+        if not isinstance(review, FinalVideoReview):
+            raise HTTPException(status_code=404, detail="approval has no video")
+        return FileResponse(
+            review.video_path,
+            media_type="video/mp4",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": (
+                    f'inline; filename="run-{review.run_id}-final-video.mp4"'
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @application.get("/approvals/{approval_id}/thumbnails/{artifact_id}")
+    async def approval_thumbnail_candidate(
+        approval_id: int,
+        artifact_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> FileResponse:
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        try:
+            review = await load_registered_approval_review(
+                session,
+                approval=approval,
+            )
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="approval has no thumbnail candidates",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="approval review evidence is unavailable",
+            ) from exc
+        if not isinstance(review, ThumbnailReview):
+            raise HTTPException(
+                status_code=404,
+                detail="approval has no thumbnail candidates",
+            )
+        candidate = next(
+            (
+                item
+                for item in review.candidates
+                if item.artifact_id == artifact_id
+            ),
+            None,
+        )
+        if candidate is None:
+            raise HTTPException(status_code=404, detail="thumbnail candidate not found")
+        return FileResponse(
+            candidate.image_path,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": (
+                    f'inline; filename="artifact-{candidate.artifact_id}-thumbnail.png"'
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     @application.get("/health", response_class=HTMLResponse)
@@ -182,6 +478,32 @@ def create_app(
             request=request,
             name="health.html",
             context={"report": report},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/storage", response_class=HTMLResponse)
+    async def storage_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        error: str | None = None
+        inventory: RetentionInventory | None = None
+        try:
+            inventory = await retention_collector(session)
+        except RetentionInventoryError:
+            error = (
+                "O inventário não pôde ser concluído com segurança. "
+                "Verifique a configuração local de storage pela CLI."
+            )
+        return templates.TemplateResponse(
+            request=request,
+            name="storage.html",
+            context={
+                "inventory": inventory,
+                "error": error,
+                "retention_policies": declared_retention_policies(),
+            },
+            headers={"Cache-Control": "no-store"},
         )
 
     @application.post("/automations/{automation_slug}/runs", response_class=HTMLResponse)
@@ -197,7 +519,7 @@ def create_app(
         submitted_token, confirmation, idempotency_key, experiment_id, input_payload = (
             await _parse_manual_run_form(request, executor=executor)
         )
-        if not hmac.compare_digest(submitted_token, control_token):
+        if not _csrf_token_matches(submitted_token, control_token):
             raise HTTPException(status_code=403, detail="invalid csrf token")
         if confirmation != "start-example-run":
             raise HTTPException(status_code=400, detail="explicit confirmation required")
@@ -239,7 +561,7 @@ def create_app(
         session: Annotated[AsyncSession, Depends(get_session)],
     ) -> RedirectResponse:
         submitted_token, confirmation, idempotency_key, actor, reason = await _parse_retry_form(request)
-        if not hmac.compare_digest(submitted_token, control_token):
+        if not _csrf_token_matches(submitted_token, control_token):
             raise HTTPException(status_code=403, detail="invalid csrf token")
         if confirmation != "retry-run":
             raise HTTPException(status_code=400, detail="explicit confirmation required")
@@ -299,7 +621,7 @@ def create_app(
         session: Annotated[AsyncSession, Depends(get_session)],
     ) -> RedirectResponse:
         submitted_token, confirmation, reason = await _parse_cancellation_form(request)
-        if not hmac.compare_digest(submitted_token, control_token):
+        if not _csrf_token_matches(submitted_token, control_token):
             raise HTTPException(status_code=403, detail="invalid csrf token")
         if confirmation != "cancel-run":
             raise HTTPException(status_code=400, detail="explicit confirmation required")
@@ -330,7 +652,7 @@ def create_app(
         submitted_token, confirmation, actor, reason = (
             await _parse_approval_rejection_form(request)
         )
-        if not hmac.compare_digest(submitted_token, control_token):
+        if not _csrf_token_matches(submitted_token, control_token):
             raise HTTPException(status_code=403, detail="invalid csrf token")
         if confirmation != "reject-approval":
             raise HTTPException(status_code=400, detail="explicit confirmation required")
@@ -366,7 +688,7 @@ def create_app(
         session: Annotated[AsyncSession, Depends(get_session)],
     ) -> RedirectResponse:
         submitted_token, confirmation, target, actor, reason = await _parse_kill_switch_form(request)
-        if not hmac.compare_digest(submitted_token, control_token):
+        if not _csrf_token_matches(submitted_token, control_token):
             raise HTTPException(status_code=403, detail="invalid csrf token")
         active = target == "enable"
         if target not in {"enable", "disable"} or confirmation != f"kill-switch-{target}":
@@ -400,7 +722,7 @@ def create_app(
         submitted_token, confirmation, target, actor, reason = (
             await _parse_automation_enabled_form(request)
         )
-        if not hmac.compare_digest(submitted_token, control_token):
+        if not _csrf_token_matches(submitted_token, control_token):
             raise HTTPException(status_code=403, detail="invalid csrf token")
         enabled = target == "enable"
         if target not in {"enable", "disable"} or confirmation != f"automation-{target}":
@@ -428,28 +750,104 @@ def create_app(
             raise
         return RedirectResponse(url="/", status_code=303)
 
+    @application.post("/schedules/{schedule_id}/enabled", response_class=HTMLResponse)
+    async def change_schedule_enabled(
+        request: Request,
+        schedule_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> RedirectResponse:
+        submitted_token, confirmation, target, actor, reason = (
+            await _parse_schedule_enabled_form(request)
+        )
+        if not _csrf_token_matches(submitted_token, control_token):
+            raise HTTPException(status_code=403, detail="invalid csrf token")
+        enabled = target == "enable"
+        if target not in {"enable", "disable"} or confirmation != f"schedule-{target}":
+            raise HTTPException(status_code=400, detail="explicit confirmation required")
+        schedule = await session.get(Schedule, schedule_id)
+        if schedule is None:
+            raise HTTPException(status_code=404, detail="schedule not found")
+        if enabled:
+            automation = await session.get(Automation, schedule.automation_id)
+            if automation is None:
+                raise HTTPException(status_code=409, detail="schedule automation not found")
+            try:
+                get_automation_executor(automation.slug)
+            except AutomationExecutorNotFoundError:
+                return RedirectResponse(
+                    url="/?notice=schedule-change-blocked",
+                    status_code=303,
+                )
+        try:
+            await set_schedule_enabled(
+                session,
+                schedule=schedule,
+                enabled=enabled,
+                actor=actor,
+                reason=reason,
+            )
+            await session.commit()
+        except ScheduleControlError:
+            await session.rollback()
+            return RedirectResponse(
+                url="/?notice=schedule-change-blocked",
+                status_code=303,
+            )
+        except ValueError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=400, detail="invalid schedule enabled change") from exc
+        except Exception:
+            await session.rollback()
+            raise
+        return RedirectResponse(url="/", status_code=303)
+
     @application.post("/approvals/{approval_id}/approve", response_class=HTMLResponse)
     async def approve_approval(
         request: Request,
         approval_id: int,
         session: Annotated[AsyncSession, Depends(get_session)],
     ) -> RedirectResponse:
-        submitted_token, confirmation, actor, reason = await _parse_approval_decision_form(request)
-        if not hmac.compare_digest(submitted_token, control_token):
-            raise HTTPException(status_code=403, detail="invalid csrf token")
-        if confirmation != "approve-approval":
-            raise HTTPException(status_code=400, detail="explicit confirmation required")
         approval = await session.get(Approval, approval_id)
         if approval is None:
             raise HTTPException(status_code=404, detail="approval not found")
+        thumbnail_artifact_id: int | None = None
+        if approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
+            (
+                submitted_token,
+                confirmation,
+                actor,
+                reason,
+                thumbnail_artifact_id,
+            ) = await _parse_thumbnail_approval_form(request)
+        else:
+            submitted_token, confirmation, actor, reason = (
+                await _parse_approval_decision_form(request)
+            )
+        if not _csrf_token_matches(submitted_token, control_token):
+            raise HTTPException(status_code=403, detail="invalid csrf token")
+        if confirmation != "approve-approval":
+            raise HTTPException(status_code=400, detail="explicit confirmation required")
         run_id = approval.run_id
         try:
+            decision_payload: dict[str, object] | None = None
+            if thumbnail_artifact_id is not None:
+                review = await load_registered_approval_review(
+                    session,
+                    approval=approval,
+                )
+                if not isinstance(review, ThumbnailReview):
+                    raise ValueError("approval is not an A8 thumbnail review")
+                decision_payload = thumbnail_decision_payload(
+                    review,
+                    thumbnail_artifact_id=thumbnail_artifact_id,
+                )
             await decide_approval(
                 session,
                 approval=approval,
                 decision=ApprovalStatus.APPROVED,
                 actor=actor,
                 reason=reason,
+                decision_payload=decision_payload,
             )
             continuation_required = await finalize_registered_approval(
                 session,
@@ -600,10 +998,53 @@ async def _parse_automation_enabled_form(
     return await _parse_kill_switch_form(request)
 
 
+async def _parse_schedule_enabled_form(
+    request: Request,
+) -> tuple[str, str, str, str, str]:
+    return await _parse_kill_switch_form(request)
+
+
 async def _parse_approval_decision_form(
     request: Request,
 ) -> tuple[str, str, str, str]:
     return await _parse_approval_rejection_form(request)
+
+
+async def _parse_thumbnail_approval_form(
+    request: Request,
+) -> tuple[str, str, str, str, int]:
+    fields = await _parse_form_fields(request, maximum_fields=5)
+    expected = {
+        "csrf_token",
+        "confirmation",
+        "actor",
+        "reason",
+        "thumbnail_artifact_id",
+    }
+    if set(fields) != expected:
+        raise HTTPException(status_code=400, detail="invalid thumbnail selection form")
+    csrf_token = _single_form_value(fields, "csrf_token", maximum_length=128)
+    confirmation = _single_form_value(fields, "confirmation", maximum_length=32)
+    actor = _single_form_value(fields, "actor", maximum_length=200)
+    reason = _single_form_value(fields, "reason", maximum_length=500)
+    artifact_value = _single_form_value(
+        fields,
+        "thumbnail_artifact_id",
+        maximum_length=20,
+    )
+    try:
+        artifact_id = int(artifact_value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid thumbnail_artifact_id field",
+        ) from exc
+    if artifact_id < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid thumbnail_artifact_id field",
+        )
+    return csrf_token, confirmation, actor, reason, artifact_id
 
 
 async def _parse_form_fields(

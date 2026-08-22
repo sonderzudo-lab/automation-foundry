@@ -1,0 +1,45 @@
+<section
+  id="data-observability"
+  class="wide"
+  hx-get="/data-observability/fragment"
+  hx-trigger="every 30s"
+  hx-swap="outerHTML"
+  aria-live="polite"
+>
+  <h2>Connectors, freshness e qualidade</h2>
+  {% if connectors %}
+  <table>
+    <thead>
+      <tr>
+        <th>Automação</th>
+        <th>Connector</th>
+        <th>Status</th>
+        <th>Observação</th>
+        <th>Freshness</th>
+        <th>Último sucesso</th>
+        <th>Qualidade</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for connector in connectors %}
+      <tr>
+        <td><code>{{ connector.automation_slug }}</code></td>
+        <td><code>{{ connector.connector_key }}</code></td>
+        <td>
+          <span class="badge {{ 'ok' if connector.effective_status == 'healthy' else 'danger' if connector.effective_status == 'unavailable' or (connector.effective_status == 'stale' and connector.reported_status == 'unavailable') else 'warn' if connector.effective_status in ('degraded', 'stale') else '' }}">{{ connector.effective_status }}</span>
+          {% if connector.effective_status == 'stale' %}<br><small>último: {{ connector.reported_status }}</small>{% endif %}
+        </td>
+        <td>{{ connector.observation_age_label }} atrás<br><small>{{ connector.observed_at.isoformat() }}Z · SLO {{ connector.status_slo_label }}</small></td>
+        <td><span class="badge {{ 'ok' if connector.freshness_status == 'fresh' else 'danger' if connector.freshness_status == 'stale' else 'warn' if connector.freshness_status == 'unknown' else '' }}">{{ connector.freshness_status }}</span><br><small>SLO {{ connector.freshness_slo_label }}</small></td>
+        <td>{{ connector.data_age_label }}{% if connector.last_success_at %}<br><small>{{ connector.last_success_at.isoformat() }}Z</small>{% endif %}</td>
+        <td><span class="badge {{ 'ok' if connector.quality_status == 'pass' else 'danger' if connector.quality_status == 'fail' else 'warn' if connector.quality_status in ('warning', 'unknown') else '' }}">{{ connector.quality_status }}</span>{% if connector.quality_score is not none %}<br><small>score {{ connector.quality_score }}</small>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if connectors_truncated %}<p class="warn"><strong>Lista limitada:</strong> há outros connectors fora desta visão. Itens indisponíveis e degradados têm prioridade.</p>{% endif %}
+  {% else %}
+  <div class="empty">Nenhuma observação de connector foi registrada. Adapters futuros devem persistir estado redigido antes de aparecer aqui.</div>
+  {% endif %}
+  <p>O banco guarda observações append-only sem endpoint, credencial ou mensagem de erro bruta. Estado vencido aparece como <code>stale</code>.</p>
+</section>

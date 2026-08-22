@@ -10,16 +10,22 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.platform.executor_registry import automation_supports_retry
+from src.platform.executor_registry import (
+    automation_has_executor,
+    automation_supports_retry,
+)
 from src.platform.models import (
     AlertStatus,
     Approval,
     ApprovalStatus,
     Artifact,
     Automation,
+    ConnectorObservation,
+    ConnectorStatus,
     Experiment,
     LedgerEntry,
     LedgerEntryType,
+    MetricKind,
     MetricPoint,
     PlatformAlert,
     Run,
@@ -32,6 +38,114 @@ from src.platform.models import (
 
 _SAFE_FAILURE_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,79}")
 _SAFE_EXCEPTION_TYPE = re.compile(r"[A-Za-z][A-Za-z0-9_.]{0,99}")
+_SCHEDULE_SKIP_NOTES = {
+    "AUTOMATION_DISABLED": "módulo desabilitado no horário previsto",
+    "EXECUTOR_NOT_REGISTERED": "executor local não registrado",
+    "KILL_SWITCH_ACTIVE": "kill switch ativo no horário previsto",
+    "MISFIRE_GRACE_EXCEEDED": "janela de tolerância excedida",
+    "OVERLAP_BLOCKED": "execução anterior ainda ativa",
+}
+_CONTENT_OUTCOME_METRICS = {
+    "content_script_narration_characters": (
+        "Caracteres da narração",
+        MetricKind.COUNTER.value,
+        "characters",
+    ),
+    "content_tts_audio_duration_seconds": (
+        "Duração do áudio",
+        MetricKind.DURATION.value,
+        "seconds",
+    ),
+    "content_visual_asset_count": (
+        "Imagens produzidas",
+        MetricKind.COUNTER.value,
+        "images",
+    ),
+    "content_visual_seconds_per_asset": (
+        "Segundos por imagem",
+        MetricKind.GAUGE.value,
+        "seconds_per_image",
+    ),
+    "content_caption_timed_word_count": (
+        "Palavras temporizadas",
+        MetricKind.COUNTER.value,
+        "words",
+    ),
+    "content_caption_transcript_match_ratio": (
+        "Correspondência da legenda",
+        MetricKind.GAUGE.value,
+        "ratio",
+    ),
+    "content_caption_alignment_speech_coverage_ratio": (
+        "Fala coberta pela legenda",
+        MetricKind.RATIO.value,
+        "ratio",
+    ),
+    "content_caption_alignment_outside_speech_ratio": (
+        "Legenda sobre silêncio",
+        MetricKind.RATIO.value,
+        "ratio",
+    ),
+    "content_caption_alignment_onset_offset_seconds": (
+        "Desvio no início da legenda",
+        MetricKind.GAUGE.value,
+        "seconds",
+    ),
+    "content_caption_alignment_end_offset_seconds": (
+        "Desvio no fim da legenda",
+        MetricKind.GAUGE.value,
+        "seconds",
+    ),
+    "content_caption_alignment_speech_segment_count": (
+        "Trechos de fala detectados",
+        MetricKind.COUNTER.value,
+        "segments",
+    ),
+    "content_assembly_video_duration_seconds": (
+        "Duração do vídeo",
+        MetricKind.DURATION.value,
+        "seconds",
+    ),
+    "content_assembly_render_duration_seconds": (
+        "Tempo de render",
+        MetricKind.DURATION.value,
+        "seconds",
+    ),
+    "content_assembly_output_bytes": (
+        "Tamanho do vídeo",
+        MetricKind.GAUGE.value,
+        "bytes",
+    ),
+    "content_originality_max_similarity": (
+        "Similaridade máxima",
+        MetricKind.RATIO.value,
+        "ratio",
+    ),
+    "content_originality_mean_similarity": (
+        "Similaridade média",
+        MetricKind.RATIO.value,
+        "ratio",
+    ),
+    "content_originality_reference_count": (
+        "Referências comparadas",
+        MetricKind.COUNTER.value,
+        "scripts",
+    ),
+    "content_originality_evaluation_duration_seconds": (
+        "Tempo da avaliação de originalidade",
+        MetricKind.DURATION.value,
+        "seconds",
+    ),
+}
+_CONTENT_ENERGY_METRICS = frozenset(
+    {
+        "content_tts_energy_estimate_kwh",
+        "content_visual_energy_estimate_kwh",
+        "content_caption_energy_estimate_kwh",
+        "content_assembly_energy_estimate_kwh",
+        "content_originality_energy_estimate_kwh",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,17 +252,52 @@ class ExperimentSummary:
 
 @dataclass(frozen=True, slots=True)
 class ScheduleSummary:
-    """Redacted schedule state without trigger payloads or skip reasons."""
+    """Redacted schedule state with allowlisted operational diagnostics."""
 
     id: int
     automation_slug: str
     name: str
     status: str
+    effective_status: str
+    status_note: str | None
+    enable_block_reason: str | None
     cron_expression: str
     timezone: str
     next_run_at: datetime | None
     latest_occurrence_status: str | None
     latest_scheduled_for: datetime | None
+    latest_occurrence_note: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectorSummary:
+    """Latest redacted connector, freshness, and data-quality state."""
+
+    automation_slug: str
+    connector_key: str
+    reported_status: str
+    effective_status: str
+    observation_age_seconds: int
+    observation_age_label: str
+    status_slo_seconds: int
+    status_slo_label: str
+    last_success_at: datetime | None
+    data_age_seconds: int | None
+    data_age_label: str
+    freshness_status: str
+    freshness_slo_seconds: int
+    freshness_slo_label: str
+    quality_status: str
+    quality_score: Decimal | None
+    observed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectorSummaryPage:
+    """Bounded connector projection with explicit truncation evidence."""
+
+    items: tuple[ConnectorSummary, ...]
+    truncated: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +313,8 @@ class DashboardSnapshot:
     automation_ledger_totals: tuple[AutomationLedgerSummary, ...]
     experiments: tuple[ExperimentSummary, ...]
     schedules: tuple[ScheduleSummary, ...]
+    connectors: tuple[ConnectorSummary, ...]
+    connectors_truncated: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +395,30 @@ class RunLedgerSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class ContentOutcomeIndicator:
+    """Allowlisted local Content Engine result without metric dimensions."""
+
+    step_run_id: int | None
+    name: str
+    label: str
+    value: Decimal
+    unit: str
+    confidence: Decimal | None
+    observed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ContentOutcomeSummary:
+    """Run-attributed local content outcome; never external platform analytics."""
+
+    published: bool | None
+    observed_through: datetime | None
+    indicators: tuple[ContentOutcomeIndicator, ...]
+    estimated_energy_kwh: Decimal | None
+    ledger_totals: tuple[LedgerCurrencySummary, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RunDetail:
     """Redacted, read-only execution evidence for one persisted run."""
 
@@ -262,12 +437,14 @@ class RunDetail:
     finished_at: datetime | None
     duration_seconds: Decimal | None
     cancellation_requested_at: datetime | None
+    has_local_export: bool
     failure: FailureSummary | None
     steps: tuple[StepRunSummary, ...]
     approvals: tuple[RunApprovalSummary, ...]
     artifacts: tuple[RunArtifactSummary, ...]
     metrics: tuple[RunMetricSummary, ...]
     ledger_entries: tuple[RunLedgerSummary, ...]
+    content_outcome: ContentOutcomeSummary | None
 
     @property
     def can_request_cancellation(self) -> bool:
@@ -288,6 +465,69 @@ class RunDetail:
         }
 
 
+async def load_connector_summaries(
+    session: AsyncSession,
+    *,
+    connector_limit: int = 50,
+    now: datetime | None = None,
+) -> ConnectorSummaryPage:
+    """Load only the latest observation for each automation connector."""
+    if connector_limit < 1:
+        raise ValueError("connector query limit must be positive")
+    observed_at = _as_utc_naive(now or datetime.now(UTC))
+    ranked_observations = (
+        select(
+            ConnectorObservation.id.label("observation_id"),
+            func.row_number()
+            .over(
+                partition_by=(
+                    ConnectorObservation.automation_id,
+                    ConnectorObservation.connector_key,
+                ),
+                order_by=(
+                    ConnectorObservation.observed_at.desc(),
+                    ConnectorObservation.id.desc(),
+                ),
+            )
+            .label("observation_rank"),
+        )
+        .subquery()
+    )
+    rows = (
+        await session.execute(
+            select(ConnectorObservation, Automation.slug)
+            .join(
+                ranked_observations,
+                ranked_observations.c.observation_id == ConnectorObservation.id,
+            )
+            .join(Automation, Automation.id == ConnectorObservation.automation_id)
+            .where(ranked_observations.c.observation_rank == 1)
+            .order_by(
+                case(
+                    (ConnectorObservation.status == ConnectorStatus.UNAVAILABLE.value, 0),
+                    (ConnectorObservation.status == ConnectorStatus.DEGRADED.value, 1),
+                    (ConnectorObservation.status == ConnectorStatus.HEALTHY.value, 2),
+                    else_=3,
+                ),
+                ConnectorObservation.observed_at,
+                Automation.slug,
+                ConnectorObservation.connector_key,
+            )
+            .limit(connector_limit + 1)
+        )
+    ).all()
+    truncated = len(rows) > connector_limit
+    items = tuple(
+        _connector_summary(
+            observation=observation,
+            automation_slug=automation_slug,
+            now=observed_at,
+        )
+        for observation, automation_slug in rows[:connector_limit]
+    )
+    return ConnectorSummaryPage(items=items, truncated=truncated)
+
+
 async def load_dashboard_snapshot(
     session: AsyncSession,
     *,
@@ -296,6 +536,7 @@ async def load_dashboard_snapshot(
     alert_limit: int = 20,
     experiment_limit: int = 50,
     schedule_limit: int = 50,
+    connector_limit: int = 50,
     execution_sample_limit: int = 50,
     now: datetime | None = None,
 ) -> DashboardSnapshot:
@@ -306,6 +547,7 @@ async def load_dashboard_snapshot(
         or alert_limit < 1
         or experiment_limit < 1
         or schedule_limit < 1
+        or connector_limit < 1
         or execution_sample_limit < 1
     ):
         raise ValueError("dashboard query limits must be positive")
@@ -342,6 +584,11 @@ async def load_dashboard_snapshot(
             finished_at=run.finished_at,
         )
         for run, automation_slug in run_rows
+    )
+    connector_page = await load_connector_summaries(
+        session,
+        connector_limit=connector_limit,
+        now=observed_at.replace(tzinfo=UTC),
     )
 
     ranked_runs = (
@@ -532,6 +779,17 @@ async def load_dashboard_snapshot(
         .correlate(Schedule)
         .scalar_subquery()
     )
+    latest_occurrence_reason = (
+        select(ScheduleOccurrence.reason_code)
+        .where(ScheduleOccurrence.schedule_id == Schedule.id)
+        .order_by(
+            ScheduleOccurrence.scheduled_for.desc(),
+            ScheduleOccurrence.id.desc(),
+        )
+        .limit(1)
+        .correlate(Schedule)
+        .scalar_subquery()
+    )
     latest_scheduled_for = (
         select(ScheduleOccurrence.scheduled_for)
         .where(ScheduleOccurrence.schedule_id == Schedule.id)
@@ -548,7 +806,10 @@ async def load_dashboard_snapshot(
             select(
                 Schedule,
                 Automation.slug,
+                Automation.enabled,
+                Automation.kill_switch_active,
                 latest_occurrence_status.label("latest_occurrence_status"),
+                latest_occurrence_reason.label("latest_occurrence_reason"),
                 latest_scheduled_for.label("latest_scheduled_for"),
             )
             .join(Automation, Automation.id == Schedule.automation_id)
@@ -567,18 +828,24 @@ async def load_dashboard_snapshot(
         )
     ).all()
     schedules = tuple(
-        ScheduleSummary(
-            id=schedule.id,
+        _schedule_summary(
+            schedule=schedule,
             automation_slug=automation_slug,
-            name=schedule.name,
-            status=schedule.status,
-            cron_expression=schedule.cron_expression,
-            timezone=schedule.timezone,
-            next_run_at=schedule.next_run_at,
-            latest_occurrence_status=occurrence_status,
-            latest_scheduled_for=scheduled_for,
+            automation_enabled=automation_enabled,
+            kill_switch_active=kill_switch_active,
+            occurrence_status=occurrence_status,
+            occurrence_reason=occurrence_reason,
+            scheduled_for=scheduled_for,
         )
-        for schedule, automation_slug, occurrence_status, scheduled_for in schedule_rows
+        for (
+            schedule,
+            automation_slug,
+            automation_enabled,
+            kill_switch_active,
+            occurrence_status,
+            occurrence_reason,
+            scheduled_for,
+        ) in schedule_rows
     )
 
     return DashboardSnapshot(
@@ -591,6 +858,8 @@ async def load_dashboard_snapshot(
         automation_ledger_totals=automation_ledger_totals,
         experiments=experiments,
         schedules=schedules,
+        connectors=connector_page.items,
+        connectors_truncated=connector_page.truncated,
     )
 
 
@@ -723,12 +992,122 @@ async def load_run_detail(session: AsyncSession, *, run_id: int) -> RunDetail | 
         finished_at=run.finished_at,
         duration_seconds=_duration_seconds(run.started_at, run.finished_at),
         cancellation_requested_at=run.cancellation_requested_at,
+        has_local_export=(
+            automation_slug == "content-engine"
+            and RunStatus(run.status) is RunStatus.SUCCEEDED
+            and isinstance(run.output_payload, dict)
+            and run.output_payload.get("published") is False
+            and isinstance(run.output_payload.get("final_review_approval_id"), int)
+            and not isinstance(
+                run.output_payload.get("final_review_approval_id"),
+                bool,
+            )
+        ),
         failure=_redacted_failure(run.error),
         steps=steps,
         approvals=approvals,
         artifacts=artifacts,
         metrics=metrics,
         ledger_entries=ledger_entries,
+        content_outcome=_content_outcome_summary(
+            automation_slug=automation_slug,
+            output_payload=run.output_payload,
+            metrics=metrics,
+            ledger_entries=ledger_entries,
+        ),
+    )
+
+
+def _content_outcome_summary(
+    *,
+    automation_slug: str,
+    output_payload: dict[str, object] | None,
+    metrics: tuple[RunMetricSummary, ...],
+    ledger_entries: tuple[RunLedgerSummary, ...],
+) -> ContentOutcomeSummary | None:
+    if automation_slug != "content-engine":
+        return None
+
+    indicator_order = {
+        name: position for position, name in enumerate(_CONTENT_OUTCOME_METRICS)
+    }
+    indicators = tuple(
+        sorted(
+            (
+                ContentOutcomeIndicator(
+                    step_run_id=metric.step_run_id,
+                    name=metric.name,
+                    label=metric_contract[0],
+                    value=metric.value,
+                    unit=metric.unit,
+                    confidence=metric.confidence,
+                    observed_at=metric.observed_at,
+                )
+                for metric in metrics
+                if (metric_contract := _CONTENT_OUTCOME_METRICS.get(metric.name))
+                is not None
+                and metric.kind == metric_contract[1]
+                and metric.unit == metric_contract[2]
+            ),
+            key=lambda item: (
+                indicator_order[item.name],
+                item.observed_at,
+                item.step_run_id or 0,
+            ),
+        )
+    )
+    energy_observations = tuple(
+        metric
+        for metric in metrics
+        if metric.name in _CONTENT_ENERGY_METRICS
+        and metric.kind == MetricKind.GAUGE.value
+        and metric.unit == "kWh"
+    )
+    evidence_times = tuple(item.observed_at for item in indicators) + tuple(
+        metric.observed_at for metric in energy_observations
+    ) + tuple(entry.observed_at for entry in ledger_entries)
+    published_value = (
+        output_payload.get("published") if isinstance(output_payload, dict) else None
+    )
+
+    return ContentOutcomeSummary(
+        published=published_value if type(published_value) is bool else None,
+        observed_through=max(evidence_times) if evidence_times else None,
+        indicators=indicators,
+        estimated_energy_kwh=(
+            sum(
+                (metric.value for metric in energy_observations),
+                start=Decimal(0),
+            )
+            if energy_observations
+            else None
+        ),
+        ledger_totals=_run_ledger_totals(ledger_entries),
+    )
+
+
+def _run_ledger_totals(
+    ledger_entries: tuple[RunLedgerSummary, ...],
+) -> tuple[LedgerCurrencySummary, ...]:
+    totals: dict[str, dict[LedgerEntryType, Decimal]] = {}
+    for entry in ledger_entries:
+        currency_totals = totals.setdefault(
+            entry.currency,
+            {entry_type: Decimal(0) for entry_type in LedgerEntryType},
+        )
+        currency_totals[LedgerEntryType(entry.entry_type)] += entry.amount
+    return tuple(
+        LedgerCurrencySummary(
+            currency=currency,
+            cost=currency_totals[LedgerEntryType.COST],
+            revenue=currency_totals[LedgerEntryType.REVENUE],
+            attributed_value=currency_totals[LedgerEntryType.ATTRIBUTED_VALUE],
+            net_revenue=(
+                currency_totals[LedgerEntryType.REVENUE]
+                - currency_totals[LedgerEntryType.COST]
+            ),
+        )
+        for currency, currency_totals in sorted(totals.items())
     )
 
 
@@ -789,6 +1168,109 @@ def _execution_summary(
     )
 
 
+def _schedule_summary(
+    *,
+    schedule: Schedule,
+    automation_slug: str,
+    automation_enabled: bool,
+    kill_switch_active: bool,
+    occurrence_status: str | None,
+    occurrence_reason: str | None,
+    scheduled_for: datetime | None,
+) -> ScheduleSummary:
+    executor_registered = automation_has_executor(automation_slug)
+    enable_block_reason: str | None = None
+    if not automation_enabled:
+        enable_block_reason = "módulo desabilitado"
+    elif kill_switch_active:
+        enable_block_reason = "kill switch ativo"
+    elif not executor_registered:
+        enable_block_reason = "executor local não registrado"
+
+    effective_status = schedule.status
+    status_note: str | None = None
+    if schedule.status == ScheduleStatus.ENABLED.value and enable_block_reason is not None:
+        effective_status = "blocked"
+        status_note = enable_block_reason
+
+    return ScheduleSummary(
+        id=schedule.id,
+        automation_slug=automation_slug,
+        name=schedule.name,
+        status=schedule.status,
+        effective_status=effective_status,
+        status_note=status_note,
+        enable_block_reason=enable_block_reason,
+        cron_expression=schedule.cron_expression,
+        timezone=schedule.timezone,
+        next_run_at=schedule.next_run_at,
+        latest_occurrence_status=occurrence_status,
+        latest_scheduled_for=scheduled_for,
+        latest_occurrence_note=_SCHEDULE_SKIP_NOTES.get(occurrence_reason or ""),
+    )
+
+
+def _connector_summary(
+    *,
+    observation: ConnectorObservation,
+    automation_slug: str,
+    now: datetime,
+) -> ConnectorSummary:
+    observation_is_future = observation.observed_at > now
+    observation_age_seconds = max(
+        0,
+        int((now - observation.observed_at).total_seconds()),
+    )
+    effective_status = observation.status
+    if observation.status != ConnectorStatus.DISABLED.value and (
+        observation_is_future
+        or observation_age_seconds > observation.status_slo_seconds
+    ):
+        effective_status = "stale"
+
+    data_age_seconds: int | None = None
+    if observation.status == ConnectorStatus.DISABLED.value:
+        freshness_status = "not_applicable"
+        data_age_label = "não aplicável"
+    elif observation.last_success_at is None:
+        freshness_status = "unknown"
+        data_age_label = "sem sucesso observado"
+    else:
+        data_age_seconds = max(
+            0,
+            int((now - observation.last_success_at).total_seconds()),
+        )
+        freshness_status = (
+            "fresh"
+            if observation.last_success_at <= now
+            and data_age_seconds <= observation.freshness_slo_seconds
+            else "stale"
+        )
+        data_age_label = _format_pending_age(data_age_seconds)
+
+    return ConnectorSummary(
+        automation_slug=automation_slug,
+        connector_key=observation.connector_key,
+        reported_status=observation.status,
+        effective_status=effective_status,
+        observation_age_seconds=observation_age_seconds,
+        observation_age_label=_format_pending_age(observation_age_seconds),
+        status_slo_seconds=observation.status_slo_seconds,
+        status_slo_label=_format_duration_threshold(observation.status_slo_seconds),
+        last_success_at=observation.last_success_at,
+        data_age_seconds=data_age_seconds,
+        data_age_label=data_age_label,
+        freshness_status=freshness_status,
+        freshness_slo_seconds=observation.freshness_slo_seconds,
+        freshness_slo_label=_format_duration_threshold(
+            observation.freshness_slo_seconds
+        ),
+        quality_status=observation.quality_status,
+        quality_score=observation.quality_score,
+        observed_at=observation.observed_at,
+    )
+
+
 def _approval_summary(
     *,
     approval: Approval,
@@ -829,6 +1311,21 @@ def _format_pending_age(total_seconds: int) -> str:
     days, remainder = divmod(total_seconds, 86_400)
     hours = remainder // 3_600
     return f"{days} d {hours} h" if hours else f"{days} d"
+
+
+def _format_duration_threshold(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds} s"
+    if seconds < 3_600:
+        minutes, remainder = divmod(seconds, 60)
+        return f"{minutes} min" if remainder == 0 else f"{minutes} min {remainder} s"
+    if seconds < 86_400:
+        hours, remainder = divmod(seconds, 3_600)
+        minutes = remainder // 60
+        return f"{hours} h" if minutes == 0 else f"{hours} h {minutes} min"
+    days, remainder = divmod(seconds, 86_400)
+    hours = remainder // 3_600
+    return f"{days} d" if hours == 0 else f"{days} d {hours} h"
 
 
 def _redacted_failure(error: dict[str, object] | None) -> FailureSummary | None:

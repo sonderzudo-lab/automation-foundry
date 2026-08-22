@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Export local · Run #{{ run_id }} · Automation Foundry</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      body { margin: 0; background: #0b0d10; color: #f2f4f7; }
+      main { width: min(920px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+      h1 { margin: 1rem 0 .35rem; letter-spacing: -.03em; }
+      h2 { color: #b7c0cc; font-size: 1rem; text-transform: uppercase; letter-spacing: .08em; }
+      p { color: #9ba6b4; }
+      a { color: #8ab4f8; }
+      section { margin-top: 1.25rem; background: #13171c; border: 1px solid #262d36; border-radius: 14px; padding: 1.15rem; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; border-bottom: 1px solid #252c34; padding: .65rem .4rem; }
+      th { color: #8995a3; }
+      code { color: #d2a8ff; overflow-wrap: anywhere; }
+      .notice { border-left: 3px solid #7ee787; padding-left: .8rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a href="/runs/{{ run_id }}">← Voltar à run</a>
+      <h1>Export local revisável</h1>
+      <p class="notice">Os arquivos abaixo foram reconferidos contra os gates A7/A8 e permanecem somente locais. <code>published=false</code>; nenhum upload, envio ou gasto é executado.</p>
+
+      <section>
+        <h2>Manifesto</h2>
+        <p>SHA-256 canônico: <code>{{ manifest_sha256 }}</code></p>
+        <p><a href="/runs/{{ run_id }}/local-export/manifest.json" download>Baixar manifesto JSON</a></p>
+      </section>
+
+      <section>
+        <h2>Arquivos verificados</h2>
+        <table>
+          <thead><tr><th>Papel</th><th>Artifact</th><th>Bytes</th><th>SHA-256</th><th>Download</th></tr></thead>
+          <tbody>
+            <tr><td>Vídeo final</td><td>#{{ video.artifact_id }}</td><td>{{ video.size_bytes }}</td><td><code>{{ video.sha256 }}</code></td><td><a href="/runs/{{ run_id }}/local-export/video" download>MP4</a></td></tr>
+            {% if thumbnail %}
+            <tr><td>Thumbnail</td><td>#{{ thumbnail.artifact_id }}</td><td>{{ thumbnail.size_bytes }}</td><td><code>{{ thumbnail.sha256 }}</code></td><td><a href="/runs/{{ run_id }}/local-export/thumbnail" download>PNG</a></td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </section>
+    </main>
+  </body>
+</html>

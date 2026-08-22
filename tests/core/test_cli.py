@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -14,6 +16,19 @@ from src import cli
 from src.core import database
 from src.core.config import Settings
 from src.operations.backup import BackupResult, BackupVerificationResult, RestoreResult
+from src.operations.purge import PurgeExecutionResult, PurgePlan
+from src.operations.retention import (
+    RetentionAutomationSummary,
+    RetentionClass,
+    RetentionClassSummary,
+    RetentionInventory,
+    RetentionItem,
+)
+from src.pipeline.caption_alignment import (
+    CaptionAlignmentError,
+    CaptionAlignmentMeasurement,
+    CaptionAlignmentResult,
+)
 from src.platform.dispatch_service import DispatchPreparationResult
 from src.platform.example_run import ExampleRunResult
 from src.platform.models import (
@@ -579,6 +594,70 @@ async def test_approval_command_helpers_persist_real_decision(
     assert stored_approval.decided_by == "local-owner"
 
 
+async def test_cli_refuses_a8_approval_without_dashboard_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "cli-a8-approval.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        echo=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(database.Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as seed_session:
+        automation = (
+            await get_or_create_automation(
+                seed_session,
+                slug="content-engine",
+                name="Content Engine",
+                owner="local-owner",
+            )
+        ).automation
+        run = (
+            await get_or_create_run(
+                seed_session,
+                automation=automation,
+                idempotency_key="cli-a8:run",
+                input_payload={"artifact_id": 5},
+            )
+        ).run
+        await transition_run(seed_session, run, RunStatus.RUNNING)
+        await seed_session.commit()
+        run_id = run.id
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", factory)
+    requested = await cli._request_approval_command(
+        run_id,
+        idempotency_key="cli-a8:approval",
+        action="select_content_thumbnail_a8",
+        summary="Choose one verified thumbnail",
+        review='{"candidates":"2 verified PNGs"}',
+    )
+    with pytest.raises(ValueError, match="dashboard selection"):
+        await cli._decide_approval_command(
+            requested.approval_id,
+            approve=True,
+            actor="local-owner",
+            reason="missing structured selection",
+        )
+
+    async with factory() as observer_session:
+        stored_run = await observer_session.get(Run, run_id)
+        stored_approval = await observer_session.get(
+            Approval,
+            requested.approval_id,
+        )
+    await engine.dispose()
+
+    assert stored_run is not None
+    assert stored_run.status == RunStatus.AWAITING_APPROVAL.value
+    assert stored_approval is not None
+    assert stored_approval.status == ApprovalStatus.PENDING.value
+    assert stored_approval.decision_payload is None
+
+
 def test_register_artifact_command_renders_redacted_metadata(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -755,6 +834,115 @@ async def test_register_artifact_helper_persists_real_local_metadata(
     assert stored_artifact is not None
     assert stored_artifact.relative_path == "result.txt"
     assert stored_artifact.size_bytes == len("verified local output")
+
+
+async def test_register_artifact_resolves_retention_from_the_declared_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "cli-retention-policy.db"
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+    (storage_root / "script.json").write_text("{}", encoding="utf-8")
+    (storage_root / "notes.txt").write_text("local notes", encoding="utf-8")
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        echo=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(database.Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as seed_session:
+        automation = (
+            await get_or_create_automation(
+                seed_session,
+                slug="cli-retention-policy",
+                name="CLI Retention Policy",
+                owner="local-owner",
+            )
+        ).automation
+        run = (
+            await get_or_create_run(
+                seed_session,
+                automation=automation,
+                idempotency_key="cli-retention-policy:run",
+            )
+        ).run
+        await seed_session.commit()
+        run_id = run.id
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", factory)
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: Settings(_env_file=None, storage_root=str(storage_root)),
+    )
+    declared = await cli._register_artifact_command(
+        run_id,
+        step_run_id=None,
+        idempotency_key="cli-retention-policy:declared",
+        artifact_type="script_bundle",
+        file_path="script.json",
+        media_type="application/json",
+        origin="local-cli-test",
+        sensitivity="internal",
+        retention_days=None,
+        expected_sha256=None,
+    )
+    undeclared = await cli._register_artifact_command(
+        run_id,
+        step_run_id=None,
+        idempotency_key="cli-retention-policy:undeclared",
+        artifact_type="operator_notes",
+        file_path="notes.txt",
+        media_type="text/plain",
+        origin="local-cli-test",
+        sensitivity="internal",
+        retention_days=None,
+        expected_sha256=None,
+    )
+
+    async with factory() as observer_session:
+        declared_artifact = await observer_session.get(Artifact, declared.artifact_id)
+        undeclared_artifact = await observer_session.get(
+            Artifact,
+            undeclared.artifact_id,
+        )
+    await engine.dispose()
+
+    assert declared_artifact is not None and undeclared_artifact is not None
+    assert declared_artifact.retention_days == 90
+    assert declared_artifact.retention_until is not None
+    assert undeclared_artifact.retention_days is None
+    assert undeclared_artifact.retention_until is None
+
+
+def test_retention_policy_command_is_read_only_and_explicit(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = cli.main(["retention-policy", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert payload["undeclared_behaviour"] == "indefinite_retention"
+    declared = {entry["artifact_type"]: entry for entry in payload["policies"]}
+    assert declared["script_bundle"]["retention_days"] == 90
+    assert declared["final_video"]["producer"] == "content-engine:a5"
+    assert all(entry["rationale"].strip() for entry in payload["policies"])
+
+
+def test_retention_policy_command_renders_text_without_touching_storage(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = cli.main(["retention-policy"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "caption_alignment_report: 90 dias" in output
+    assert "retenção indefinida" in output
+    assert "artefatos já registrados" in output
 
 
 def test_create_schedule_command_starts_disabled(
@@ -1749,3 +1937,409 @@ def test_restore_backup_command_renders_safety_backup(
     assert payload["pre_restore_bundle_path"] == str(
         result.pre_restore_bundle_path
     )
+
+
+def _inventory_stub() -> RetentionInventory:
+    generated_at = datetime(2026, 8, 11, 12, 0, 0)
+    items = (
+        RetentionItem(
+            classification=RetentionClass.EXPIRED,
+            reason="retention_elapsed",
+            relative_path="content-engine/7/script/script.json",
+            size_bytes=2048,
+            artifact_id=41,
+            run_id=7,
+            automation_slug="content-engine",
+            artifact_type="script",
+            sensitivity="internal",
+            registered_size_bytes=2048,
+            retention_days=90,
+            retention_until=datetime(2026, 5, 1, 0, 0, 0),
+            evidence_matches=True,
+        ),
+        RetentionItem(
+            classification=RetentionClass.ORPHAN,
+            reason="no_artifact_record",
+            relative_path="content-engine/7/audio/stray.wav",
+            size_bytes=512,
+        ),
+    )
+    return RetentionInventory(
+        generated_at=generated_at,
+        storage_root_present=True,
+        scanned_file_count=2,
+        scanned_bytes=2560,
+        excluded_file_count=1,
+        excluded_bytes=99,
+        classes=(
+            RetentionClassSummary(RetentionClass.EXPIRED, 1, 2048),
+            RetentionClassSummary(RetentionClass.ORPHAN, 1, 512),
+        ),
+        automations=(
+            RetentionAutomationSummary(
+                automation_slug="content-engine",
+                file_count=1,
+                total_bytes=2048,
+                expired_file_count=1,
+                expired_bytes=2048,
+                hold_file_count=0,
+                missing_file_count=0,
+            ),
+        ),
+        items=items,
+    )
+
+
+def test_storage_inventory_json_reports_classes_without_deleting(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def collect() -> RetentionInventory:
+        return _inventory_stub()
+
+    monkeypatch.setattr(cli, "_storage_inventory_command", collect)
+
+    exit_code = cli.main(["storage-inventory", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert payload["deleted_file_count"] == 0
+    assert payload["deleted_bytes"] == 0
+    assert payload["classes"] == [
+        {"classification": "expired", "file_count": 1, "total_bytes": 2048},
+        {"classification": "orphan", "file_count": 1, "total_bytes": 512},
+    ]
+    assert payload["automations"][0]["expired_bytes"] == 2048
+    assert payload["item_total"] == 2
+    assert payload["item_truncated"] is False
+
+
+def test_storage_inventory_truncates_items_without_hiding_totals(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def collect() -> RetentionInventory:
+        return _inventory_stub()
+
+    monkeypatch.setattr(cli, "_storage_inventory_command", collect)
+
+    exit_code = cli.main(["storage-inventory", "--json", "--max-items", "1"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["item_total"] == 2
+    assert payload["item_truncated"] is True
+    assert len(payload["items"]) == 1
+    assert payload["classes"][1]["file_count"] == 1
+
+
+def test_storage_inventory_refuses_to_leave_dry_run(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def unexpected() -> RetentionInventory:
+        raise AssertionError("the inventory must not run outside dry-run")
+
+    monkeypatch.setattr(cli, "_storage_inventory_command", unexpected)
+
+    exit_code = cli.main(["storage-inventory", "--no-dry-run", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert payload["ok"] is False
+    assert "dry-run" in payload["error"]
+
+
+def test_storage_inventory_failure_does_not_echo_private_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    private_path = "C:/private/customer-name/storage"
+
+    async def fail() -> RetentionInventory:
+        raise RuntimeError(private_path)
+
+    monkeypatch.setattr(cli, "_storage_inventory_command", fail)
+
+    exit_code = cli.main(["storage-inventory"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "RuntimeError" in output
+    assert private_path not in output
+
+
+def _alignment_stub(
+    *,
+    status: str,
+    reasons: tuple[str, ...] = (),
+) -> CaptionAlignmentResult:
+    return CaptionAlignmentResult(
+        run_id=7,
+        caption_artifact_id=31,
+        audio_artifact_id=30,
+        report_artifact_id=32,
+        report_sha256="a" * 64,
+        parameters_digest="0123456789abcdef",
+        measurement=CaptionAlignmentMeasurement(
+            audio_duration_seconds=Decimal("12.000000"),
+            speech_seconds=Decimal("9.000000"),
+            caption_seconds=Decimal("12.000000"),
+            speech_covered_seconds=Decimal("9.000000"),
+            caption_outside_speech_seconds=Decimal("3.000000"),
+            speech_coverage_ratio=Decimal("1.0000000000"),
+            caption_outside_speech_ratio=Decimal("0.2500000000"),
+            speech_segment_count=2,
+            caption_block_count=1,
+            caption_event_count=3,
+            events_beyond_audio=0,
+            onset_offset_seconds=Decimal("0.000000"),
+            end_offset_seconds=Decimal("0.000000"),
+            max_block_onset_offset_seconds=None,
+            peak_dbfs=Decimal("-11.70"),
+            threshold_dbfs=Decimal("-41.70"),
+            status=status,
+            reasons=reasons,
+        ),
+        alert_id=None if status == "pass" else 4,
+        replayed=False,
+    )
+
+
+def test_caption_alignment_reports_a_local_pass_without_publishing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def evaluate(run_id: int) -> CaptionAlignmentResult:
+        assert run_id == 7
+        return _alignment_stub(status="pass")
+
+    monkeypatch.setattr(cli, "_caption_alignment_command", evaluate)
+
+    exit_code = cli.main(["caption-alignment", "--run-id", "7", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["status"] == "pass"
+    assert payload["published"] is False
+    assert payload["report_artifact_id"] == 32
+    assert payload["alert_id"] is None
+
+
+def test_caption_alignment_signals_a_warning_with_its_reasons(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def evaluate(_run_id: int) -> CaptionAlignmentResult:
+        return _alignment_stub(
+            status="warning",
+            reasons=("CAPTIONS_OVER_SILENCE",),
+        )
+
+    monkeypatch.setattr(cli, "_caption_alignment_command", evaluate)
+
+    exit_code = cli.main(["caption-alignment", "--run-id", "7", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["status"] == "warning"
+    assert payload["reasons"] == ["CAPTIONS_OVER_SILENCE"]
+    assert payload["alert_id"] == 4
+
+
+def test_caption_alignment_rejects_a_non_positive_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def unexpected(_run_id: int) -> CaptionAlignmentResult:
+        raise AssertionError("the diagnostic must not run for an invalid run id")
+
+    monkeypatch.setattr(cli, "_caption_alignment_command", unexpected)
+
+    exit_code = cli.main(["caption-alignment", "--run-id", "0", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert payload["ok"] is False
+
+
+def test_caption_alignment_failure_reports_only_a_closed_code(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    private_path = "C:/private/customer-name/storage/audio.wav"
+
+    async def fail(_run_id: int) -> CaptionAlignmentResult:
+        raise CaptionAlignmentError("CAPTION_ALIGNMENT_EVIDENCE_UNVERIFIED")
+
+    monkeypatch.setattr(cli, "_caption_alignment_command", fail)
+
+    exit_code = cli.main(["caption-alignment", "--run-id", "7", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "CAPTION_ALIGNMENT_EVIDENCE_UNVERIFIED"
+    assert private_path not in json.dumps(payload)
+
+
+def test_plan_purge_reports_a_pending_gate_without_deleting(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    received: dict[str, str] = {}
+
+    async def plan(actor: str, reason: str) -> PurgePlan:
+        received.update(actor=actor, reason=reason)
+        return PurgePlan(
+            plan_digest="b" * 64,
+            entry_count=2,
+            total_bytes=4096,
+            entries=(),
+            run_id=12,
+            approval_id=34,
+            created=True,
+        )
+
+    monkeypatch.setattr(cli, "_plan_purge_command", plan)
+
+    exit_code = cli.main(
+        [
+            "plan-purge",
+            "--actor",
+            "local-owner",
+            "--reason",
+            "storage cleanup",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert received == {"actor": "local-owner", "reason": "storage cleanup"}
+    assert payload["approval_id"] == 34
+    assert payload["requires_decision"] is True
+    assert payload["deleted_file_count"] == 0
+
+
+def test_execute_purge_requires_the_exact_digest_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    received: dict[str, object] = {}
+
+    async def execute(
+        approval_id: int,
+        confirmation: str,
+        actor: str,
+    ) -> PurgeExecutionResult:
+        received.update(
+            approval_id=approval_id,
+            confirmation=confirmation,
+            actor=actor,
+        )
+        return PurgeExecutionResult(
+            run_id=12,
+            approval_id=approval_id,
+            plan_digest="b" * 64,
+            backup_id="20260811T120000Z-abcd1234",
+            deleted_file_count=2,
+            deleted_bytes=4096,
+            failed_entry_count=0,
+            replayed=False,
+        )
+
+    monkeypatch.setattr(cli, "_execute_purge_command", execute)
+
+    exit_code = cli.main(
+        [
+            "execute-purge",
+            "--approval-id",
+            "34",
+            "--confirm",
+            f"PURGE {'b' * 64}",
+            "--actor",
+            "local-owner",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert received["approval_id"] == 34
+    assert received["confirmation"] == f"PURGE {'b' * 64}"
+    assert payload["deleted_file_count"] == 2
+    assert payload["backup_id"] == "20260811T120000Z-abcd1234"
+
+
+def test_execute_purge_reports_failure_when_the_purge_was_partial(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def execute(
+        approval_id: int,
+        _confirmation: str,
+        _actor: str,
+    ) -> PurgeExecutionResult:
+        return PurgeExecutionResult(
+            run_id=12,
+            approval_id=approval_id,
+            plan_digest="b" * 64,
+            backup_id="20260811T120000Z-abcd1234",
+            deleted_file_count=1,
+            deleted_bytes=2048,
+            failed_entry_count=1,
+            replayed=False,
+        )
+
+    monkeypatch.setattr(cli, "_execute_purge_command", execute)
+
+    exit_code = cli.main(
+        [
+            "execute-purge",
+            "--approval-id",
+            "34",
+            "--confirm",
+            f"PURGE {'b' * 64}",
+            "--actor",
+            "local-owner",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["failed_entry_count"] == 1
+
+
+def test_purge_command_failure_does_not_echo_private_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    private_path = "C:/private/customer-name/storage/secret.json"
+
+    async def fail(*_args: object, **_kwargs: object) -> PurgeExecutionResult:
+        raise RuntimeError(private_path)
+
+    monkeypatch.setattr(cli, "_execute_purge_command", fail)
+
+    exit_code = cli.main(
+        [
+            "execute-purge",
+            "--approval-id",
+            "34",
+            "--confirm",
+            f"PURGE {'b' * 64}",
+            "--actor",
+            "local-owner",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "RuntimeError" in output
+    assert private_path not in output
