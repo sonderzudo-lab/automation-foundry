@@ -55,12 +55,14 @@ async def _run_to_a8(
     monkeypatch: pytest.MonkeyPatch,
     *,
     idempotency_key: str,
+    caption_alignment_gate_enabled: bool = False,
 ) -> tuple[Run, Approval, Path]:
     run, final_approval, storage_root = await _run_gated_pipeline(
         session,
         tmp_path,
         monkeypatch,
         idempotency_key=idempotency_key,
+        caption_alignment_gate_enabled=caption_alignment_gate_enabled,
         thumbnail_review_enabled=True,
     )
     await decide_approval(
@@ -223,6 +225,50 @@ async def test_a8_selection_concludes_locally_and_replays_without_duplicate_work
     assert len(steps) == 6
     assert len(approvals) == 3
     assert run.output_payload == output
+
+
+async def test_a8_preserves_the_alignment_gate_evidence_in_final_output(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, approval, storage_root = await _run_to_a8(
+        session,
+        tmp_path,
+        monkeypatch,
+        idempotency_key="content-a8-with-alignment-gate",
+        caption_alignment_gate_enabled=True,
+    )
+    review = await load_thumbnail_review(
+        session,
+        approval=approval,
+        storage_root=storage_root,
+    )
+    decision = thumbnail_decision_payload(
+        review,
+        thumbnail_artifact_id=review.candidates[0].artifact_id,
+    )
+    await decide_approval(
+        session,
+        approval=approval,
+        decision=ApprovalStatus.APPROVED,
+        actor="local-owner",
+        reason="thumbnail e sincronismo revisados",
+        decision_payload=decision,
+    )
+    await finalize_content_script_approval(
+        session,
+        approval=approval,
+        storage_root=storage_root,
+    )
+
+    assert run.status == RunStatus.SUCCEEDED.value
+    assert run.output_payload is not None
+    assert isinstance(run.output_payload["alignment_gate_step_run_id"], int)
+    assert isinstance(run.output_payload["alignment_report_artifact_id"], int)
+    assert isinstance(run.output_payload["alignment_report_sha256"], str)
+    assert isinstance(run.output_payload["alignment_parameters_digest"], str)
+    assert run.output_payload["published"] is False
 
 
 async def test_a8_rejection_cancels_the_same_run(

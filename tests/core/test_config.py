@@ -25,6 +25,7 @@ def test_defaults_use_automation_foundry_identity_and_loopback(
         "CONTENT_VISUAL_IMPORT_ROOT",
         "CONTENT_VISUAL_MANIFEST_PATH",
         "CONTENT_CAPTION_BACKEND",
+        "CONTENT_CAPTION_ALIGNMENT_GATE_ENABLED",
         "CONTENT_ASSEMBLY_BACKEND",
         "CONTENT_FFMPEG_PATH",
         "CONTENT_FFPROBE_PATH",
@@ -52,6 +53,7 @@ def test_defaults_use_automation_foundry_identity_and_loopback(
     assert settings.content_visual_import_root == "./imports/content-visuals"
     assert settings.content_visual_manifest_path == "manifest.json"
     assert settings.content_caption_backend == "disabled"
+    assert settings.content_caption_alignment_gate_enabled is False
     assert settings.content_caption_alignment_min_speech_coverage == 0.90
     assert settings.content_caption_alignment_max_outside_speech == 0.25
     assert settings.content_caption_alignment_tolerance_seconds == 0.50
@@ -210,6 +212,35 @@ def test_caption_alignment_diagnostic_configuration_is_bounded() -> None:
         Settings(_env_file=None, content_caption_alignment_tolerance_seconds=0)
     with pytest.raises(ValidationError):
         Settings(_env_file=None, content_caption_alignment_tolerance_seconds=30.01)
+
+
+def test_caption_alignment_gate_requires_the_complete_a7_pipeline() -> None:
+    with pytest.raises(ValidationError, match="requires A7"):
+        Settings(_env_file=None, content_caption_alignment_gate_enabled=True)
+    with pytest.raises(ValidationError, match="requires A4"):
+        Settings(
+            _env_file=None,
+            content_caption_alignment_gate_enabled=True,
+            content_final_review_enabled=True,
+        )
+    with pytest.raises(ValidationError, match="requires A5"):
+        Settings(
+            _env_file=None,
+            content_caption_alignment_gate_enabled=True,
+            content_final_review_enabled=True,
+            content_caption_backend="approved_text_timing_quality_test",
+        )
+
+    configured = Settings(
+        _env_file=None,
+        content_caption_alignment_gate_enabled=True,
+        content_final_review_enabled=True,
+        content_caption_backend="approved_text_timing_quality_test",
+        content_assembly_backend="ffmpeg_quality_test",
+        content_ffmpeg_expected_sha256="a" * 64,
+        content_ffprobe_expected_sha256="b" * 64,
+    )
+    assert configured.content_caption_alignment_gate_enabled is True
 
 
 def test_similarity_gate_configuration_is_bounded() -> None:

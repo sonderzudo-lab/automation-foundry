@@ -2293,6 +2293,13 @@ async def test_run_detail_renders_the_verified_caption_alignment_report(
     relative_path = "content-engine/run-1/captions/alignment-0123456789abcdef.json"
     report_path = storage_root / relative_path
     report_path.parent.mkdir(parents=True)
+    audio_relative_path = "content-engine/run-1/audio/narration.wav"
+    caption_relative_path = "content-engine/run-1/captions/captions.ass"
+    audio_path = storage_root / audio_relative_path
+    caption_path = storage_root / caption_relative_path
+    audio_path.parent.mkdir(parents=True)
+    audio_path.write_bytes(b"verified dashboard audio fixture")
+    caption_path.write_bytes(b"verified dashboard caption fixture")
     async with session_factory() as session:
         automation = Automation(
             slug="content-engine",
@@ -2311,14 +2318,38 @@ async def test_run_detail_renders_the_verified_caption_alignment_report(
         )
         session.add(run)
         await session.flush()
+        audio_artifact = Artifact(
+            run_id=run.id,
+            idempotency_key="private-alignment-view-audio",
+            artifact_type="narration_audio",
+            relative_path=audio_relative_path,
+            media_type="audio/wav",
+            sha256=hashlib.sha256(audio_path.read_bytes()).hexdigest(),
+            size_bytes=audio_path.stat().st_size,
+            origin="content-engine:a2",
+            sensitivity=ArtifactSensitivity.INTERNAL.value,
+        )
+        caption_artifact = Artifact(
+            run_id=run.id,
+            idempotency_key="private-alignment-view-caption",
+            artifact_type="caption_ass",
+            relative_path=caption_relative_path,
+            media_type="text/x-ssa",
+            sha256=hashlib.sha256(caption_path.read_bytes()).hexdigest(),
+            size_bytes=caption_path.stat().st_size,
+            origin="content-engine:a4",
+            sensitivity=ArtifactSensitivity.INTERNAL.value,
+        )
+        session.add_all((audio_artifact, caption_artifact))
+        await session.flush()
         payload = {
             "schema_version": 1,
             "algorithm": "rms-window-energy-vs-ass-events-v1",
             "run_id": run.id,
-            "caption_artifact_id": 11,
-            "caption_sha256": "b" * 64,
-            "audio_artifact_id": 10,
-            "audio_sha256": "c" * 64,
+            "caption_artifact_id": caption_artifact.id,
+            "caption_sha256": caption_artifact.sha256,
+            "audio_artifact_id": audio_artifact.id,
+            "audio_sha256": audio_artifact.sha256,
             "parameters": {"min_speech_coverage": "0.90"},
             "parameters_digest": "0123456789abcdef",
             "measurement": {

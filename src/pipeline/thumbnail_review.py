@@ -493,7 +493,7 @@ async def _output_payload(
             )
         ).all()
     )
-    return {
+    output: dict[str, object] = {
         "final_video_artifact_id": final_review.video_artifact_id,
         "final_video_sha256": final_review.video_sha256,
         "originality_report_artifact_id": final_review.report_artifact_id,
@@ -510,6 +510,22 @@ async def _output_payload(
         "ledger_entry_ids": ledger_ids,
         "published": False,
     }
+    if final_review.alignment_report_artifact_id is not None:
+        output.update(
+            {
+                "alignment_gate_step_run_id": (
+                    final_review.alignment_gate_step_run_id
+                ),
+                "alignment_report_artifact_id": (
+                    final_review.alignment_report_artifact_id
+                ),
+                "alignment_report_sha256": final_review.alignment_report_sha256,
+                "alignment_parameters_digest": (
+                    final_review.alignment_parameters_digest
+                ),
+            }
+        )
+    return output
 
 
 def _persisted_id(value: int | None, kind: str) -> int:

@@ -146,6 +146,7 @@ def rehearsal_settings(
     ffmpeg_sha256: str | None = None,
     ffprobe_sha256: str | None = None,
     narration_review_enabled: bool = False,
+    caption_alignment_gate_enabled: bool = False,
     final_review_enabled: bool = False,
     thumbnail_review_enabled: bool = False,
 ) -> SimpleNamespace:
@@ -162,6 +163,10 @@ def rehearsal_settings(
         content_visual_import_root=str(import_root),
         content_visual_manifest_path=manifest_name,
         content_caption_backend="approved_text_timing_quality_test",
+        content_caption_alignment_gate_enabled=caption_alignment_gate_enabled,
+        content_caption_alignment_min_speech_coverage=0.90,
+        content_caption_alignment_max_outside_speech=0.25,
+        content_caption_alignment_tolerance_seconds=0.50,
         content_assembly_backend=assembly_backend,
         content_ffmpeg_path=ffmpeg_path,
         content_ffprobe_path=ffprobe_path,

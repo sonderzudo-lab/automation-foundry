@@ -354,6 +354,19 @@ async def test_a1_approval_reviews_exact_bundle_and_finalizes_idempotently(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(a1_executor.settings, "content_tts_backend", "disabled")
+    monkeypatch.setattr(
+        a1_executor.settings,
+        "content_narration_review_enabled",
+        False,
+    )
+    monkeypatch.setattr(a1_executor.settings, "content_visual_backend", "disabled")
+    monkeypatch.setattr(a1_executor.settings, "content_caption_backend", "disabled")
+    monkeypatch.setattr(a1_executor.settings, "content_assembly_backend", "disabled")
+    monkeypatch.setattr(
+        a1_executor.settings,
+        "content_caption_alignment_gate_enabled",
+        False,
+    )
     result = await execute_content_script_run(
         session,
         idempotency_key="content-a1-approved",

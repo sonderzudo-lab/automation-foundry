@@ -54,6 +54,21 @@
         </dl>
       </section>
 
+      {% if review.alignment_report_artifact_id is not none %}
+      <section>
+        <h2>Sincronismo A4</h2>
+        <dl>
+          <dt>Gate</dt><dd>dentro da tolerância</dd>
+          <dt>Fala coberta</dt><dd>{{ review.alignment_speech_coverage_ratio }}</dd>
+          <dt>Legenda sobre silêncio</dt><dd>{{ review.alignment_caption_outside_speech_ratio }}</dd>
+          <dt>Parâmetros</dt><dd><code>{{ review.alignment_parameters_digest }}</code></dd>
+          <dt>Relatório</dt><dd>#{{ review.alignment_report_artifact_id }}</dd>
+          <dt>SHA-256</dt><dd><code>{{ review.alignment_report_sha256 }}</code></dd>
+        </dl>
+        <p>Este relatório passou pelo gate automático antes da criação desta approval. Ele mede o alinhamento observável do WAV e do ASS; não substitui a sua revisão do vídeo.</p>
+      </section>
+      {% endif %}
+
       <section>
         <h2>Reprodução local</h2>
         <video controls preload="metadata" src="/approvals/{{ review.approval_id }}/final-video">

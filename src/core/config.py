@@ -98,8 +98,9 @@ class Settings(BaseSettings):
         "approved_text_timing_quality_test",
     ] = "disabled"
     # Diagnóstico local somente leitura do alinhamento A4. Ele mede a energia do
-    # WAV aprovado contra os eventos do ASS publicado; não bloqueia a run, não
-    # regenera legenda e não consulta nenhum serviço externo.
+    # WAV aprovado contra os eventos do ASS publicado e não regenera legenda.
+    # O gate opcional executa esse diagnóstico antes de A7 e bloqueia warning.
+    content_caption_alignment_gate_enabled: bool = False
     content_caption_alignment_min_speech_coverage: float = Field(
         default=0.90, gt=0, le=1
     )
@@ -269,6 +270,18 @@ class Settings(BaseSettings):
     def _thumbnail_review_requires_final_review(self) -> Settings:
         if self.content_thumbnail_review_enabled and not self.content_final_review_enabled:
             raise ValueError("A8 thumbnail review requires A7 final review")
+        return self
+
+    @model_validator(mode="after")
+    def _caption_alignment_gate_requires_a7_pipeline(self) -> Settings:
+        if not self.content_caption_alignment_gate_enabled:
+            return self
+        if not self.content_final_review_enabled:
+            raise ValueError("caption alignment gate requires A7 final review")
+        if self.content_caption_backend == "disabled":
+            raise ValueError("caption alignment gate requires A4 captions")
+        if self.content_assembly_backend == "disabled":
+            raise ValueError("caption alignment gate requires A5 assembly")
         return self
 
     @property

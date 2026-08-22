@@ -27,6 +27,8 @@ from src.pipeline.assembly import (
     execute_approved_assembly_step,
     get_configured_assembly_adapter,
 )
+from src.pipeline.caption_alignment import build_alignment_parameters
+from src.pipeline.caption_alignment_gate import execute_caption_alignment_gate_step
 from src.pipeline.captions import (
     CaptionAdapter,
     execute_approved_caption_step,
@@ -525,6 +527,7 @@ async def execute_content_script_run(
         caption_replayed = True
         assembly_replayed = True
         similarity_replayed = True
+        alignment_gate_replayed = True
         audio_artifact: Artifact | None = None
         if (
             (
@@ -741,16 +744,30 @@ async def execute_content_script_run(
                         raise ContentScriptRunNotRunnableError(
                             "completed A6 step is missing its originality report"
                         )
-                    await request_final_video_approval(
-                        session,
-                        run=run,
-                        script_approval=approval,
-                        approval_input_payload=approval_input,
-                        final_video_artifact=final_video,
-                        originality_report_artifact=report_artifact,
-                        idempotency_key=idempotency_key,
-                        storage_root=root,
-                    )
+                    if _caption_alignment_gate_enabled():
+                        alignment_gate = await execute_caption_alignment_gate_step(
+                            session,
+                            run=run,
+                            idempotency_key=idempotency_key,
+                            storage_root=root,
+                            parameters=build_alignment_parameters(settings),
+                            timeout_seconds=max(
+                                1.0,
+                                float(settings.celery_soft_time_limit_seconds - 15),
+                            ),
+                        )
+                        alignment_gate_replayed = alignment_gate.replayed
+                    if RunStatus(run.status) is RunStatus.RUNNING:
+                        await request_final_video_approval(
+                            session,
+                            run=run,
+                            script_approval=approval,
+                            approval_input_payload=approval_input,
+                            final_video_artifact=final_video,
+                            originality_report_artifact=report_artifact,
+                            idempotency_key=idempotency_key,
+                            storage_root=root,
+                        )
         return _result(
             run,
             step_run,
@@ -764,6 +781,7 @@ async def execute_content_script_run(
                 and caption_replayed
                 and assembly_replayed
                 and similarity_replayed
+                and alignment_gate_replayed
             ),
         )
     return _result(
@@ -1037,6 +1055,10 @@ def _final_review_enabled() -> bool:
     return getattr(settings, "content_final_review_enabled", False) is True
 
 
+def _caption_alignment_gate_enabled() -> bool:
+    return getattr(settings, "content_caption_alignment_gate_enabled", False) is True
+
+
 def _thumbnail_review_enabled() -> bool:
     return getattr(settings, "content_thumbnail_review_enabled", False) is True
 
@@ -1075,6 +1097,18 @@ def _validate_pipeline_backend_dependencies() -> None:
     ) and not _tts_enabled():
         raise ContentScriptRunNotRunnableError(
             "audiovisual continuation requires A2 TTS"
+        )
+    if _caption_alignment_gate_enabled() and not _final_review_enabled():
+        raise ContentScriptRunNotRunnableError(
+            "caption alignment gate requires A7 final review"
+        )
+    if _caption_alignment_gate_enabled() and not _captions_enabled():
+        raise ContentScriptRunNotRunnableError(
+            "caption alignment gate requires A4 captions"
+        )
+    if _caption_alignment_gate_enabled() and not _assembly_enabled():
+        raise ContentScriptRunNotRunnableError(
+            "caption alignment gate requires A5 assembly"
         )
     if _narration_review_enabled() and not _visuals_enabled():
         raise ContentScriptRunNotRunnableError(

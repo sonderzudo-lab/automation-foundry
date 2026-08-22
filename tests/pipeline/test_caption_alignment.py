@@ -741,6 +741,43 @@ async def test_report_projection_rejects_a_rewritten_file(
     assert error.value.code == "CAPTION_ALIGNMENT_EVIDENCE_UNVERIFIED"
 
 
+async def test_report_projection_rechecks_its_audio_and_caption_sources(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    run = await _run_with_captions(
+        session,
+        tmp_path,
+        idempotency_key="alignment-source-rewritten",
+        duration_seconds=5.0,
+        bursts=((0.0, 5.0),),
+    )
+    assert run.id is not None
+    await evaluate_caption_alignment(
+        session,
+        run_id=run.id,
+        storage_root=tmp_path,
+        parameters=_parameters(),
+    )
+    audio = await session.scalar(
+        select(Artifact).where(
+            Artifact.run_id == run.id,
+            Artifact.artifact_type == "narration_audio",
+        )
+    )
+    assert audio is not None
+    (tmp_path / audio.relative_path).write_bytes(b"rewritten")
+
+    with pytest.raises(CaptionAlignmentError) as error:
+        await load_caption_alignment_report(
+            session,
+            run_id=run.id,
+            storage_root=tmp_path,
+        )
+
+    assert error.value.code == "CAPTION_ALIGNMENT_EVIDENCE_UNVERIFIED"
+
+
 async def test_diagnostic_rejects_unknown_and_foreign_runs(
     session: AsyncSession,
     tmp_path: Path,

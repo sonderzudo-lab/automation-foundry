@@ -505,15 +505,19 @@ async def load_caption_alignment_report(
     *,
     run_id: int,
     storage_root: Path | None = None,
+    report_artifact_id: int | None = None,
 ) -> CaptionAlignmentReportView | None:
     """Rebuild the allowlisted projection of one verified report, or None."""
     root = Path(settings.storage_root) if storage_root is None else storage_root
+    filters = [
+        Artifact.run_id == run_id,
+        Artifact.artifact_type == "caption_alignment_report",
+    ]
+    if report_artifact_id is not None:
+        filters.append(Artifact.id == report_artifact_id)
     artifact = await session.scalar(
         select(Artifact)
-        .where(
-            Artifact.run_id == run_id,
-            Artifact.artifact_type == "caption_alignment_report",
-        )
+        .where(*filters)
         .order_by(Artifact.id.desc())
         .limit(1)
     )
@@ -547,12 +551,39 @@ async def load_caption_alignment_report(
     raw_reasons = measurement.get("reasons")
     if not isinstance(raw_reasons, list) or not set(raw_reasons) <= _KNOWN_REASONS:
         raise CaptionAlignmentError("CAPTION_ALIGNMENT_REPORT_UNVERIFIED")
+    caption_artifact_id = _reported_int(payload, "caption_artifact_id")
+    audio_artifact_id = _reported_int(payload, "audio_artifact_id")
+    caption_artifact = await session.get(Artifact, caption_artifact_id)
+    audio_artifact = await session.get(Artifact, audio_artifact_id)
+    if (
+        caption_artifact is None
+        or audio_artifact is None
+        or caption_artifact.run_id != run_id
+        or audio_artifact.run_id != run_id
+        or caption_artifact.artifact_type != _CAPTION_ARTIFACT_TYPE
+        or audio_artifact.artifact_type != _AUDIO_ARTIFACT_TYPE
+        or caption_artifact.sha256 != _reported_sha256(payload, "caption_sha256")
+        or audio_artifact.sha256 != _reported_sha256(payload, "audio_sha256")
+    ):
+        raise CaptionAlignmentError("CAPTION_ALIGNMENT_REPORT_UNVERIFIED")
+    _verified_file(
+        root,
+        caption_artifact,
+        load=False,
+        maximum_bytes=_MAX_CAPTION_BYTES,
+    )
+    _verified_file(
+        root,
+        audio_artifact,
+        load=False,
+        maximum_bytes=_MAX_AUDIO_BYTES,
+    )
     return CaptionAlignmentReportView(
         run_id=run_id,
         report_artifact_id=_persisted_id(artifact.id, "artifact"),
         report_sha256=artifact.sha256,
-        caption_artifact_id=_reported_int(payload, "caption_artifact_id"),
-        audio_artifact_id=_reported_int(payload, "audio_artifact_id"),
+        caption_artifact_id=caption_artifact_id,
+        audio_artifact_id=audio_artifact_id,
         parameters_digest=_reported_digest(payload),
         status=str(status),
         reasons=tuple(str(reason) for reason in raw_reasons),
@@ -596,6 +627,13 @@ def _reported_decimal(payload: dict[str, object], field: str) -> Decimal:
 def _reported_digest(payload: dict[str, object]) -> str:
     value = payload.get("parameters_digest")
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{16}", value):
+        raise CaptionAlignmentError("CAPTION_ALIGNMENT_REPORT_UNVERIFIED")
+    return value
+
+
+def _reported_sha256(payload: dict[str, object], field: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
         raise CaptionAlignmentError("CAPTION_ALIGNMENT_REPORT_UNVERIFIED")
     return value
 

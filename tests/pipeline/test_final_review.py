@@ -21,10 +21,12 @@ from src.pipeline.a1_executor import (
     execute_content_script_run,
     finalize_content_script_approval,
 )
+from src.pipeline.caption_alignment_gate import CAPTION_ALIGNMENT_GATE_STEP_NAME
 from src.pipeline.final_review import (
     FINAL_REVIEW_APPROVAL_ACTION,
     FinalReviewGateError,
     finalize_final_video_approval,
+    load_final_video_review,
 )
 from src.platform.approval_service import decide_approval
 from src.platform.models import (
@@ -63,6 +65,7 @@ async def _run_gated_pipeline(
     monkeypatch: pytest.MonkeyPatch,
     *,
     idempotency_key: str,
+    caption_alignment_gate_enabled: bool = False,
     thumbnail_review_enabled: bool = False,
 ) -> tuple[Run, Approval, Path]:
     storage_root = tmp_path / "storage"
@@ -79,6 +82,7 @@ async def _run_gated_pipeline(
         rehearsal_settings(
             storage_root,
             import_root=import_root,
+            caption_alignment_gate_enabled=caption_alignment_gate_enabled,
             final_review_enabled=True,
             thumbnail_review_enabled=thumbnail_review_enabled,
         ),
@@ -167,6 +171,108 @@ async def test_a7_opens_a_pending_gate_instead_of_completing_the_run(
     assert "1080x1920" in review["video"]
     assert "Nenhum upload" in review["publication"]
     assert not (storage_root / "uploads").exists()
+
+
+async def test_alignment_gate_passes_and_freezes_its_report_in_a7(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, approval, storage_root = await _run_gated_pipeline(
+        session,
+        tmp_path,
+        monkeypatch,
+        idempotency_key="content-a4-alignment-gate-pass",
+        caption_alignment_gate_enabled=True,
+    )
+    steps = list(
+        (
+            await session.scalars(
+                select(StepRun).where(StepRun.run_id == run.id).order_by(StepRun.ordinal)
+            )
+        ).all()
+    )
+    review = await load_final_video_review(
+        session,
+        approval=approval,
+        storage_root=storage_root,
+    )
+
+    assert run.status == RunStatus.AWAITING_APPROVAL.value
+    assert len(steps) == 7
+    assert steps[-1].name == CAPTION_ALIGNMENT_GATE_STEP_NAME
+    assert steps[-1].status == RunStatus.SUCCEEDED.value
+    assert review.alignment_report_artifact_id is not None
+    assert review.alignment_report_sha256 is not None
+    assert review.alignment_parameters_digest is not None
+    assert review.alignment_speech_coverage_ratio == "1.0000000000"
+    assert approval.review_payload is not None
+    assert approval.review_payload["alignment"].startswith("pass")
+
+    await decide_approval(
+        session,
+        approval=approval,
+        decision=ApprovalStatus.APPROVED,
+        actor="local-owner",
+        reason="vídeo e sincronismo revisados",
+    )
+    await finalize_content_script_approval(
+        session,
+        approval=approval,
+        storage_root=storage_root,
+    )
+
+    assert run.status == RunStatus.SUCCEEDED.value
+    assert run.output_payload is not None
+    assert (
+        run.output_payload["alignment_report_artifact_id"]
+        == review.alignment_report_artifact_id
+    )
+    assert run.output_payload["published"] is False
+
+
+async def test_a7_fails_closed_when_the_gated_alignment_report_changed(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, approval, storage_root = await _run_gated_pipeline(
+        session,
+        tmp_path,
+        monkeypatch,
+        idempotency_key="content-a4-alignment-gate-tampered",
+        caption_alignment_gate_enabled=True,
+    )
+    gate_step = await session.scalar(
+        select(StepRun).where(
+            StepRun.run_id == run.id,
+            StepRun.name == CAPTION_ALIGNMENT_GATE_STEP_NAME,
+        )
+    )
+    assert gate_step is not None and gate_step.output_payload is not None
+    report = await session.get(
+        Artifact,
+        gate_step.output_payload["report_artifact_id"],
+    )
+    assert report is not None
+    (storage_root / report.relative_path).write_text("{}\n", encoding="utf-8")
+    await decide_approval(
+        session,
+        approval=approval,
+        decision=ApprovalStatus.APPROVED,
+        actor="local-owner",
+        reason="vídeo revisado",
+    )
+
+    with pytest.raises(FinalReviewGateError, match="alignment gate evidence"):
+        await finalize_content_script_approval(
+            session,
+            approval=approval,
+            storage_root=storage_root,
+        )
+
+    assert run.status == RunStatus.RUNNING.value
+    assert run.output_payload is None
 
 
 async def test_a7_approval_concludes_the_run_locally_and_replays_safely(

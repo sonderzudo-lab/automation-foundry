@@ -2,9 +2,9 @@
 
 A7 is the last local gate before any future publication path exists. It never
 uploads, sends or spends anything: approving it only concludes the local run and
-records an immutable decision bound to the exact SHA-256 of the final MP4 and of
-the A6 originality report. Rejecting it cancels the run through the shared
-approval contract.
+records an immutable decision bound to the exact SHA-256 of the final MP4, the
+A6 originality report and, when enabled, the successful A4 alignment report.
+Rejecting it cancels the run through the shared approval contract.
 
 The gate is disabled by default. When `CONTENT_FINAL_REVIEW_ENABLED` is false,
 A6 keeps concluding the run exactly as before.
@@ -21,6 +21,11 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.pipeline.caption_alignment import STATUS_PASS
+from src.pipeline.caption_alignment_gate import (
+    CaptionAlignmentGateEvidence,
+    load_caption_alignment_gate_evidence,
+)
 from src.platform.approval_service import approval_payload_digest, request_approval
 from src.platform.models import (
     Approval,
@@ -92,6 +97,12 @@ class FinalVideoReview:
     reference_count: int
     comparisons: tuple[FinalVideoComparison, ...]
     video_path: Path
+    alignment_gate_step_run_id: int | None
+    alignment_report_artifact_id: int | None
+    alignment_report_sha256: str | None
+    alignment_parameters_digest: str | None
+    alignment_speech_coverage_ratio: str | None
+    alignment_caption_outside_speech_ratio: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +123,7 @@ class _VerifiedEvidence:
     video_codec: str
     audio_codec: str
     video_format: str
+    alignment: CaptionAlignmentGateEvidence | None
 
 
 async def request_final_video_approval(
@@ -203,6 +215,32 @@ async def load_final_video_review(
         reference_count=evidence.reference_count,
         comparisons=evidence.comparisons,
         video_path=evidence.video_path,
+        alignment_gate_step_run_id=(
+            None if evidence.alignment is None else evidence.alignment.step_run_id
+        ),
+        alignment_report_artifact_id=(
+            None
+            if evidence.alignment is None
+            else evidence.alignment.report_artifact_id
+        ),
+        alignment_report_sha256=(
+            None if evidence.alignment is None else evidence.alignment.report_sha256
+        ),
+        alignment_parameters_digest=(
+            None
+            if evidence.alignment is None
+            else evidence.alignment.parameters_digest
+        ),
+        alignment_speech_coverage_ratio=(
+            None
+            if evidence.alignment is None
+            else evidence.alignment.speech_coverage_ratio
+        ),
+        alignment_caption_outside_speech_ratio=(
+            None
+            if evidence.alignment is None
+            else evidence.alignment.caption_outside_speech_ratio
+        ),
     )
 
 
@@ -307,6 +345,14 @@ async def _verify_evidence(
         run=run,
         name=FINAL_REVIEW_STEP_NAME,
     )
+    try:
+        alignment = await load_caption_alignment_gate_evidence(
+            session,
+            run=run,
+            storage_root=storage_root,
+        )
+    except ValueError as exc:
+        raise FinalReviewGateError("A4 alignment gate evidence is invalid") from exc
     return _VerifiedEvidence(
         video=final_video_artifact,
         report=originality_report_artifact,
@@ -324,11 +370,12 @@ async def _verify_evidence(
         video_codec=_step_text(assembly, "video_codec"),
         audio_codec=_step_text(assembly, "audio_codec"),
         video_format=_step_text(assembly, "format"),
+        alignment=alignment,
     )
 
 
 def _approval_input(*, run: Run, evidence: _VerifiedEvidence) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "schema_version": _APPROVAL_SCHEMA_VERSION,
         "run_id": _persisted_id(run.id, "run"),
         "final_video_artifact_id": _persisted_id(evidence.video.id, "artifact"),
@@ -338,10 +385,25 @@ def _approval_input(*, run: Run, evidence: _VerifiedEvidence) -> dict[str, objec
         "originality_max_similarity": evidence.max_similarity,
         "originality_threshold": evidence.threshold,
     }
+    if evidence.alignment is not None:
+        payload.update(
+            {
+                "alignment_gate_step_run_id": evidence.alignment.step_run_id,
+                "alignment_report_artifact_id": (
+                    evidence.alignment.report_artifact_id
+                ),
+                "alignment_report_sha256": evidence.alignment.report_sha256,
+                "alignment_parameters_digest": (
+                    evidence.alignment.parameters_digest
+                ),
+                "alignment_status": STATUS_PASS,
+            }
+        )
+    return payload
 
 
 def _review_payload(evidence: _VerifiedEvidence) -> dict[str, str]:
-    return {
+    payload = {
         "video": (
             f"Vídeo final #{evidence.video.id} · {evidence.width}x{evidence.height} · "
             f"{evidence.duration_seconds} s · {evidence.video.size_bytes} bytes"
@@ -362,6 +424,14 @@ def _review_payload(evidence: _VerifiedEvidence) -> dict[str, str]:
             "e registra a decisão ligada aos hashes acima."
         ),
     }
+    if evidence.alignment is not None:
+        payload["alignment"] = (
+            f"pass · fala coberta {evidence.alignment.speech_coverage_ratio} · "
+            "legenda sobre silêncio "
+            f"{evidence.alignment.caption_outside_speech_ratio} · relatório "
+            f"#{evidence.alignment.report_artifact_id}"
+        )
+    return payload
 
 
 async def _output_payload(
@@ -388,7 +458,7 @@ async def _output_payload(
             )
         ).all()
     )
-    return {
+    payload: dict[str, object] = {
         "final_video_artifact_id": _persisted_id(evidence.video.id, "artifact"),
         "final_video_sha256": evidence.video.sha256,
         "originality_report_artifact_id": _persisted_id(evidence.report.id, "artifact"),
@@ -402,6 +472,20 @@ async def _output_payload(
         "ledger_entry_ids": ledger_ids,
         "published": False,
     }
+    if evidence.alignment is not None:
+        payload.update(
+            {
+                "alignment_gate_step_run_id": evidence.alignment.step_run_id,
+                "alignment_report_artifact_id": (
+                    evidence.alignment.report_artifact_id
+                ),
+                "alignment_report_sha256": evidence.alignment.report_sha256,
+                "alignment_parameters_digest": (
+                    evidence.alignment.parameters_digest
+                ),
+            }
+        )
+    return payload
 
 
 async def _required_artifact(
