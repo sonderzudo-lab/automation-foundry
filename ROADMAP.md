@@ -107,10 +107,10 @@ Objetivo: transformar a implementaÃ§Ã£o existente em uma automaÃ§Ã£o edi
 
 Objetivo: deixar o sistema rodar no computador principal com recuperaÃ§Ã£o previsÃ­vel.
 
-- [x] Definir startup e shutdown seguros no Windows. O supervisor singleton executa preflight e migrations, inicia a topologia fixa em processos ocultos, usa shutdown cooperativo por eventos nomeados e Job Object como fallback, protege o status contra reutilizacao de PID e para somente os servicos Compose que iniciou, sem remover volumes. O ciclo completo isolado passou em Windows real; a ativacao com o volume PostgreSQL local depende de configurar o `.env`.
-- [x] Implementar health checks locais redigidos e com timeout limitado.
+- [x] Definir startup e shutdown seguros no Windows. O supervisor singleton executa preflight e migrations, inicia a topologia fixa em processos ocultos, usa shutdown cooperativo por eventos nomeados e Job Object como fallback, protege o status contra reutilizacao de PID e para somente os servicos Compose que iniciou, sem remover volumes. O ciclo completo passou em Windows real com PostgreSQL persistente, Redis, dashboard, Beat e três workers; stop/start cooperativo em idle preservou os serviços Compose não pertencentes ao supervisor.
+- [x] Implementar health checks locais redigidos e com timeout limitado. O probe real dos três workers no Windows mantém o timeout interno do Celery e uma margem externa limitada para o overhead do inspect; duas observações saudáveis resolveram automaticamente o alerta durável criado pelo falso timeout anterior.
 - [x] Transformar degradaÃ§Ãµes persistentes de health em alertas locais deduplicados. Duas observaÃ§Ãµes degradadas abrem ou atualizam o alerta e duas saudÃ¡veis o resolvem; `skip` nÃ£o altera o tratamento. Estado e eventos ficam no PostgreSQL, a task roda na fila `io` e nÃ£o envia notificaÃ§Ãµes externas.
-- [x] Criar backup e restore de banco, configuraÃ§Ã£o e artefatos. O bundle versionado publica snapshot, configuraÃ§Ã£o allowlisted, artefatos e manifesto SHA-256 atomicamente. Restore exige confirmaÃ§Ã£o exata, runtime parado, storage vazio e backup automÃ¡tico prÃ©vio; SQLite usa substituiÃ§Ã£o atÃ´mica e PostgreSQL usa transaÃ§Ã£o Ãºnica. Um ciclo real passou em PostgreSQL 17 e volume Compose descartÃ¡veis; o volume persistente domÃ©stico continua `bloqueado local`.
+- [x] Criar backup e restore de banco, configuraÃ§Ã£o e artefatos. O bundle versionado publica snapshot, configuraÃ§Ã£o allowlisted, artefatos e manifesto SHA-256 atomicamente. Restore exige confirmaÃ§Ã£o exata, runtime parado, storage vazio e backup automÃ¡tico prÃ©vio; SQLite usa substituiÃ§Ã£o atÃ´mica e PostgreSQL usa transaÃ§Ã£o Ãºnica. Um ciclo real de backup/restore passou em PostgreSQL 17 e volume Compose descartÃ¡veis; o backup verificado também passou contra o volume persistente doméstico, enquanto o restore desse volume continua `bloqueado local`.
 - [x] Definir retenção e limpeza de storage. O inventário somente leitura já existe:
       `src/operations/retention.py` percorre `STORAGE_ROOT` sem seguir links, reconcilia cada
       arquivo com os artifacts registrados e classifica em `retained`, `retention_hold`,
@@ -143,11 +143,11 @@ Objetivo: deixar o sistema rodar no computador principal com recuperaÃ§Ã£o p
       `automation-foundry retention-policy` e a página `/storage` mostram a declaração.
       Ainda faltam: tratamento de órfãos no disco (sem registro nem hash conhecido) e expurgo
       agendado.
-- [x] Testar reinÃ­cio durante task, perda de Redis, falta de disco e indisponibilidade do Ollama por simulaÃ§Ãµes locais. Lease expirada permite reclaim auditado, tentativa `running` abandonada vira falha estruturada e entrega duplicada terminal nÃ£o cria outro step. Perda de Redis entre sessÃµes deixa a mesma entrega `pending`, e a republicaÃ§Ã£o posterior preserva uma Ãºnica run/step. `ENOSPC` e conexÃ£o recusada pelo Ollama falham com erro redigido/retryable, sem artifact ou approval parcial. A validaÃ§Ã£o com worker/Redis/PostgreSQL e Ollama reais continua `bloqueado local`.
+- [x] Testar reinÃ­cio durante task, perda de Redis, falta de disco e indisponibilidade do Ollama por simulaÃ§Ãµes locais. Lease expirada permite reclaim auditado, tentativa `running` abandonada vira falha estruturada e entrega duplicada terminal nÃ£o cria outro step. Perda de Redis entre sessÃµes deixa a mesma entrega `pending`, e a republicaÃ§Ã£o posterior preserva uma Ãºnica run/step. `ENOSPC` e conexÃ£o recusada pelo Ollama falham com erro redigido/retryable, sem artifact ou approval parcial. PostgreSQL persistente, Redis, Ollama e os três workers reais passaram no runtime doméstico, inclusive uma run durável sem efeito externo e um stop/start em idle; interrupção durante task, perda real do Redis nesse volume e ENOSPC em filesystem real continuam `bloqueado local`.
 - [x] Documentar operaÃ§Ã£o e troubleshooting locais. `docs/operations/local-recovery.md`
   explica diagnÃ³stico e recuperaÃ§Ã£o reversÃ­vel de Redis, Ollama, reinÃ­cio e
-  falta de espaÃ§o, sem recriar runs ou tocar em dados. O reinÃ­cio de worker real
-  contra o volume PostgreSQL domÃ©stico e ENOSPC em filesystem real permanecem
+  falta de espaÃ§o, sem recriar runs ou tocar em dados. O stop/start real em idle passou contra o
+  volume PostgreSQL doméstico; reinício durante task e ENOSPC em filesystem real permanecem
   `bloqueado local`.
 
 **PortÃ£o:** apÃ³s reinÃ­cio ou falha simulada, o estado permanece consistente, nÃ£o hÃ¡ execuÃ§Ã£o duplicada e existe recuperaÃ§Ã£o documentada.

@@ -91,8 +91,9 @@ Se uma interrupção ocorreu enquanto uma task estava `running`, aguarde a lease
 de dispatch expirar e acompanhe a mesma run no dashboard. O reclaim registra
 uma tentativa interrompida com erro estruturado `INTERRUPTED_ATTEMPT` antes de
 executar uma nova tentativa. Uma entrega terminal repetida não cria step novo.
-Essa propriedade foi simulada com SQLite; o ensaio completo de reinício de um
-worker real contra o volume PostgreSQL doméstico continua **bloqueado local**.
+Essa propriedade foi simulada com SQLite. O stop/start cooperativo dos três
+workers em idle passou contra o volume PostgreSQL doméstico, mas o ensaio de
+interromper um worker durante uma task real continua **bloqueado local**.
 
 ## Falta de espaço em disco
 

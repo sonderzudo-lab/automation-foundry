@@ -511,6 +511,16 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
   executaram `pg_dump`, sofreram uma alteração e retornaram ao estado anterior por
   `pg_restore --single-transaction`; o backup automático pré-restore e o artefato também foram
   verificados. Container, rede e volume do teste foram removidos ao final.
+- Runtime doméstico persistente: PostgreSQL 17 e Redis subiram presos a loopback, as vinte e duas
+  migrations foram aplicadas e `alembic check` não encontrou operações novas. Dashboard, Beat e
+  os workers `gpu`, `cpu` e `io` ficaram ativos; `doctor --services` aprovou oito checks e uma run
+  `platform-smoke` enfileirada terminou com uma única run, um step e dispatch concluído. Quatro
+  integrações marcadas para PostgreSQL/Redis passaram contra um banco temporário no mesmo serviço,
+  depois removido. O supervisor foi parado cooperativamente para criar e verificar o backup
+  PostgreSQL `20260822T145234Z-8dc8f737` em formato custom, com quatro artefatos, e voltou sem
+  assumir ou parar os containers já ativos. O probe dos workers expôs um falso timeout específico
+  do overhead do inspect no Windows; a margem externa foi ampliada de forma limitada, o probe
+  voltou a contar os três workers e duas observações saudáveis resolveram o alerta persistido.
 
 - Diagnóstico de alinhamento A4 em SQLite e storage descartáveis: a cadeia A1→A2→A4 rodou com o
   backend real `approved_text_timing_quality_test` sobre dois WAVs sintéticos distintos. Com fala
@@ -542,9 +552,10 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
 
 ## Verificações bloqueadas ou adiadas
 
-- **Computador de casa:** CPU, RAM e disco responderam ao snapshot; o lifecycle isolado do
-  supervisor passou. O boot completo real foi recusado corretamente pelo preflight porque a
-  configuração ativa ainda usa SQLite; depende de um `.env` PostgreSQL local válido.
+- **Computador de casa:** CPU, RAM e disco responderam ao snapshot. O boot completo real passou
+  com `.env` PostgreSQL válido, volume persistente, Redis, dashboard, Beat e três workers; o
+  lifecycle cooperativo em idle também passou. Ainda falta interromper um worker durante uma task
+  real e confirmar o reclaim contra esse volume.
 - **GPU:** RTX 3090 e VRAM responderam ao `nvidia-smi`; CUDA 12.8, PyTorch `2.7.1+cu128`, eSpeak
   NG e Kokoro 0.9.4 passaram no teste A2 curto com as três vozes PT-BR permitidas. Escuta humana,
   duração longa, carga prolongada e a decisão explícita sobre qualidade/proveniência comercial
@@ -553,13 +564,12 @@ Após criar `.venv` e instalar `.[dev]` sem os extras `ai`:
   de tom sintético e PNGs sintéticos gerados pelo próprio projeto. Narração PT-BR real, pacote
   visual real com direitos revisados, sincronismo de legenda contra voz real, formato long e
   revisão editorial do vídeo final continuam pendentes.
-- **Serviços locais:** Redis e PostgreSQL descartáveis passaram novamente, inclusive a recuperação
-  após perda real do broker. Nesta máquina, a API local do Ollama respondeu `200` em loopback com
-  cinco modelos e `doctor --services` marcou Ollama como saudável enquanto Redis padrão permaneceu
-  indisponível. O ciclo manual de queda e retorno do Ollama também passou, com falha segura e
-  recuperação HTTP 200. Ainda faltam a falta de disco em filesystem real e o volume PostgreSQL
-  persistente doméstico. Backup e restore passaram em PostgreSQL descartável, mas ainda não foram
-  executados contra esse volume persistente.
+- **Serviços locais:** Redis, PostgreSQL persistente, Ollama, dashboard, Beat e os três workers
+  passaram juntos no runtime doméstico; `doctor --services` aprovou os oito checks. A recuperação
+  após perda real do broker já passou em ambiente descartável, e o ciclo manual de queda e retorno
+  do Ollama passou com falha segura e recuperação HTTP 200. O backup do volume PostgreSQL
+  persistente foi criado e verificado; o restore desse volume, a perda real do Redis nesse runtime
+  e a falta de disco em filesystem real continuam pendentes.
 - **Timeouts de worker no Windows:** soft/hard limits estão configurados, mas o pool `solo` não
   oferece todas as garantias de timeout dos pools baseados em processos. O task wrapper mantém seu
   timeout assíncrono; preempção de código síncrono bloqueante continua pendente de validação local.

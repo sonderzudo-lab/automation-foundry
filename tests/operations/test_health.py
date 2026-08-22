@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable
 
 import pytest
 from celery import Celery
@@ -49,6 +49,44 @@ def test_worker_queue_projection_accepts_current_task_as_io_evidence() -> None:
     )
 
     assert counts == {"gpu": 1, "cpu": 1, "io": 1}
+
+
+async def test_worker_probe_allows_celery_inspection_completion_margin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    celery = Celery("health-worker-test")
+    observed: dict[str, float] = {}
+
+    class FakeInspector:
+        def active_queues(self) -> dict[str, list[dict[str, str]]]:
+            return {
+                "gpu@private-host": [{"name": "gpu"}],
+                "cpu@private-host": [{"name": "cpu"}],
+                "io@private-host": [{"name": "io"}],
+            }
+
+    def inspect(*, timeout: float) -> FakeInspector:
+        observed["inspect_timeout"] = timeout
+        return FakeInspector()
+
+    original_wait_for = health.asyncio.wait_for
+
+    async def wait_for(
+        awaitable: Awaitable[object],
+        *,
+        timeout: float,
+    ) -> object:
+        observed["outer_timeout"] = timeout
+        return await original_wait_for(awaitable, timeout=timeout)
+
+    monkeypatch.setattr(celery.control, "inspect", inspect)
+    monkeypatch.setattr(health.asyncio, "wait_for", wait_for)
+
+    check = await health.probe_workers(celery, timeout=1.5)
+
+    assert check.status is HealthStatus.PASS
+    assert check.metrics == {"gpu_workers": 1, "cpu_workers": 1, "io_workers": 1}
+    assert observed == {"inspect_timeout": 1.5, "outer_timeout": 3.5}
 
 
 def test_gpu_parser_accepts_only_bounded_numeric_rows() -> None:
