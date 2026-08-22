@@ -32,7 +32,22 @@ from src.pipeline.captions import (
     execute_approved_caption_step,
     get_configured_caption_adapter,
 )
+from src.pipeline.final_review import (
+    FINAL_REVIEW_APPROVAL_ACTION,
+    FinalVideoReview,
+    finalize_final_video_approval,
+    load_final_video_review,
+    request_final_video_approval,
+)
+from src.pipeline.local_export import LocalExportPackage, load_local_export_package
 from src.pipeline.script_gen import EmptyResponseError, ScriptResult, generate_script
+from src.pipeline.thumbnail_review import (
+    THUMBNAIL_REVIEW_APPROVAL_ACTION,
+    ThumbnailReview,
+    finalize_thumbnail_approval,
+    load_thumbnail_review,
+    request_thumbnail_approval,
+)
 from src.pipeline.tts import (
     TTSSynthesizer,
     execute_approved_tts_step,
@@ -680,8 +695,33 @@ async def execute_content_script_run(
                         1.0,
                         float(settings.celery_soft_time_limit_seconds - 15),
                     ),
+                    finalize_run=not _final_review_enabled(),
                 )
                 similarity_replayed = similarity_result.replayed
+                if (
+                    _final_review_enabled()
+                    and not similarity_result.blocked
+                    and similarity_result.report_artifact_id is not None
+                    and RunStatus(run.status) is RunStatus.RUNNING
+                ):
+                    report_artifact = await session.get(
+                        Artifact,
+                        similarity_result.report_artifact_id,
+                    )
+                    if report_artifact is None:
+                        raise ContentScriptRunNotRunnableError(
+                            "completed A6 step is missing its originality report"
+                        )
+                    await request_final_video_approval(
+                        session,
+                        run=run,
+                        script_approval=approval,
+                        approval_input_payload=approval_input,
+                        final_video_artifact=final_video,
+                        originality_report_artifact=report_artifact,
+                        idempotency_key=idempotency_key,
+                        storage_root=root,
+                    )
         return _result(
             run,
             step_run,
@@ -704,6 +744,48 @@ async def execute_content_script_run(
         approval_id=_persisted_id(approval.id, "approval"),
         created=creation.created,
         replayed=task_result.replayed,
+    )
+
+
+async def load_content_approval_review(
+    session: AsyncSession,
+    *,
+    approval: Approval,
+    storage_root: Path | None = None,
+) -> ContentScriptReview | FinalVideoReview | ThumbnailReview:
+    """Route one Content Engine approval to its own verified review projection."""
+    root = Path(settings.storage_root) if storage_root is None else storage_root
+    if approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
+        return await load_thumbnail_review(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
+    if approval.action == FINAL_REVIEW_APPROVAL_ACTION:
+        return await load_final_video_review(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
+    return await load_content_script_review(
+        session,
+        approval=approval,
+        storage_root=root,
+    )
+
+
+async def load_content_local_export(
+    session: AsyncSession,
+    *,
+    run: Run,
+    storage_root: Path | None = None,
+) -> LocalExportPackage:
+    """Load a checksum-verified, local-only export for one completed run."""
+    root = Path(settings.storage_root) if storage_root is None else storage_root
+    return await load_local_export_package(
+        session,
+        run=run,
+        storage_root=root,
     )
 
 
@@ -757,6 +839,26 @@ async def finalize_content_script_approval(
     storage_root: Path | None = None,
 ) -> bool:
     """Verify approval and report whether the durable dispatch must continue."""
+    root = Path(settings.storage_root) if storage_root is None else storage_root
+    if approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
+        return await finalize_thumbnail_approval(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
+    if approval.action == FINAL_REVIEW_APPROVAL_ACTION:
+        if _thumbnail_review_enabled():
+            await request_thumbnail_approval(
+                session,
+                final_review_approval=approval,
+                storage_root=root,
+            )
+            return False
+        return await finalize_final_video_approval(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
     if approval.action != CONTENT_SCRIPT_APPROVAL_ACTION:
         return False
     if ApprovalStatus(approval.status) is not ApprovalStatus.APPROVED:
@@ -886,6 +988,14 @@ def _assembly_enabled() -> bool:
     return _assembly_backend() != "disabled"
 
 
+def _final_review_enabled() -> bool:
+    return getattr(settings, "content_final_review_enabled", False) is True
+
+
+def _thumbnail_review_enabled() -> bool:
+    return getattr(settings, "content_thumbnail_review_enabled", False) is True
+
+
 def _ffmpeg_quality_test_config() -> FFmpegQualityTestConfig | None:
     if _assembly_backend() != "ffmpeg_quality_test":
         return None
@@ -908,6 +1018,10 @@ def _ffmpeg_quality_test_config() -> FFmpegQualityTestConfig | None:
 
 
 def _validate_pipeline_backend_dependencies() -> None:
+    if _thumbnail_review_enabled() and not _final_review_enabled():
+        raise ContentScriptRunNotRunnableError(
+            "A8 thumbnail review requires A7 final review"
+        )
     if (
         _visuals_enabled() or _captions_enabled() or _assembly_enabled()
     ) and not _tts_enabled():
@@ -946,10 +1060,44 @@ async def _load_completed_evidence(
     current = RunStatus(run.status)
     approval_status = ApprovalStatus(approval.status)
     if current is RunStatus.AWAITING_APPROVAL and approval_status is not ApprovalStatus.PENDING:
-        raise ContentScriptRunNotRunnableError("waiting A1 run has an invalid approval state")
+        waiting_on_final_review = (
+            approval_status is ApprovalStatus.APPROVED
+            and (
+                await _has_pending_gate(
+                    session,
+                    run=run,
+                    action=FINAL_REVIEW_APPROVAL_ACTION,
+                )
+                or await _has_pending_gate(
+                    session,
+                    run=run,
+                    action=THUMBNAIL_REVIEW_APPROVAL_ACTION,
+                )
+            )
+        )
+        if not waiting_on_final_review:
+            raise ContentScriptRunNotRunnableError(
+                "waiting A1 run has an invalid approval state"
+            )
     if current is RunStatus.SUCCEEDED and approval_status is not ApprovalStatus.APPROVED:
         raise ContentScriptRunNotRunnableError("completed A1 run was not approved")
     return step_run, artifact, approval
+
+
+async def _has_pending_gate(
+    session: AsyncSession,
+    *,
+    run: Run,
+    action: str,
+) -> bool:
+    pending = await session.scalar(
+        select(Approval.id).where(
+            Approval.run_id == run.id,
+            Approval.action == action,
+            Approval.status == ApprovalStatus.PENDING.value,
+        )
+    )
+    return pending is not None
 
 
 async def _load_script_evidence(

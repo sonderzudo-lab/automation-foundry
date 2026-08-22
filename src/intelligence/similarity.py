@@ -83,6 +83,7 @@ class SimilarityExecutionResult:
     reference_count: int
     blocked: bool
     replayed: bool
+    output_payload: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +134,7 @@ async def execute_similarity_gate_step(
     reference_limit: int,
     cpu_power_watts: int,
     timeout_seconds: float,
+    finalize_run: bool = True,
     sleep: Sleeper = asyncio.sleep,
 ) -> SimilarityExecutionResult:
     """Evaluate A6 and fail the run closed when similarity reaches the threshold."""
@@ -389,7 +391,7 @@ async def execute_similarity_gate_step(
             )
         return _result(run, step_run, None, replayed=task_result.replayed)
 
-    output_payload = {
+    output_payload: dict[str, object] = {
         "script_artifact_id": script_artifact.id,
         "script_approval_id": script_approval.id,
         "final_video_artifact_id": final_video_artifact.id,
@@ -419,7 +421,7 @@ async def execute_similarity_gate_step(
                 },
                 note="Content Engine A6 blocked a highly similar script; nothing published",
             )
-        else:
+        elif finalize_run:
             await transition_run(
                 session,
                 run,
@@ -437,6 +439,7 @@ async def execute_similarity_gate_step(
         reference_count=reference_count,
         blocked=blocked,
         replayed=task_result.replayed,
+        output_payload=output_payload,
     )
 
 

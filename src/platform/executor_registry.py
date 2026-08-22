@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.pipeline.a1_executor import (
     execute_content_script_run,
     finalize_content_script_approval,
-    load_content_script_review,
+    load_content_approval_review,
     parse_content_script_form,
     prepare_content_script_run,
 )
@@ -130,7 +130,7 @@ _EXECUTORS = {
         prepare=prepare_content_script_run,
         execute=execute_content_script_run,
         finalize_approval=finalize_content_script_approval,
-        load_approval_review=load_content_script_review,
+        load_approval_review=load_content_approval_review,
     ),
 }
 
@@ -153,6 +153,11 @@ def automation_supports_retry(slug: str) -> bool:
     """Report retry capability without treating an unknown slug as executable."""
     executor = _EXECUTORS.get(slug.strip())
     return bool(executor and executor.supports_retry)
+
+
+def automation_has_executor(slug: str) -> bool:
+    """Report whether a slug has an explicitly registered local executor."""
+    return slug.strip() in _EXECUTORS
 
 
 def parse_registered_manual_input(

@@ -95,6 +95,18 @@ class Settings(BaseSettings):
         "disabled",
         "approved_text_timing_quality_test",
     ] = "disabled"
+    # Diagnóstico local somente leitura do alinhamento A4. Ele mede a energia do
+    # WAV aprovado contra os eventos do ASS publicado; não bloqueia a run, não
+    # regenera legenda e não consulta nenhum serviço externo.
+    content_caption_alignment_min_speech_coverage: float = Field(
+        default=0.90, gt=0, le=1
+    )
+    content_caption_alignment_max_outside_speech: float = Field(
+        default=0.25, ge=0, le=1
+    )
+    content_caption_alignment_tolerance_seconds: float = Field(
+        default=0.50, gt=0, le=30
+    )
     # A5 aceita adapters injetados em testes; o build FFmpeg local ainda não foi auditado.
     content_assembly_backend: Literal["disabled", "ffmpeg_quality_test"] = "disabled"
     content_ffmpeg_path: str = Field(default="ffmpeg", min_length=1, max_length=1000)
@@ -104,6 +116,12 @@ class Settings(BaseSettings):
     # A6 usa comparação lexical determinística local; o escopo inicial é a automação.
     content_similarity_threshold: float = Field(default=0.85, gt=0, le=1)
     content_similarity_window: int = Field(default=20, ge=1, le=100)
+    # A7 é o gate humano do vídeo final. Ele não publica nada; aprovar apenas
+    # conclui a run local e registra a decisão ligada aos hashes das evidências.
+    content_final_review_enabled: bool = False
+    # A8 congela os PNGs A3 e exige a seleção humana de exatamente um deles.
+    # Só pode ser habilitado junto com A7 e também não publica nada.
+    content_thumbnail_review_enabled: bool = False
 
     # ── YouTube / Google APIs ─────────────────────────────────────────────────
 
@@ -233,6 +251,12 @@ class Settings(BaseSettings):
                 character not in "0123456789abcdef" for character in normalized
             ):
                 raise ValueError(f"{field} must pin one SHA-256 digest")
+        return self
+
+    @model_validator(mode="after")
+    def _thumbnail_review_requires_final_review(self) -> Settings:
+        if self.content_thumbnail_review_enabled and not self.content_final_review_enabled:
+            raise ValueError("A8 thumbnail review requires A7 final review")
         return self
 
     @property
