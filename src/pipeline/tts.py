@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.operations.retention_policy import resolve_retention_days
 from src.platform.artifact_service import register_local_artifact
 from src.platform.ledger_service import record_ledger_entry
 from src.platform.metric_service import record_metric_point
@@ -61,7 +62,7 @@ KOKORO_PT_BR_VOICE_SHA256_PREFIXES = {
 }
 KOKORO_SAMPLE_RATE_HZ = 24_000
 _SOURCE = "content-engine:a2"
-_RETENTION_DAYS = 90
+_RETENTION_DAYS = resolve_retention_days("narration_audio")
 _MAX_AUDIO_BYTES = 1024 * 1024 * 1024
 _MIN_SAMPLE_RATE = 8_000
 _MAX_SAMPLE_RATE = 96_000

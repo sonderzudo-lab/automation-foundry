@@ -20,6 +20,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from src.operations.retention_policy import resolve_retention_days
 from src.platform.alert_service import record_alert_occurrence
 from src.platform.approval_service import approval_payload_digest
 from src.platform.artifact_service import register_local_artifact
@@ -55,7 +56,7 @@ _SOURCE = "content-engine:a6"
 _ALGORITHM = "lexical-cosine-unigram+jaccard-trigram-v1"
 _REPORT_SCHEMA_VERSION = 1
 _MAX_SCRIPT_BYTES = 5 * 1024 * 1024
-_RETENTION_DAYS = 90
+_RETENTION_DAYS = resolve_retention_days("originality_report")
 _QUANTUM = Decimal("0.0000000001")
 _TOKEN_PATTERN = re.compile(r"[^\W_]+", re.UNICODE)
 

@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     database_command_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
     database_echo: bool = False
     storage_root: str = "./storage"
+    # Limite fail-closed do inventário de retenção. Um storage maior que isso
+    # interrompe a varredura em vez de produzir um resultado parcial.
+    retention_inventory_max_files: int = Field(default=200_000, ge=1, le=5_000_000)
+    retention_inventory_max_items: int = Field(default=200, ge=1, le=100_000)
+    # Único caminho do projeto que apaga dados do operador. Permanece desabilitado
+    # por default; mesmo habilitado exige approval humana, runtime parado e backup.
+    retention_purge_enabled: bool = False
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = Field(default=8000, ge=1, le=65535)
     health_probe_timeout_seconds: float = Field(default=1.5, gt=0, le=10)

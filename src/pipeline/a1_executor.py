@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import settings
 from src.intelligence.similarity import execute_similarity_gate_step
+from src.operations.retention_policy import resolve_retention_days
 from src.pipeline.assembly import (
     AssemblyAdapter,
     FFmpegQualityTestConfig,
@@ -79,7 +80,7 @@ from src.platform.task_runner import (
 
 _AUTOMATION_SLUG = "content-engine"
 _STEP_NAME = "generate-script-a1"
-_ARTIFACT_RETENTION_DAYS = 90
+_ARTIFACT_RETENTION_DAYS = resolve_retention_days("script_bundle")
 _SOURCE = "content-engine:a1"
 CONTENT_SCRIPT_APPROVAL_ACTION = "review_content_script_a1"
 _MAX_BUNDLE_BYTES = 5 * 1024 * 1024
@@ -298,12 +299,15 @@ async def execute_content_script_run(
         except (APITimeoutError, APIConnectionError, EmptyResponseError) as exc:
             raise RetryableTaskError("CONTENT_LLM_UNAVAILABLE") from exc
         _validate_script_result(generated)
-        _write_script_bundle(
-            artifact_path,
-            input_data=input_data,
-            result=generated,
-            model=settings.ollama_model,
-        )
+        try:
+            _write_script_bundle(
+                artifact_path,
+                input_data=input_data,
+                result=generated,
+                model=settings.ollama_model,
+            )
+        except OSError as exc:
+            raise RetryableTaskError("CONTENT_STORAGE_WRITE_FAILED") from exc
         return {
             "artifact_relative_path": artifact_path.relative_to(root.resolve()).as_posix(),
             "format": input_data.format,

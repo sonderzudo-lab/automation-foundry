@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.operations.retention_policy import resolve_retention_days
 from src.platform.approval_service import approval_payload_digest
 from src.platform.artifact_service import register_local_artifact
 from src.platform.ledger_service import record_ledger_entry
@@ -51,7 +52,7 @@ from src.platform.task_runner import (
 
 ASSEMBLY_STEP_NAME = "assemble-video-a5"
 _SOURCE = "content-engine:a5"
-_RETENTION_DAYS = 90
+_RETENTION_DAYS = resolve_retention_days("final_video")
 _MAX_MANIFEST_BYTES = 5 * 1024 * 1024
 _MAX_CAPTION_BYTES = 20 * 1024 * 1024
 _MAX_MP4_BYTES = 20 * 1024 * 1024 * 1024

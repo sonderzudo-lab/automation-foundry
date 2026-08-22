@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.operations.retention_policy import resolve_retention_days
 from src.platform.approval_service import approval_payload_digest
 from src.platform.artifact_service import register_local_artifact
 from src.platform.ledger_service import record_ledger_entry
@@ -52,7 +53,8 @@ from src.platform.task_runner import (
 
 VISUAL_STEP_NAME = "prepare-visuals-a3"
 _SOURCE = "content-engine:a3"
-_RETENTION_DAYS = 90
+_MANIFEST_RETENTION_DAYS = resolve_retention_days("visual_manifest")
+_IMAGE_RETENTION_DAYS = resolve_retention_days("visual_image")
 _SECONDS_PER_VISUAL = Decimal("6")
 _MAX_VISUALS = 60
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
@@ -463,7 +465,7 @@ async def execute_approved_visual_step(
                     media_type="application/json",
                     origin=_SOURCE,
                     sensitivity=ArtifactSensitivity.INTERNAL,
-                    retention_days=_RETENTION_DAYS,
+                    retention_days=_MANIFEST_RETENTION_DAYS,
                 )
             ).artifact
             asset_outputs = _asset_outputs(output)
@@ -487,7 +489,7 @@ async def execute_approved_visual_step(
                             media_type="image/png",
                             origin=_SOURCE,
                             sensitivity=ArtifactSensitivity.INTERNAL,
-                            retention_days=_RETENTION_DAYS,
+                            retention_days=_IMAGE_RETENTION_DAYS,
                             expected_sha256=_required_text(
                                 asset_output,
                                 "sha256",
