@@ -40,6 +40,13 @@ from src.pipeline.final_review import (
     request_final_video_approval,
 )
 from src.pipeline.local_export import LocalExportPackage, load_local_export_package
+from src.pipeline.narration_review import (
+    NARRATION_REVIEW_APPROVAL_ACTION,
+    NarrationReview,
+    finalize_narration_approval,
+    load_narration_review,
+    request_narration_approval,
+)
 from src.pipeline.script_gen import EmptyResponseError, ScriptResult, generate_script
 from src.pipeline.thumbnail_review import (
     THUMBNAIL_REVIEW_APPROVAL_ACTION,
@@ -508,7 +515,10 @@ async def execute_content_script_run(
                 float(settings.celery_soft_time_limit_seconds - 15),
             ),
             finalize_run=not (
-                _visuals_enabled() or _captions_enabled() or _assembly_enabled()
+                _narration_review_enabled()
+                or _visuals_enabled()
+                or _captions_enabled()
+                or _assembly_enabled()
             ),
         )
         visual_replayed = True
@@ -517,7 +527,11 @@ async def execute_content_script_run(
         similarity_replayed = True
         audio_artifact: Artifact | None = None
         if (
-            (_visuals_enabled() or _captions_enabled())
+            (
+                _narration_review_enabled()
+                or _visuals_enabled()
+                or _captions_enabled()
+            )
             and tts_result.artifact_id is not None
             and RunStatus(run.status) is RunStatus.RUNNING
         ):
@@ -526,6 +540,21 @@ async def execute_content_script_run(
                 raise ContentScriptRunNotRunnableError(
                     "completed A2 step is missing its audio artifact"
                 )
+        if (
+            _narration_review_enabled()
+            and audio_artifact is not None
+            and RunStatus(run.status) is RunStatus.RUNNING
+        ):
+            await request_narration_approval(
+                session,
+                run=run,
+                script_approval=approval,
+                script_approval_input_payload=approval_input,
+                script_artifact=artifact,
+                audio_artifact=audio_artifact,
+                idempotency_key=idempotency_key,
+                storage_root=root,
+            )
         visual_result = None
         if (
             _visuals_enabled()
@@ -752,9 +781,15 @@ async def load_content_approval_review(
     *,
     approval: Approval,
     storage_root: Path | None = None,
-) -> ContentScriptReview | FinalVideoReview | ThumbnailReview:
+) -> ContentScriptReview | NarrationReview | FinalVideoReview | ThumbnailReview:
     """Route one Content Engine approval to its own verified review projection."""
     root = Path(settings.storage_root) if storage_root is None else storage_root
+    if approval.action == NARRATION_REVIEW_APPROVAL_ACTION:
+        return await load_narration_review(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
     if approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
         return await load_thumbnail_review(
             session,
@@ -840,6 +875,12 @@ async def finalize_content_script_approval(
 ) -> bool:
     """Verify approval and report whether the durable dispatch must continue."""
     root = Path(settings.storage_root) if storage_root is None else storage_root
+    if approval.action == NARRATION_REVIEW_APPROVAL_ACTION:
+        return await finalize_narration_approval(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
     if approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
         return await finalize_thumbnail_approval(
             session,
@@ -939,6 +980,10 @@ def _tts_enabled() -> bool:
     return _tts_backend() != "disabled"
 
 
+def _narration_review_enabled() -> bool:
+    return getattr(settings, "content_narration_review_enabled", False) is True
+
+
 def _tts_voice_id() -> str:
     value = getattr(settings, "content_tts_voice_id", "pf_dora")
     return value if isinstance(value, str) else "pf_dora"
@@ -1023,10 +1068,17 @@ def _validate_pipeline_backend_dependencies() -> None:
             "A8 thumbnail review requires A7 final review"
         )
     if (
-        _visuals_enabled() or _captions_enabled() or _assembly_enabled()
+        _narration_review_enabled()
+        or _visuals_enabled()
+        or _captions_enabled()
+        or _assembly_enabled()
     ) and not _tts_enabled():
         raise ContentScriptRunNotRunnableError(
             "audiovisual continuation requires A2 TTS"
+        )
+    if _narration_review_enabled() and not _visuals_enabled():
+        raise ContentScriptRunNotRunnableError(
+            "A2 narration review requires A3 visual continuation"
         )
     if _assembly_enabled() and not (_visuals_enabled() and _captions_enabled()):
         raise ContentScriptRunNotRunnableError(
@@ -1060,10 +1112,15 @@ async def _load_completed_evidence(
     current = RunStatus(run.status)
     approval_status = ApprovalStatus(approval.status)
     if current is RunStatus.AWAITING_APPROVAL and approval_status is not ApprovalStatus.PENDING:
-        waiting_on_final_review = (
+        waiting_on_later_review = (
             approval_status is ApprovalStatus.APPROVED
             and (
                 await _has_pending_gate(
+                    session,
+                    run=run,
+                    action=NARRATION_REVIEW_APPROVAL_ACTION,
+                )
+                or await _has_pending_gate(
                     session,
                     run=run,
                     action=FINAL_REVIEW_APPROVAL_ACTION,
@@ -1075,7 +1132,7 @@ async def _load_completed_evidence(
                 )
             )
         )
-        if not waiting_on_final_review:
+        if not waiting_on_later_review:
             raise ContentScriptRunNotRunnableError(
                 "waiting A1 run has an invalid approval state"
             )

@@ -351,7 +351,9 @@ async def test_a1_explicit_retry_creates_a_new_run_with_same_validated_input(
 async def test_a1_approval_reviews_exact_bundle_and_finalizes_idempotently(
     session: AsyncSession,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(a1_executor.settings, "content_tts_backend", "disabled")
     result = await execute_content_script_run(
         session,
         idempotency_key="content-a1-approved",

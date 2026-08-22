@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     content_tts_backend: Literal["disabled", "kokoro_quality_test"] = "disabled"
     content_tts_voice_id: str = Field(default="pf_dora", min_length=1, max_length=100)
     content_tts_language_code: str = Field(default="p", min_length=1, max_length=20)
+    # Quando habilitado, A2 pausa para audição humana antes de A3/A4/A5.
+    content_narration_review_enabled: bool = False
     # FLUX.1 permanece bloqueado. O único modo opt-in importa PNGs escolhidos
     # pelo operador e exige manifesto de direitos + SHA-256 por arquivo.
     content_visual_backend: Literal["disabled", "local_assets_quality_test"] = (
@@ -236,6 +238,16 @@ class Settings(BaseSettings):
             raise ValueError("Kokoro quality test requires language code 'p'")
         if self.content_tts_voice_id not in {"pf_dora", "pm_alex", "pm_santa"}:
             raise ValueError("Kokoro quality test requires an audited PT-BR voice ID")
+        return self
+
+    @model_validator(mode="after")
+    def _narration_review_requires_tts(self) -> Settings:
+        if not self.content_narration_review_enabled:
+            return self
+        if self.content_tts_backend == "disabled":
+            raise ValueError("A2 narration review requires an enabled TTS backend")
+        if self.content_visual_backend == "disabled":
+            raise ValueError("A2 narration review requires A3 visual continuation")
         return self
 
     @model_validator(mode="after")

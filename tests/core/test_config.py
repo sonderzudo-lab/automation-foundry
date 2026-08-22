@@ -20,6 +20,7 @@ def test_defaults_use_automation_foundry_identity_and_loopback(
         "REDDIT_USER_AGENT",
         "REDIS_URL",
         "CONTENT_TTS_BACKEND",
+        "CONTENT_NARRATION_REVIEW_ENABLED",
         "CONTENT_VISUAL_BACKEND",
         "CONTENT_VISUAL_IMPORT_ROOT",
         "CONTENT_VISUAL_MANIFEST_PATH",
@@ -46,6 +47,7 @@ def test_defaults_use_automation_foundry_identity_and_loopback(
     assert settings.redis_url == "redis://127.0.0.1:6379/0"
     assert settings.content_tts_backend == "disabled"
     assert settings.content_tts_voice_id == "pf_dora"
+    assert settings.content_narration_review_enabled is False
     assert settings.content_visual_backend == "disabled"
     assert settings.content_visual_import_root == "./imports/content-visuals"
     assert settings.content_visual_manifest_path == "manifest.json"
@@ -81,6 +83,32 @@ def test_thumbnail_review_requires_final_review() -> None:
 def test_tts_backend_rejects_unscoped_kokoro_mode() -> None:
     with pytest.raises(ValidationError, match="content_tts_backend"):
         Settings(_env_file=None, content_tts_backend="kokoro")
+
+
+def test_narration_review_requires_enabled_tts() -> None:
+    with pytest.raises(ValidationError, match="narration review requires"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="disabled",
+            content_narration_review_enabled=True,
+        )
+
+    settings = Settings(
+        _env_file=None,
+        content_tts_backend="kokoro_quality_test",
+        content_tts_voice_id="pm_alex",
+        content_visual_backend="local_assets_quality_test",
+        content_narration_review_enabled=True,
+    )
+    assert settings.content_narration_review_enabled is True
+
+    with pytest.raises(ValidationError, match="requires A3"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="kokoro_quality_test",
+            content_tts_voice_id="pm_alex",
+            content_narration_review_enabled=True,
+        )
 
 
 def test_tts_quality_test_accepts_only_reviewed_pt_br_profiles() -> None:

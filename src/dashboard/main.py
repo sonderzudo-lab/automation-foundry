@@ -48,6 +48,7 @@ from src.pipeline.local_export import (
     LocalExportNotAvailableError,
     LocalExportPackage,
 )
+from src.pipeline.narration_review import NarrationReview
 from src.pipeline.thumbnail_review import (
     THUMBNAIL_REVIEW_APPROVAL_ACTION,
     ThumbnailReview,
@@ -92,6 +93,7 @@ from src.platform.schedule_service import (
 
 _REVIEW_TEMPLATES: dict[type, str] = {
     ContentScriptReview: "content_script_review.html",
+    NarrationReview: "content_narration_review.html",
     FinalVideoReview: "content_final_video_review.html",
     ThumbnailReview: "content_thumbnail_review.html",
 }
@@ -412,6 +414,40 @@ def create_app(
                 "Cache-Control": "no-store",
                 "Content-Disposition": (
                     f'inline; filename="run-{review.run_id}-final-video.mp4"'
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @application.get("/approvals/{approval_id}/narration-audio")
+    async def approval_narration_audio(
+        approval_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> FileResponse:
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        try:
+            review = await load_registered_approval_review(
+                session,
+                approval=approval,
+            )
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="approval has no audio") from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="approval review evidence is unavailable",
+            ) from exc
+        if not isinstance(review, NarrationReview):
+            raise HTTPException(status_code=404, detail="approval has no audio")
+        return FileResponse(
+            review.audio_path,
+            media_type="audio/wav",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": (
+                    f'inline; filename="run-{review.run_id}-narration.wav"'
                 ),
                 "X-Content-Type-Options": "nosniff",
             },

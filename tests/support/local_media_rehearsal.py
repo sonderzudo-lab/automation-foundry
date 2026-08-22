@@ -145,6 +145,7 @@ def rehearsal_settings(
     ffprobe_path: str = "ffprobe",
     ffmpeg_sha256: str | None = None,
     ffprobe_sha256: str | None = None,
+    narration_review_enabled: bool = False,
     final_review_enabled: bool = False,
     thumbnail_review_enabled: bool = False,
 ) -> SimpleNamespace:
@@ -156,6 +157,7 @@ def rehearsal_settings(
         content_tts_backend=REHEARSAL_TTS_BACKEND,
         content_tts_voice_id=REHEARSAL_VOICE_ID,
         content_tts_language_code=REHEARSAL_LANGUAGE_CODE,
+        content_narration_review_enabled=narration_review_enabled,
         content_visual_backend="local_assets_quality_test",
         content_visual_import_root=str(import_root),
         content_visual_manifest_path=manifest_name,

@@ -46,6 +46,7 @@ from src.pipeline import (
 )
 from src.pipeline.a1_executor import execute_content_script_run
 from src.pipeline.final_review import FINAL_REVIEW_APPROVAL_ACTION, FinalVideoReview
+from src.pipeline.narration_review import NARRATION_REVIEW_APPROVAL_ACTION
 from src.pipeline.script_gen import ScriptResult
 from src.pipeline.thumbnail_review import THUMBNAIL_REVIEW_APPROVAL_ACTION
 from src.platform.approval_service import decide_approval
@@ -1475,9 +1476,9 @@ async def test_dashboard_home_renders_redacted_state_and_safe_controls(
     application_routes = [
         route for route in application.routes if isinstance(route, APIRoute)
     ]
-    assert len(application_routes) == 21
+    assert len(application_routes) == 22
     route_methods = [route.methods for route in application_routes]
-    assert route_methods.count({"GET"}) == 13
+    assert route_methods.count({"GET"}) == 14
     assert route_methods.count({"POST"}) == 8
 
 
@@ -3347,6 +3348,125 @@ async def test_dashboard_final_video_review_page_serves_verified_evidence(
     ) as client:
         tampered_review = await client.get(f"/approvals/{final_approval_id}/review")
         tampered_media = await client.get(f"/approvals/{final_approval_id}/final-video")
+
+    assert tampered_review.status_code == 409
+    assert tampered_media.status_code == 409
+
+
+async def test_dashboard_narration_review_streams_only_verified_audio(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage_root = tmp_path / "storage"
+    import_root = tmp_path / "imports" / "content-visuals"
+    write_synthetic_visual_import(
+        import_root,
+        count=expected_visual_count(),
+        width=1080,
+        height=1920,
+    )
+    configured = rehearsal_settings(
+        storage_root,
+        import_root=import_root,
+        narration_review_enabled=True,
+    )
+    configured.content_caption_backend = "disabled"
+    configured.content_assembly_backend = "disabled"
+    monkeypatch.setattr(a1_executor, "settings", configured)
+
+    async with session_factory() as session:
+        first = await execute_content_script_run(
+            session,
+            idempotency_key="dashboard-content-a2-page",
+            input_payload=rehearsal_input_payload(),
+            script_generator=lambda *_args: rehearsal_script(),
+            storage_root=storage_root,
+        )
+        script_approval = await session.get(Approval, first.approval_id)
+        assert script_approval is not None
+        script_approval_id = script_approval.id
+        await decide_approval(
+            session,
+            approval=script_approval,
+            decision=ApprovalStatus.APPROVED,
+            actor="local-owner",
+            reason="roteiro integral revisado",
+        )
+        gated = await execute_content_script_run(
+            session,
+            idempotency_key="dashboard-content-a2-page",
+            input_payload=rehearsal_input_payload(),
+            tts_synthesizer=write_synthetic_narration_wav,
+            storage_root=storage_root,
+        )
+        narration_approval = await session.scalar(
+            select(Approval).where(
+                Approval.run_id == gated.run_id,
+                Approval.action == NARRATION_REVIEW_APPROVAL_ACTION,
+            )
+        )
+        audio = await session.scalar(
+            select(Artifact).where(
+                Artifact.run_id == gated.run_id,
+                Artifact.artifact_type == "narration_audio",
+            )
+        )
+        assert narration_approval is not None and audio is not None
+        narration_approval_id = narration_approval.id
+        audio_path = storage_root / audio.relative_path
+        audio_sha256 = audio.sha256
+        await session.commit()
+
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        home = await client.get("/")
+        review = await client.get(f"/approvals/{narration_approval_id}/review")
+        media = await client.get(
+            f"/approvals/{narration_approval_id}/narration-audio"
+        )
+        wrong_gate = await client.get(
+            f"/approvals/{script_approval_id}/narration-audio"
+        )
+
+    assert home.status_code == 200
+    assert (
+        f'href="/approvals/{narration_approval_id}/review">'
+        f"{NARRATION_REVIEW_APPROVAL_ACTION}</a>"
+    ) in home.text
+    assert review.status_code == 200
+    assert review.headers["cache-control"] == "no-store"
+    assert audio_sha256 in review.text
+    assert f">{expected_visual_count()} PNGs<" in review.text
+    assert "1080x1920" in review.text
+    assert str(storage_root) not in review.text
+    assert media.status_code == 200
+    assert media.headers["content-type"] == "audio/wav"
+    assert media.headers["cache-control"] == "no-store"
+    assert media.headers["x-content-type-options"] == "nosniff"
+    assert media.content == audio_path.read_bytes()
+    assert wrong_gate.status_code == 404
+
+    audio_path.write_bytes(audio_path.read_bytes() + b"tampered")
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        tampered_review = await client.get(
+            f"/approvals/{narration_approval_id}/review"
+        )
+        tampered_media = await client.get(
+            f"/approvals/{narration_approval_id}/narration-audio"
+        )
 
     assert tampered_review.status_code == 409
     assert tampered_media.status_code == 409
