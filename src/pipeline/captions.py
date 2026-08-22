@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
+import importlib.metadata
 import os
 import re
 import time
@@ -13,7 +15,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +52,28 @@ from src.platform.task_runner import (
 )
 
 CAPTION_STEP_NAME = "generate-captions-a4"
+FASTER_WHISPER_QUALITY_TEST_BACKEND = "faster_whisper_small_quality_test"
+FASTER_WHISPER_PACKAGE_VERSION = "1.2.1"
+CTRANSLATE2_PACKAGE_VERSION = "4.8.1"
+FASTER_WHISPER_MODEL_REPOSITORY = "Systran/faster-whisper-small"
+FASTER_WHISPER_MODEL_REVISION = "536b0662742c02347bc0e980a01041f333bce120"
+FASTER_WHISPER_MODEL_SHA256 = (
+    "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671"
+)
+_FASTER_WHISPER_SNAPSHOT_FILES = {
+    "config.json": (2370, "git-sha1", "e5047537059bd8f182d9ca64c470201585015187"),
+    "model.bin": (483_546_902, "sha256", FASTER_WHISPER_MODEL_SHA256),
+    "tokenizer.json": (
+        2_203_239,
+        "git-sha1",
+        "7818adb6de9fa3064d3ff81226fdd675be1f6344",
+    ),
+    "vocabulary.txt": (
+        459_861,
+        "git-sha1",
+        "c9074644d9d1205686f16d411564729461324b75",
+    ),
+}
 _SOURCE = "content-engine:a4"
 _RETENTION_DAYS = resolve_retention_days("caption_ass")
 _MAX_WORDS = 10_000
@@ -56,6 +82,7 @@ _MAX_AUDIO_SECONDS = Decimal(6 * 60 * 60)
 _TIMING_TOLERANCE_SECONDS = Decimal("0.25")
 _MIN_TRANSCRIPT_MATCH = Decimal("0.85")
 _MATCH_QUANTUM = Decimal("0.0000000001")
+_MIN_REPAIRED_WORD_SECONDS = Decimal("0.02")
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+", re.ASCII)
 
 
@@ -93,6 +120,13 @@ CaptionAdapter = Callable[[Path, str], CaptionAdapterResult]
 
 
 @dataclass(frozen=True, slots=True)
+class FasterWhisperQualityTestConfig:
+    """Pinned local snapshot accepted by the audio-aware A4 quality backend."""
+
+    model_path: Path
+
+
+@dataclass(frozen=True, slots=True)
 class CaptionExecutionResult:
     """Observable identifiers produced by the A4 step."""
 
@@ -118,10 +152,16 @@ class _CaptionBundle:
     inference_seconds: Decimal
 
 
+@dataclass(frozen=True, slots=True)
+class _FasterWhisperRuntime:
+    model: Any
+
+
 def get_configured_caption_adapter(
     backend: str,
     *,
     narration: str | None = None,
+    faster_whisper_config: FasterWhisperQualityTestConfig | None = None,
 ) -> CaptionAdapter:
     """Return the selected caption adapter or fail closed."""
     normalized = backend.strip().casefold()
@@ -129,6 +169,17 @@ def get_configured_caption_adapter(
         if narration is None or not narration.strip():
             raise CaptionPermanentAdapterError("CONTENT_CAPTIONS_NARRATION_REQUIRED")
         return build_approved_text_timing_adapter(narration)
+    if normalized == FASTER_WHISPER_QUALITY_TEST_BACKEND:
+        if narration is None or not narration.strip():
+            raise CaptionPermanentAdapterError("CONTENT_CAPTIONS_NARRATION_REQUIRED")
+        if faster_whisper_config is None:
+            raise CaptionPermanentAdapterError(
+                "CONTENT_CAPTIONS_FASTER_WHISPER_MODEL_PATH_REQUIRED"
+            )
+        return build_faster_whisper_quality_test_adapter(
+            narration,
+            faster_whisper_config,
+        )
 
     def unavailable(_audio_path: Path, _language_code: str) -> CaptionAdapterResult:
         code = (
@@ -139,6 +190,222 @@ def get_configured_caption_adapter(
         raise CaptionPermanentAdapterError(code)
 
     return unavailable
+
+
+def build_faster_whisper_quality_test_adapter(
+    narration: str,
+    config: FasterWhisperQualityTestConfig,
+) -> CaptionAdapter:
+    """Transcribe a verified local WAV with pinned audio-aware word timestamps."""
+    approved_narration = narration.strip()
+    if not approved_narration:
+        raise CaptionPermanentAdapterError("CONTENT_CAPTIONS_NARRATION_REQUIRED")
+    model_path = _verified_faster_whisper_snapshot(config.model_path)
+
+    def transcribe(audio_path: Path, language_code: str) -> CaptionAdapterResult:
+        if language_code.strip().casefold() != "pt":
+            raise CaptionPermanentAdapterError("CONTENT_CAPTIONS_LANGUAGE_MISMATCH")
+        _adapter_wav_duration(audio_path)
+        runtime = _load_faster_whisper_runtime(str(model_path))
+        try:
+            segments, info = runtime.model.transcribe(
+                str(audio_path.resolve(strict=True)),
+                language="pt",
+                task="transcribe",
+                beam_size=5,
+                word_timestamps=True,
+                vad_filter=True,
+                condition_on_previous_text=False,
+                initial_prompt=approved_narration,
+            )
+            words = _faster_whisper_words(segments)
+        except (CaptionPermanentAdapterError, CaptionRetryableAdapterError):
+            raise
+        except Exception as exc:
+            raise CaptionRetryableAdapterError(
+                "CONTENT_CAPTIONS_FASTER_WHISPER_INFERENCE_FAILED"
+            ) from exc
+        detected_language = str(getattr(info, "language", "")).strip().casefold()
+        if detected_language and detected_language != "pt":
+            raise CaptionPermanentAdapterError(
+                "CONTENT_CAPTIONS_FASTER_WHISPER_LANGUAGE_MISMATCH"
+            )
+        return CaptionAdapterResult(
+            backend=FASTER_WHISPER_QUALITY_TEST_BACKEND,
+            provider="SYSTRAN/faster-whisper",
+            model_id=(
+                f"{FASTER_WHISPER_MODEL_REPOSITORY}@{FASTER_WHISPER_MODEL_REVISION}"
+                f"#model.bin-sha256:{FASTER_WHISPER_MODEL_SHA256}"
+            ),
+            language_code="pt",
+            license_id="MIT; weights=MIT; scope=local-quality-test; human-review-required",
+            commercial_use=True,
+            words=words,
+        )
+
+    return transcribe
+
+
+def _faster_whisper_words(segments: Any) -> tuple[CaptionWord, ...]:
+    raw_words: list[tuple[str, Decimal, Decimal]] = []
+    for segment in segments:
+        segment_words = getattr(segment, "words", None)
+        if segment_words is None:
+            raise CaptionPermanentAdapterError(
+                "CONTENT_CAPTIONS_FASTER_WHISPER_WORD_TIMESTAMPS_MISSING"
+            )
+        for word in segment_words:
+            raw_text = getattr(word, "word", None)
+            if not isinstance(raw_text, str):
+                raise CaptionPermanentAdapterError(
+                    "CONTENT_CAPTIONS_FASTER_WHISPER_INVALID_WORD"
+                )
+            text = raw_text.strip()
+            try:
+                start = Decimal(str(word.start)).quantize(_MATCH_QUANTUM)
+                end = Decimal(str(word.end)).quantize(_MATCH_QUANTUM)
+            except (AttributeError, InvalidOperation, TypeError, ValueError) as exc:
+                raise CaptionPermanentAdapterError(
+                    "CONTENT_CAPTIONS_FASTER_WHISPER_INVALID_WORD"
+                ) from exc
+            if not start.is_finite() or not end.is_finite() or start < 0 or end < 0:
+                raise CaptionPermanentAdapterError(
+                    "CONTENT_CAPTIONS_FASTER_WHISPER_INVALID_WORD"
+                )
+            raw_words.append((text, start, end))
+            if len(raw_words) > _MAX_WORDS:
+                raise CaptionPermanentAdapterError(
+                    "CONTENT_CAPTIONS_INVALID_WORD_COUNT"
+                )
+    if not raw_words:
+        raise CaptionPermanentAdapterError("CONTENT_CAPTIONS_EMPTY_TRANSCRIPT")
+
+    words: list[CaptionWord] = []
+    prior_end = Decimal("0")
+    for index, (text, raw_start, raw_end) in enumerate(raw_words):
+        start = max(raw_start, prior_end)
+        end = raw_end
+        if end <= start:
+            future_end = next(
+                (
+                    candidate_end
+                    for _, _, candidate_end in raw_words[index + 1 :]
+                    if candidate_end > start
+                ),
+                None,
+            )
+            if future_end is None:
+                raise CaptionPermanentAdapterError(
+                    "CONTENT_CAPTIONS_FASTER_WHISPER_INVALID_WORD"
+                )
+            end = start + min(
+                _MIN_REPAIRED_WORD_SECONDS,
+                (future_end - start) / Decimal(2),
+            )
+        words.append(
+            CaptionWord(
+                text=text,
+                start_seconds=start,
+                end_seconds=end,
+            )
+        )
+        prior_end = end
+    return tuple(words)
+
+
+@lru_cache(maxsize=2)
+def _load_faster_whisper_runtime(model_path: str) -> _FasterWhisperRuntime:
+    try:
+        faster_whisper_version = importlib.metadata.version("faster-whisper")
+        ctranslate2_version = importlib.metadata.version("ctranslate2")
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise CaptionPermanentAdapterError(
+            "CONTENT_CAPTIONS_FASTER_WHISPER_NOT_INSTALLED"
+        ) from exc
+    if faster_whisper_version != FASTER_WHISPER_PACKAGE_VERSION:
+        raise CaptionPermanentAdapterError(
+            "CONTENT_CAPTIONS_FASTER_WHISPER_VERSION_MISMATCH"
+        )
+    if ctranslate2_version != CTRANSLATE2_PACKAGE_VERSION:
+        raise CaptionPermanentAdapterError(
+            "CONTENT_CAPTIONS_CTRANSLATE2_VERSION_MISMATCH"
+        )
+    try:
+        faster_whisper = importlib.import_module("faster_whisper")
+        ctranslate2 = importlib.import_module("ctranslate2")
+    except ImportError as exc:
+        raise CaptionPermanentAdapterError(
+            "CONTENT_CAPTIONS_FASTER_WHISPER_DEPENDENCY_MISSING"
+        ) from exc
+    try:
+        cuda_device_count = int(ctranslate2.get_cuda_device_count())
+    except Exception as exc:
+        raise CaptionPermanentAdapterError(
+            "CONTENT_CAPTIONS_FASTER_WHISPER_CUDA_UNAVAILABLE"
+        ) from exc
+    if cuda_device_count < 1:
+        raise CaptionPermanentAdapterError(
+            "CONTENT_CAPTIONS_FASTER_WHISPER_CUDA_REQUIRED"
+        )
+    try:
+        model = faster_whisper.WhisperModel(
+            model_path,
+            device="cuda",
+            device_index=0,
+            compute_type="float16",
+            local_files_only=True,
+        )
+    except Exception as exc:
+        raise CaptionRetryableAdapterError(
+            "CONTENT_CAPTIONS_FASTER_WHISPER_INITIALIZATION_FAILED"
+        ) from exc
+    return _FasterWhisperRuntime(model=model)
+
+
+def _verified_faster_whisper_snapshot(model_path: Path) -> Path:
+    try:
+        resolved = model_path.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise CaptionPermanentAdapterError(
+            "CONTENT_CAPTIONS_FASTER_WHISPER_MODEL_UNAVAILABLE"
+        ) from exc
+    if not resolved.is_dir():
+        raise CaptionPermanentAdapterError(
+            "CONTENT_CAPTIONS_FASTER_WHISPER_MODEL_UNAVAILABLE"
+        )
+    for name, (expected_size, algorithm, expected_digest) in (
+        _FASTER_WHISPER_SNAPSHOT_FILES.items()
+    ):
+        candidate = resolved / name
+        try:
+            if not candidate.is_file() or candidate.stat().st_size != expected_size:
+                raise CaptionPermanentAdapterError(
+                    "CONTENT_CAPTIONS_FASTER_WHISPER_MODEL_DIGEST_MISMATCH"
+                )
+            actual_digest = (
+                _sha256_file(candidate)
+                if algorithm == "sha256"
+                else _git_blob_sha1_file(candidate)
+            )
+        except OSError as exc:
+            raise CaptionPermanentAdapterError(
+                "CONTENT_CAPTIONS_FASTER_WHISPER_MODEL_UNAVAILABLE"
+            ) from exc
+        if actual_digest != expected_digest:
+            raise CaptionPermanentAdapterError(
+                "CONTENT_CAPTIONS_FASTER_WHISPER_MODEL_DIGEST_MISMATCH"
+            )
+    return resolved
+
+
+def _git_blob_sha1_file(path: Path) -> str:
+    size = path.stat().st_size
+    digest = hashlib.sha1(usedforsecurity=False)
+    digest.update(f"blob {size}\0".encode())
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def build_approved_text_timing_adapter(narration: str) -> CaptionAdapter:

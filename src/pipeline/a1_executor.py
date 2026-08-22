@@ -30,7 +30,9 @@ from src.pipeline.assembly import (
 from src.pipeline.caption_alignment import build_alignment_parameters
 from src.pipeline.caption_alignment_gate import execute_caption_alignment_gate_step
 from src.pipeline.captions import (
+    FASTER_WHISPER_QUALITY_TEST_BACKEND,
     CaptionAdapter,
+    FasterWhisperQualityTestConfig,
     execute_approved_caption_step,
     get_configured_caption_adapter,
 )
@@ -626,6 +628,7 @@ async def execute_content_script_run(
                     or get_configured_caption_adapter(
                         _captions_backend(),
                         narration=bundle.narration,
+                        faster_whisper_config=_faster_whisper_quality_test_config(),
                     )
                 ),
                 language_code="pt",
@@ -1040,6 +1043,17 @@ def _captions_queue() -> QueueClass:
     if _captions_backend() == "approved_text_timing_quality_test":
         return QueueClass.CPU
     return QueueClass.GPU
+
+
+def _faster_whisper_quality_test_config() -> FasterWhisperQualityTestConfig | None:
+    if _captions_backend() != FASTER_WHISPER_QUALITY_TEST_BACKEND:
+        return None
+    model_path = getattr(settings, "content_caption_model_path", None)
+    if not isinstance(model_path, str) or not model_path.strip():
+        raise ContentScriptRunNotRunnableError(
+            "faster-whisper quality test requires a local model path"
+        )
+    return FasterWhisperQualityTestConfig(model_path=Path(model_path))
 
 
 def _assembly_backend() -> str:

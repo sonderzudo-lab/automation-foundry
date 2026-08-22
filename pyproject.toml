@@ -41,7 +41,8 @@ dependencies = [
 ai = [
     # openai já está em dependencies (core) — cliente do Ollama
     "kokoro==0.9.4",                 # adapter PT-BR somente para quality test local
-    "faster-whisper>=1.0",           # candidato A4; nenhum peso/backend aprovado
+    "faster-whisper==1.2.1",         # adapter A4 local com timestamps por palavra
+    "ctranslate2==4.8.1",            # runtime CUDA fixado do faster-whisper
     "sentence-transformers>=3.0",    # embeddings locais (similaridade D3)
     "diffusers>=0.30,<0.40",         # piso da FluxPipeline; nenhum backend visual aprovado
     "transformers>=4.41",            # backbone dos modelos HuggingFace

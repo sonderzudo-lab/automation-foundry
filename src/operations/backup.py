@@ -768,6 +768,7 @@ def _safe_configuration(configuration: Settings) -> dict[str, Any]:
         },
         "content_captions": {
             "backend": configuration.content_caption_backend,
+            "model_snapshot_configured": bool(configuration.content_caption_model_path),
             "alignment_gate_enabled": (
                 configuration.content_caption_alignment_gate_enabled
             ),

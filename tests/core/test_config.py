@@ -53,6 +53,7 @@ def test_defaults_use_automation_foundry_identity_and_loopback(
     assert settings.content_visual_import_root == "./imports/content-visuals"
     assert settings.content_visual_manifest_path == "manifest.json"
     assert settings.content_caption_backend == "disabled"
+    assert settings.content_caption_model_path is None
     assert settings.content_caption_alignment_gate_enabled is False
     assert settings.content_caption_alignment_min_speech_coverage == 0.90
     assert settings.content_caption_alignment_max_outside_speech == 0.25
@@ -164,6 +165,21 @@ def test_local_visual_asset_quality_test_is_explicitly_selectable() -> None:
 def test_caption_backend_remains_fail_closed_until_model_audit() -> None:
     with pytest.raises(ValidationError, match="content_caption_backend"):
         Settings(_env_file=None, content_caption_backend="faster_whisper")
+
+
+def test_faster_whisper_quality_test_requires_explicit_local_snapshot() -> None:
+    with pytest.raises(ValidationError, match="local model path"):
+        Settings(
+            _env_file=None,
+            content_caption_backend="faster_whisper_small_quality_test",
+        )
+
+    settings = Settings(
+        _env_file=None,
+        content_caption_backend="faster_whisper_small_quality_test",
+        content_caption_model_path="./storage/models/faster-whisper-small",
+    )
+    assert settings.content_caption_model_path.endswith("faster-whisper-small")
 
 
 def test_approved_text_timing_quality_test_is_explicitly_selectable() -> None:

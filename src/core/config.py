@@ -92,11 +92,14 @@ class Settings(BaseSettings):
         min_length=1,
         max_length=1000,
     )
-    # O modo opt-in estima timings a partir do texto aprovado; não transcreve o áudio.
+    # Os modos opt-in A4 continuam locais. O backend faster-whisper exige um
+    # snapshot fixado já presente no disco e nunca baixa pesos no runtime.
     content_caption_backend: Literal[
         "disabled",
         "approved_text_timing_quality_test",
+        "faster_whisper_small_quality_test",
     ] = "disabled"
+    content_caption_model_path: str | None = Field(default=None, max_length=1000)
     # Diagnóstico local somente leitura do alinhamento A4. Ele mede a energia do
     # WAV aprovado contra os eventos do ASS publicado e não regenera legenda.
     # O gate opcional executa esse diagnóstico antes de A7 e bloqueia warning.
@@ -264,6 +267,17 @@ class Settings(BaseSettings):
                 character not in "0123456789abcdef" for character in normalized
             ):
                 raise ValueError(f"{field} must pin one SHA-256 digest")
+        return self
+
+    @model_validator(mode="after")
+    def _faster_whisper_quality_test_requires_local_snapshot(self) -> Settings:
+        if self.content_caption_backend != "faster_whisper_small_quality_test":
+            return self
+        if (
+            not isinstance(self.content_caption_model_path, str)
+            or not self.content_caption_model_path.strip()
+        ):
+            raise ValueError("faster-whisper quality test requires a local model path")
         return self
 
     @model_validator(mode="after")
