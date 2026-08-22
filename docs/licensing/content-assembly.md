@@ -72,6 +72,11 @@ Antes de adicionar qualquer valor além de `disabled` em `Settings`:
   AAC, duração conferida por ffprobe e legenda ASS visualmente confirmada em
   frame extraído. A amostra usa áudio silencioso e imagem sintética de teste;
   não valida qualidade editorial, sincronismo de narração real ou vídeo long.
+- Ensaio encadeado: `tests/integration/test_local_media_rehearsal.py` executa a
+  mesma configuração dentro da cadeia A1→A6, com o manifesto A3 real e o timing
+  A4 real, e produziu um MP4 de 12 s com dois visuais e legenda queimada. A
+  mídia continua sintética e declarada; ver
+  [`content-rehearsal-fixtures.md`](content-rehearsal-fixtures.md).
 
 As páginas oficiais do FFmpeg explicam que componentes opcionais GPL tornam o
 build GPL; a página da distribuição Gyan declara seus builds estáticos como

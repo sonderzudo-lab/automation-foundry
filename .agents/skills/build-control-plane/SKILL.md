@@ -33,6 +33,7 @@ Keep generic concepts in the platform layer:
 - Approval
 - Artifact
 - Schedule
+- ConnectorObservation
 - MetricPoint
 - Experiment
 - LedgerEntry
