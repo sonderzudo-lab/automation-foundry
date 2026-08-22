@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
+from alembic.util import CommandError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from alembic import command
+from src.dashboard.service import load_connector_summaries
+from src.platform.connector_service import record_connector_observation
+from src.platform.models import (
+    Automation,
+    ConnectorObservation,
+    ConnectorStatus,
+    DataQualityStatus,
+)
 
 
 def test_upgrade_head_creates_platform_and_content_engine_tables(tmp_path: Path) -> None:
@@ -38,6 +53,7 @@ def test_upgrade_head_creates_platform_and_content_engine_tables(tmp_path: Path)
         "approvals",
         "automations",
         "channels",
+        "connector_observations",
         "control_events",
         "costs",
         "experiment_events",
@@ -448,3 +464,165 @@ def test_content_engine_baseline_downgrade_and_reupgrade(tmp_path: Path) -> None
 
     command.upgrade(config, "head")
     command.check(config)
+
+
+def test_artifact_purge_evidence_migration_roundtrip(tmp_path: Path) -> None:
+    database_path = tmp_path / "artifact-purge-roundtrip.db"
+    config = Config("alembic.ini")
+    config.set_main_option(
+        "sqlalchemy.url",
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+    )
+
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'artifacts'"
+        ).fetchone()[0]
+        index_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'index' AND tbl_name = 'artifacts'"
+            )
+        }
+    assert "purged_at" in table_sql
+    assert "purged_by_approval_id" in table_sql
+    assert "ck_artifacts_purge_evidence" in table_sql
+    assert "ix_artifacts_purged_at" in index_names
+
+    command.downgrade(config, "20260811_0019")
+    with sqlite3.connect(database_path) as connection:
+        downgraded_sql = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'artifacts'"
+        ).fetchone()[0]
+    assert "purged_at" not in downgraded_sql
+
+    command.upgrade(config, "head")
+    command.check(config)
+
+
+def test_connector_observation_migration_roundtrip(tmp_path: Path) -> None:
+    database_path = tmp_path / "connector-observation-roundtrip.db"
+    config = Config("alembic.ini")
+    config.set_main_option(
+        "sqlalchemy.url",
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+    )
+
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'connector_observations'"
+        ).fetchone()[0]
+        index_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'index' AND tbl_name = 'connector_observations'"
+            )
+        }
+    assert "ck_connector_observations_status" in table_sql
+    assert "ck_connector_observations_quality_status" in table_sql
+    assert "ck_connector_observations_positive_slos" in table_sql
+    assert "ck_connector_observations_quality_score_range" in table_sql
+    assert "ck_connector_observations_observed_not_future" in table_sql
+    assert {
+        "ix_connector_observations_latest",
+        "ix_connector_observations_status_observed",
+    }.issubset(index_names)
+
+    command.downgrade(config, "20260811_0021")
+    with sqlite3.connect(database_path) as connection:
+        downgraded_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "connector_observations" not in downgraded_tables
+
+    command.upgrade(config, "head")
+    command.check(config)
+
+
+def test_migrated_sqlite_connector_score_remains_exact(tmp_path: Path) -> None:
+    database_path = tmp_path / "connector-observation-exact.db"
+    database_url = f"sqlite+aiosqlite:///{database_path.as_posix()}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    command.upgrade(config, "head")
+
+    async def exercise_migrated_schema() -> tuple[
+        ConnectorObservation | None,
+        Decimal | None,
+    ]:
+        engine = create_async_engine(database_url)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        observed_at = datetime(2026, 8, 11, 12, 30, tzinfo=UTC)
+        async with factory() as session:
+            automation = Automation(
+                slug="migrated-connector",
+                name="Migrated connector",
+                owner="local-owner",
+            )
+            session.add(automation)
+            await session.flush()
+            await record_connector_observation(
+                session,
+                automation=automation,
+                connector_key="precision-probe",
+                idempotency_key="precision-probe:1",
+                status=ConnectorStatus.HEALTHY,
+                status_slo_seconds=300,
+                last_success_at=observed_at,
+                freshness_slo_seconds=900,
+                quality_status=DataQualityStatus.PASS,
+                quality_score="0.1234",
+                observed_at=observed_at,
+                now=observed_at,
+            )
+            await session.commit()
+
+        async with factory() as session:
+            observation = await session.scalar(select(ConnectorObservation))
+            summary_page = await load_connector_summaries(
+                session,
+                now=observed_at,
+            )
+        await engine.dispose()
+        return observation, summary_page.items[0].quality_score
+
+    observation, summary_score = asyncio.run(exercise_migrated_schema())
+
+    assert observation is not None
+    assert observation.quality_score == Decimal("0.1234")
+    assert summary_score == Decimal("0.1234")
+    with sqlite3.connect(database_path) as connection:
+        stored_score = connection.execute(
+            "SELECT quality_score, typeof(quality_score) "
+            "FROM connector_observations"
+        ).fetchone()
+    assert stored_score == ("0.1234", "text")
+
+
+@pytest.mark.parametrize("table_name", ("connector_observations", "health_conditions"))
+def test_alembic_check_tracks_observability_table(
+    tmp_path: Path,
+    table_name: str,
+) -> None:
+    database_path = tmp_path / f"managed-{table_name}.db"
+    config = Config("alembic.ini")
+    config.set_main_option(
+        "sqlalchemy.url",
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+    )
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(f"DROP TABLE {table_name}")
+
+    with pytest.raises(CommandError, match="New upgrade operations detected"):
+        command.check(config)

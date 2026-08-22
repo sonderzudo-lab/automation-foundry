@@ -224,13 +224,26 @@ async def set_schedule_enabled(
         raise ValueError("schedule must be persisted before changing its state")
     actor = _require_text(actor, "actor", max_length=200)
     reason = _require_text(reason, "reason")
-    current = ScheduleStatus(schedule.status)
+    locked_schedule = await session.scalar(
+        select(Schedule)
+        .where(Schedule.id == schedule.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_schedule is None:
+        raise ScheduleControlError("schedule does not exist")
+    current = ScheduleStatus(locked_schedule.status)
     target = ScheduleStatus.ENABLED if enabled else ScheduleStatus.DISABLED
     if current is target:
-        return ScheduleChangeResult(schedule, changed=False)
+        return ScheduleChangeResult(locked_schedule, changed=False)
 
     current_time = _require_aware(now or _utcnow_aware(), "now")
-    automation = await session.get(Automation, schedule.automation_id)
+    automation = await session.scalar(
+        select(Automation)
+        .where(Automation.id == locked_schedule.automation_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if automation is None:
         raise ScheduleControlError("schedule automation does not exist")
     if enabled:
@@ -239,8 +252,8 @@ async def set_schedule_enabled(
         if automation.kill_switch_active:
             raise ScheduleControlError("cannot enable a schedule while kill switch is active")
         next_run_at = calculate_next_run_at(
-            schedule.cron_expression,
-            schedule.timezone,
+            locked_schedule.cron_expression,
+            locked_schedule.timezone,
             after=current_time,
         )
         event_type = ScheduleEventType.ENABLED
@@ -248,14 +261,14 @@ async def set_schedule_enabled(
         next_run_at = None
         event_type = ScheduleEventType.DISABLED
 
-    previous_next_run_at = schedule.next_run_at
+    previous_next_run_at = locked_schedule.next_run_at
     occurred_at = _as_utc_naive(current_time)
-    schedule.status = target.value
-    schedule.next_run_at = next_run_at
-    schedule.updated_at = occurred_at
+    locked_schedule.status = target.value
+    locked_schedule.next_run_at = next_run_at
+    locked_schedule.updated_at = occurred_at
     session.add(
         ScheduleEvent(
-            schedule_id=schedule.id,
+            schedule_id=locked_schedule.id,
             event_type=event_type.value,
             from_status=current.value,
             to_status=target.value,
@@ -267,4 +280,4 @@ async def set_schedule_enabled(
         )
     )
     await session.flush()
-    return ScheduleChangeResult(schedule, changed=True)
+    return ScheduleChangeResult(locked_schedule, changed=True)

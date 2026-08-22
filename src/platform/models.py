@@ -191,6 +191,24 @@ class MetricKind(StrEnum):
     CURRENCY = "currency"
 
 
+class ConnectorStatus(StrEnum):
+    """Allowlisted availability states reported by a product connector."""
+
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+    DISABLED = "disabled"
+
+
+class DataQualityStatus(StrEnum):
+    """Domain-owned quality assessment attached to a connector observation."""
+
+    PASS = "pass"
+    WARNING = "warning"
+    FAIL = "fail"
+    UNKNOWN = "unknown"
+
+
 class LedgerEntryType(StrEnum):
     """Financial observation types supported by the shared ledger."""
 
@@ -246,6 +264,8 @@ _EXPERIMENT_EVENT_TYPE_SQL = (
     "'created', 'started', 'paused', 'resumed', 'completed', 'cancelled'"
 )
 _METRIC_KIND_SQL = "'counter', 'gauge', 'duration', 'ratio', 'currency'"
+_CONNECTOR_STATUS_SQL = "'healthy', 'degraded', 'unavailable', 'disabled'"
+_DATA_QUALITY_STATUS_SQL = "'pass', 'warning', 'fail', 'unknown'"
 _LEDGER_ENTRY_TYPE_SQL = "'cost', 'revenue', 'attributed_value'"
 _ALERT_SEVERITY_SQL = "'info', 'warning', 'error', 'critical'"
 _ALERT_STATUS_SQL = "'open', 'acknowledged', 'resolved'"
@@ -302,6 +322,11 @@ class Automation(Base):
         "MetricPoint",
         back_populates="automation",
         order_by="MetricPoint.id",
+    )
+    connector_observations: Mapped[list[ConnectorObservation]] = relationship(
+        "ConnectorObservation",
+        back_populates="automation",
+        order_by="ConnectorObservation.id",
     )
     ledger_entries: Mapped[list[LedgerEntry]] = relationship(
         "LedgerEntry",
@@ -667,7 +692,13 @@ class Artifact(Base):
             f"sensitivity IN ({_ARTIFACT_SENSITIVITY_SQL})",
             name="ck_artifacts_sensitivity",
         ),
+        CheckConstraint(
+            "(purged_at IS NULL AND purged_by_approval_id IS NULL) OR "
+            "(purged_at IS NOT NULL AND purged_by_approval_id IS NOT NULL)",
+            name="ck_artifacts_purge_evidence",
+        ),
         Index("ix_artifacts_run_created", "run_id", "created_at"),
+        Index("ix_artifacts_purged_at", "purged_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -695,6 +726,11 @@ class Artifact(Base):
     retention_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
     verified_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    purged_by_approval_id: Mapped[int | None] = mapped_column(
+        ForeignKey("approvals.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     run: Mapped[Run] = relationship("Run", back_populates="artifacts")
     step_run: Mapped[StepRun | None] = relationship(
@@ -979,6 +1015,86 @@ class ExperimentEvent(Base):
     experiment: Mapped[Experiment] = relationship(
         "Experiment",
         back_populates="events",
+    )
+
+
+class ConnectorObservation(Base):
+    """One immutable, redacted status and data-quality observation."""
+
+    __tablename__ = "connector_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "automation_id",
+            "connector_key",
+            "idempotency_key",
+            name="uq_connector_observations_idempotency",
+        ),
+        CheckConstraint(
+            f"status IN ({_CONNECTOR_STATUS_SQL})",
+            name="ck_connector_observations_status",
+        ),
+        CheckConstraint(
+            f"quality_status IN ({_DATA_QUALITY_STATUS_SQL})",
+            name="ck_connector_observations_quality_status",
+        ),
+        CheckConstraint(
+            "status_slo_seconds > 0 AND freshness_slo_seconds > 0",
+            name="ck_connector_observations_positive_slos",
+        ),
+        CheckConstraint(
+            "quality_score IS NULL OR "
+            "(CAST(quality_score AS NUMERIC) >= 0 AND "
+            "CAST(quality_score AS NUMERIC) <= 1)",
+            name="ck_connector_observations_quality_score_range",
+        ),
+        CheckConstraint(
+            "quality_status != 'unknown' OR quality_score IS NULL",
+            name="ck_connector_observations_unknown_quality_score",
+        ),
+        CheckConstraint(
+            "last_success_at IS NULL OR last_success_at <= observed_at",
+            name="ck_connector_observations_success_not_future",
+        ),
+        CheckConstraint(
+            "observed_at <= recorded_at",
+            name="ck_connector_observations_observed_not_future",
+        ),
+        Index(
+            "ix_connector_observations_latest",
+            "automation_id",
+            "connector_key",
+            "observed_at",
+            "id",
+        ),
+        Index(
+            "ix_connector_observations_status_observed",
+            "status",
+            "observed_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    automation_id: Mapped[int] = mapped_column(
+        ForeignKey("automations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    connector_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    status_slo_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    freshness_slo_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    quality_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    quality_score: Mapped[Decimal | None] = mapped_column(
+        _ExactNumeric(5, 4),
+        nullable=True,
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+    automation: Mapped[Automation] = relationship(
+        "Automation",
+        back_populates="connector_observations",
     )
 
 
@@ -1476,6 +1592,7 @@ class Approval(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     decided_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
     decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     run: Mapped[Run] = relationship("Run", back_populates="approvals")
     events: Mapped[list[ApprovalEvent]] = relationship(

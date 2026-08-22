@@ -169,6 +169,33 @@ async def test_approval_decision_is_immutable_and_resumes_run(
         )
 
 
+async def test_approval_persists_a_bounded_structured_selection(
+    session: AsyncSession,
+) -> None:
+    run = await _running_run(session, key="thumbnail-selection")
+    approval = await _request(session, run)
+    payload = {"thumbnail_artifact_id": 17, "thumbnail_sha256": "a" * 64}
+    await decide_approval(
+        session,
+        approval=approval,
+        decision=ApprovalStatus.APPROVED,
+        actor="local-owner",
+        reason="candidate reviewed",
+        decision_payload=payload,
+    )
+    assert approval.decision_payload == payload
+
+    with pytest.raises(IdempotencyConflictError, match="different decision payload"):
+        await decide_approval(
+            session,
+            approval=approval,
+            decision=ApprovalStatus.APPROVED,
+            actor="local-owner",
+            reason="different candidate",
+            decision_payload={"thumbnail_artifact_id": 18},
+        )
+
+
 async def test_safe_review_projection_is_required_and_validated(
     session: AsyncSession,
 ) -> None:

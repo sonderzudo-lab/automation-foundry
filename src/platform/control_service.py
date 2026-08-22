@@ -80,17 +80,20 @@ async def set_automation_kill_switch(
         raise ValueError("automation must be persisted before changing kill switch")
     reason = _require_reason(reason)
     actor = _require_actor(actor)
-    current = await session.scalar(
-        select(Automation.kill_switch_active).where(Automation.id == automation.id)
+    locked_automation = await session.scalar(
+        select(Automation)
+        .where(Automation.id == automation.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    if current is None:
+    if locked_automation is None:
         raise ValueError("automation does not exist")
-    if current is active:
+    if locked_automation.kill_switch_active is active:
         return ControlChangeResult(changed=False, event=None)
 
-    automation.kill_switch_active = active
-    automation.kill_switch_reason = reason
-    automation.kill_switch_changed_at = _utcnow()
+    locked_automation.kill_switch_active = active
+    locked_automation.kill_switch_reason = reason
+    locked_automation.kill_switch_changed_at = _utcnow()
     event = ControlEvent(
         automation_id=automation.id,
         event_type=(
@@ -119,15 +122,18 @@ async def set_automation_enabled(
         raise ValueError("automation must be persisted before changing enabled state")
     reason = _require_reason(reason)
     actor = _require_actor(actor)
-    current = await session.scalar(
-        select(Automation.enabled).where(Automation.id == automation.id)
+    locked_automation = await session.scalar(
+        select(Automation)
+        .where(Automation.id == automation.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    if current is None:
+    if locked_automation is None:
         raise ValueError("automation does not exist")
-    if current is enabled:
+    if locked_automation.enabled is enabled:
         return ControlChangeResult(changed=False, event=None)
 
-    automation.enabled = enabled
+    locked_automation.enabled = enabled
     event = ControlEvent(
         automation_id=automation.id,
         event_type=(
@@ -153,22 +159,27 @@ async def request_run_cancellation(
     if run.id is None:
         raise ValueError("run must be persisted before requesting cancellation")
     reason = _require_reason(reason)
-    requested_at = await session.scalar(
-        select(Run.cancellation_requested_at).where(Run.id == run.id)
+    locked_run = await session.scalar(
+        select(Run)
+        .where(Run.id == run.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    if requested_at is not None:
+    if locked_run is None:
+        raise ValueError("run does not exist")
+    if locked_run.cancellation_requested_at is not None:
         return ControlChangeResult(changed=False, event=None)
-    if RunStatus(run.status) in {
+    if RunStatus(locked_run.status) in {
         RunStatus.SUCCEEDED,
         RunStatus.FAILED,
         RunStatus.CANCELLED,
     }:
         raise InvalidRunTransitionError(
-            f"cannot request cancellation for terminal run {run.status}"
+            f"cannot request cancellation for terminal run {locked_run.status}"
         )
 
-    run.cancellation_requested_at = _utcnow()
-    run.cancellation_reason = reason
+    locked_run.cancellation_requested_at = _utcnow()
+    locked_run.cancellation_reason = reason
     event = ControlEvent(
         run_id=run.id,
         event_type=ControlEventType.CANCELLATION_REQUESTED.value,
@@ -176,7 +187,7 @@ async def request_run_cancellation(
     )
     session.add(event)
     await session.flush()
-    if RunStatus(run.status) is RunStatus.AWAITING_APPROVAL:
+    if RunStatus(locked_run.status) is RunStatus.AWAITING_APPROVAL:
         pending_approvals = list(
             (
                 await session.scalars(
@@ -202,13 +213,13 @@ async def request_run_cancellation(
                     reason=reason,
                 )
             )
-    if RunStatus(run.status) in {
+    if RunStatus(locked_run.status) in {
         RunStatus.QUEUED,
         RunStatus.AWAITING_APPROVAL,
     }:
         await transition_run(
             session,
-            run,
+            locked_run,
             RunStatus.CANCELLED,
             note="queued run cancelled by operator request",
         )
