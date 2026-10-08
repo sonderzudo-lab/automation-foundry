@@ -1358,6 +1358,7 @@ async def test_dashboard_ledger_is_exactly_attributed_by_automation_and_currency
     assert "alpha-automation" in response.text
     assert "beta-automation" in response.text
     assert "2.3456789012" in response.text
+    assert "0E-10" not in response.text
     assert "private-attributed-category" not in response.text
     assert "private-attributed-source" not in response.text
 
@@ -1446,8 +1447,8 @@ async def test_dashboard_home_renders_redacted_state_and_safe_controls(
     assert "Content Engine" in response.text
     assert "Worker unavailable" in response.text
     assert ">Idade<" in response.text
-    assert ">0.3<" in response.text
-    assert ">0.7<" in response.text
+    assert ">0.30<" in response.text
+    assert ">0.70<" in response.text
     assert f'href="/runs/{run_id}"' in response.text
     assert "/kill-switch" in response.text
     assert "Ativar kill switch" in response.text
@@ -2174,6 +2175,7 @@ async def test_content_outcome_renders_local_scope_and_no_external_claim(
     assert "0.3000000003" in response.text
     assert "0.7000000001" in response.text
     assert "-0.4000000004" in response.text
+    assert "E-" not in response.text
     assert "Nenhuma plataforma externa foi consultada" in response.text
     assert "private-content-outcome-source" not in response.text
     assert "content-outcome-dimension" not in response.text
@@ -2459,7 +2461,7 @@ async def test_run_detail_renders_linked_evidence_without_mutation_or_private_da
     assert "UNEXPECTED_TASK_ERROR" in response.text
     assert "video/mp4" in response.text
     assert "render_duration" in response.text
-    assert ">0.1<" in response.text
+    assert ">0.10<" in response.text
     assert "controle local" in response.text
     assert '<script src="/static/htmx.min.js" defer></script>' in response.text
     assert "cdn.jsdelivr.net" not in response.text
