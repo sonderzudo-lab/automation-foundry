@@ -494,3 +494,45 @@ async def test_the_brief_never_counts_its_own_running_run(
         )
     )
     assert metric is not None and metric.value == 0
+
+
+async def _empty_evidence(session: AsyncSession) -> dict[str, object]:
+    return await collect_operations_evidence(
+        session,
+        window=build_window(window_end=TODAY, window_days=7),
+        collected_at=NOW,
+        exclude_run_id=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        ("2035892.933", "23 d 13 h"),
+        ("5400", "1 h 30 min"),
+        ("125.9", "2 min 5 s"),
+        ("45.2", "45 s"),
+    ],
+)
+async def test_decision_time_is_readable_in_current_briefs(
+    session: AsyncSession,
+    seconds: str,
+    expected: str,
+) -> None:
+    evidence = await _empty_evidence(session)
+    evidence["approvals"]["mean_decision_seconds"] = seconds  # type: ignore[index]
+
+    assert evidence["renderer_version"] == 2
+    assert f"tempo médio de decisão: {expected}." in render_operations_brief(evidence)
+
+
+async def test_briefs_written_by_the_first_renderer_still_verify(session: AsyncSession) -> None:
+    evidence = await _empty_evidence(session)
+    evidence["approvals"]["mean_decision_seconds"] = "2035892.933"  # type: ignore[index]
+    del evidence["renderer_version"]
+
+    markdown = render_operations_brief(evidence)
+
+    assert "tempo médio de decisão: 2035892.933 s." in markdown
+    evidence["approvals"]["mean_decision_seconds"] = None  # type: ignore[index]
+    assert "tempo médio de decisão: — s." in render_operations_brief(evidence)

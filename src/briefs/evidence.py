@@ -30,6 +30,9 @@ from src.platform.models import (
 )
 
 EVIDENCE_SCHEMA_VERSION = 1
+# Stored in the evidence so an older brief is always re-rendered the way it was written.
+# 2: the mean approval decision time is shown as days, hours and minutes.
+RENDERER_VERSION = 2
 ALLOWED_WINDOW_DAYS = (1, 7, 14, 30)
 MAX_RUN_ROWS = 10_000
 MAX_LISTED_FAILURES = 10
@@ -72,6 +75,7 @@ async def collect_operations_evidence(
     """Collect the redacted evidence document for one window."""
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "renderer_version": RENDERER_VERSION,
         "window": {
             "start": _iso(window.start),
             "end_exclusive": _iso(window.end),

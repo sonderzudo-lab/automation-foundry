@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from src.briefs.evidence import EVIDENCE_SCHEMA_VERSION
@@ -81,7 +82,7 @@ def _render(evidence: dict[str, Any]) -> str:
         f"Decididas na janela: {approvals['decided_in_window']} "
         f"(aprovadas {approvals['approved_in_window']}, "
         f"rejeitadas {approvals['rejected_in_window']}); "
-        f"tempo médio de decisão: {_cell(approvals['mean_decision_seconds'])} s."
+        f"tempo médio de decisão: {_decision_time(approvals['mean_decision_seconds'], evidence)}."
     )
     if approvals["pending"]:
         lines += ["", "Pendentes, da mais antiga para a mais recente:", ""]
@@ -143,6 +144,25 @@ def _render(evidence: dict[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _decision_time(value: str | None, evidence: dict[str, Any]) -> str:
+    if int(evidence.get("renderer_version", 1)) < 2:
+        return f"{_cell(value)} s"
+    return "—" if value is None else _human_duration(value)
+
+
+def _human_duration(seconds: str) -> str:
+    days, remainder = divmod(int(Decimal(seconds)), 86_400)
+    hours, remainder = divmod(remainder, 3_600)
+    minutes, secs = divmod(remainder, 60)
+    if days:
+        return f"{days} d {hours} h"
+    if hours:
+        return f"{hours} h {minutes} min"
+    if minutes:
+        return f"{minutes} min {secs} s"
+    return f"{secs} s"
 
 
 def _cell(value: str | None) -> str:
