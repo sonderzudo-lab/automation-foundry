@@ -163,7 +163,7 @@ Avaliar candidatos por valor esperado, qualidade de dados, risco, esforÃ§o e m
 3. pesquisa e qualificaÃ§Ã£o de leads com rascunhos aprovÃ¡veis;
 4. geraÃ§Ã£o recorrente de relatÃ³rios e briefs.
 
-- [ ] Selecionar um Ãºnico candidato com hipÃ³tese e mÃ©trica de sucesso.
+- [x] Selecionar um Ãºnico candidato com hipÃ³tese e mÃ©trica de sucesso. Escolhido: relatÃ³rios e briefs recorrentes, pela comparaÃ§Ã£o em `docs/planning/phase-6-candidates.md` (menor risco, sem credencial, primeiro produtor real de `ConnectorObservation`). HipÃ³tese e mÃ©trica estÃ£o propostas, mas o baseline manual, o tema e as fontes dependem do proprietÃ¡rio e precisam ser fechados antes da especificaÃ§Ã£o.
 - [ ] Especificar pelo contrato `$build-automation-module`.
 - [ ] Implementar primeiro uma execuÃ§Ã£o manual.
 - [ ] Integrar estado, aprovaÃ§Ãµes, custos e mÃ©tricas ao dashboard.

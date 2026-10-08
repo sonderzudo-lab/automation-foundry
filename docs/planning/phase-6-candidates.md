@@ -1,6 +1,7 @@
 # Fase 6 — comparação dos candidatos a segundo módulo
 
-**Status:** proposta para decisão do proprietário. Nada aqui está implementado.
+**Status:** o proprietário aceitou a recomendação (candidato 4, relatórios e briefs recorrentes).
+Tema, fontes e baseline manual ainda estão em aberto. Nada aqui está implementado.
 **Objetivo do portão (ROADMAP, Fase 6):** o segundo módulo reutiliza o kernel sem copiar o
 control plane e demonstra valor mensurável em um caso real.
 
