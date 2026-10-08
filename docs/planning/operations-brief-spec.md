@@ -1,6 +1,7 @@
 # Especificação — módulo `operations-brief`
 
-**Status:** especificação da primeira fatia (execução manual). Escolhido na Fase 6 em
+**Status:** primeira fatia (execução manual) implementada em `src/briefs/` e validada de ponta a
+ponta com PostgreSQL, Redis e worker `io` reais. Escolhido na Fase 6 em
 `docs/planning/phase-6-candidates.md`, com o tema "operação do próprio Automation Foundry".
 **Contrato:** `$build-automation-module`.
 

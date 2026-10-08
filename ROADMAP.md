@@ -164,9 +164,9 @@ Avaliar candidatos por valor esperado, qualidade de dados, risco, esforÃ§o e m
 4. geraÃ§Ã£o recorrente de relatÃ³rios e briefs.
 
 - [x] Selecionar um Ãºnico candidato com hipÃ³tese e mÃ©trica de sucesso. Escolhido: relatÃ³rios e briefs recorrentes, pela comparaÃ§Ã£o em `docs/planning/phase-6-candidates.md` (menor risco, sem credencial, primeiro produtor real de `ConnectorObservation`). HipÃ³tese e mÃ©trica estÃ£o propostas, mas o baseline manual, o tema e as fontes dependem do proprietÃ¡rio e precisam ser fechados antes da especificaÃ§Ã£o.
-- [ ] Especificar pelo contrato `$build-automation-module`.
-- [ ] Implementar primeiro uma execuÃ§Ã£o manual.
-- [ ] Integrar estado, aprovaÃ§Ãµes, custos e mÃ©tricas ao dashboard.
+- [x] Especificar pelo contrato `$build-automation-module`. A especificaÃ§Ã£o do mÃ³dulo `operations-brief` (tema: a operaÃ§Ã£o do prÃ³prio Automation Foundry) estÃ¡ em `docs/planning/operations-brief-spec.md`.
+- [x] Implementar primeiro uma execuÃ§Ã£o manual. `src/briefs/` implementa a primeira fatia: uma run manual na fila `io` lÃª somente estado persistido, gera evidÃªncia JSON redigida e um brief Markdown determinÃ­stico, registra dois artifacts (retenÃ§Ã£o de 180 dias), trÃªs mÃ©tricas, custo externo zero e uma `ConnectorObservation` (`platform-database`), e abre a approval `review_operations_brief` com pÃ¡gina de revisÃ£o completa que reconfere SHA-256 e reconstrÃ³i o texto a partir da evidÃªncia. Aprovar conclui localmente; rejeitar cancela; adulteraÃ§Ã£o bloqueia. Falha de disco e de persistÃªncia, replay e cancelamento tÃªm testes. Validado ponta a ponta com PostgreSQL, Redis e worker `io` reais (run 7). Sem schedule, sem narrativa por LLM e sem envio de nada.
+- [x] Integrar estado, aprovaÃ§Ãµes, custos e mÃ©tricas ao dashboard. O formulÃ¡rio de disparo, o detalhe da run (steps, approval, artifacts, mÃ©tricas, ledger), a fila de approvals com link para a revisÃ£o completa e o painel de connectors, que agora exibe a primeira observaÃ§Ã£o real, usam os contratos compartilhados sem pÃ¡gina prÃ³pria de domÃ­nio alÃ©m da revisÃ£o.
 - [ ] Avaliar o experimento antes de automatizar o schedule.
 
 **PortÃ£o:** o segundo mÃ³dulo reutiliza o kernel sem copiar o control plane e demonstra valor mensurÃ¡vel em um caso real.
