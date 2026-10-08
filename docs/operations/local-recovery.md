@@ -25,6 +25,17 @@ loopback. Isso é um diagnóstico seguro, não uma corrupção de run. O comando
 `status` não expõe PIDs e mostra apenas o runtime que foi iniciado pelo
 supervisor.
 
+## Beat não inicia depois de um encerramento sujo
+
+Se o Windows foi desligado ou o processo do Beat foi encerrado à força, o
+`storage/celerybeat.pid` pode permanecer no disco. O Celery não distingue um PID
+morto de um processo vivo no Windows e recusaria a partida com "Pidfile already
+exists". O entrypoint do Beat primeiro adquire o mutex nomeado
+`Local\AutomationFoundryCeleryBeat`; somente se o mutex estiver livre, nenhum
+outro Beat existe e ele descarta o pidfile órfão antes de iniciar. Se outro Beat
+estiver realmente ativo, o mutex continua recusando a segunda instância e o
+pidfile não é tocado. Nenhum procedimento manual é necessário.
+
 ## Redis indisponível
 
 Se o diagnóstico mostrar Redis indisponível, confirme primeiro a configuração
