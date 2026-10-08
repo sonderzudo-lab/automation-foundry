@@ -205,7 +205,7 @@
           {% if snapshot.pending_approvals %}
           <table><thead><tr><th>ID</th><th>Run</th><th>Ação</th><th>Solicitada UTC</th><th>Idade</th></tr></thead><tbody>
           {% for approval in snapshot.pending_approvals %}
-            <tr><td>#{{ approval.id }}</td><td><a href="/runs/{{ approval.run_id }}">#{{ approval.run_id }}</a> · <code>{{ approval.automation_slug }}</code></td><td>{% if approval.action in ("review_content_script_a1", "review_content_narration_a2", "review_content_final_video_a7", "select_content_thumbnail_a8") %}<a href="/approvals/{{ approval.id }}/review">{{ approval.action }}</a>{% else %}{{ approval.action }}{% endif %}</td><td>{{ approval.requested_at.isoformat() }}Z</td><td>{{ approval.pending_for_label }}</td></tr>
+            <tr><td>#{{ approval.id }}</td><td><a href="/runs/{{ approval.run_id }}">#{{ approval.run_id }}</a> · <code>{{ approval.automation_slug }}</code></td><td>{% if approval.action in ("review_content_script_a1", "review_content_narration_a2", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}<a href="/approvals/{{ approval.id }}/review">{{ approval.action }}</a>{% else %}{{ approval.action }}{% endif %}</td><td>{{ approval.requested_at.isoformat() }}Z</td><td>{{ approval.pending_for_label }}</td></tr>
           {% endfor %}
           </tbody></table>
           {% else %}<div class="empty">Nenhuma aprovação pendente.</div>{% endif %}

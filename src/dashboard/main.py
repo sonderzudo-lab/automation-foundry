@@ -23,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.briefs.executor import OperationsBriefReview
 from src.core.database import get_session
 from src.dashboard.formatting import format_exact_decimal
 from src.dashboard.service import (
@@ -97,6 +98,7 @@ _REVIEW_TEMPLATES: dict[type, str] = {
     NarrationReview: "content_narration_review.html",
     FinalVideoReview: "content_final_video_review.html",
     ThumbnailReview: "content_thumbnail_review.html",
+    OperationsBriefReview: "operations_brief_review.html",
 }
 _DASHBOARD_NOTICES = {
     "schedule-change-blocked": (

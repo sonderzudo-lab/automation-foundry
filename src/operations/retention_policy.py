@@ -117,6 +117,24 @@ _POLICY: tuple[RetentionPolicyEntry, ...] = (
             "exatamente aquele roteiro e aquele vídeo."
         ),
     ),
+    RetentionPolicyEntry(
+        artifact_type="operations_brief",
+        retention_days=180,
+        producer="operations-brief",
+        rationale=(
+            "Brief operacional aprovado: histórico comparável de semana a "
+            "semana para avaliar o módulo antes de qualquer schedule."
+        ),
+    ),
+    RetentionPolicyEntry(
+        artifact_type="operations_brief_evidence",
+        retention_days=180,
+        producer="operations-brief",
+        rationale=(
+            "Evidência estruturada do brief: prova de onde cada número veio e "
+            "base da conferência de integridade na revisão."
+        ),
+    ),
 )
 
 
