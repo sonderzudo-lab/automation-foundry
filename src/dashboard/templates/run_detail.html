@@ -117,6 +117,8 @@
             <p><a href="/approvals/{{ approval.id }}/review">Abrir roteiro completo e verificado antes de decidir</a></p>
             {% elif approval.action == "review_content_final_video_a7" %}
             <p><a href="/approvals/{{ approval.id }}/review">Assistir ao vídeo final verificado antes de decidir</a></p>
+            {% elif approval.action == "review_operations_brief" %}
+            <p><a href="/approvals/{{ approval.id }}/review">Abrir o brief completo e verificado antes de decidir</a></p>
             {% elif approval.action == "select_content_thumbnail_a8" %}
             <p><a href="/approvals/{{ approval.id }}/review">Escolher uma thumbnail entre os PNGs A3 verificados</a></p>
             {% endif %}
@@ -168,7 +170,7 @@
           {% if run.content_outcome.ledger_totals %}
           <table><thead><tr><th>Moeda</th><th>Custo observado</th><th>Receita observada</th><th>Valor atribuído</th><th>Receita líquida observada</th></tr></thead><tbody>
           {% for total in run.content_outcome.ledger_totals %}
-            <tr><td><code>{{ total.currency }}</code></td><td>{{ total.cost }}</td><td>{{ total.revenue }}</td><td>{{ total.attributed_value }}</td><td>{{ total.net_revenue }}</td></tr>
+            <tr><td><code>{{ total.currency }}</code></td><td>{{ total.cost | exact_decimal }}</td><td>{{ total.revenue | exact_decimal }}</td><td>{{ total.attributed_value | exact_decimal }}</td><td>{{ total.net_revenue | exact_decimal }}</td></tr>
           {% endfor %}
           </tbody></table>
           {% else %}<div class="empty">Nenhuma observação financeira foi atribuída a esta run.</div>{% endif %}
@@ -222,7 +224,7 @@
           {% if run.metrics %}
           <table><thead><tr><th>ID</th><th>Step</th><th>Métrica</th><th>Tipo</th><th>Valor</th><th>Unidade</th><th>Confiança</th></tr></thead><tbody>
           {% for metric in run.metrics %}
-            <tr><td>#{{ metric.id }}</td><td>{{ "#" ~ metric.step_run_id if metric.step_run_id else "run" }}</td><td>{{ metric.name }}</td><td>{{ metric.kind }}</td><td>{{ metric.value }}</td><td>{{ metric.unit }}</td><td>{{ metric.confidence if metric.confidence is not none else "—" }}</td></tr>
+            <tr><td>#{{ metric.id }}</td><td>{{ "#" ~ metric.step_run_id if metric.step_run_id else "run" }}</td><td>{{ metric.name }}</td><td>{{ metric.kind }}</td><td>{{ metric.value | exact_decimal }}</td><td>{{ metric.unit }}</td><td>{{ metric.confidence if metric.confidence is not none else "—" }}</td></tr>
           {% endfor %}
           </tbody></table>
           {% else %}<div class="empty">Nenhuma métrica vinculada.</div>{% endif %}
@@ -233,7 +235,7 @@
           {% if run.ledger_entries %}
           <table><thead><tr><th>ID</th><th>Step</th><th>Tipo</th><th>Valor</th><th>Moeda</th><th>Confiança</th></tr></thead><tbody>
           {% for entry in run.ledger_entries %}
-            <tr><td>#{{ entry.id }}</td><td>{{ "#" ~ entry.step_run_id if entry.step_run_id else "run" }}</td><td>{{ entry.entry_type }}</td><td>{{ entry.amount }}</td><td><code>{{ entry.currency }}</code></td><td>{{ entry.confidence if entry.confidence is not none else "—" }}</td></tr>
+            <tr><td>#{{ entry.id }}</td><td>{{ "#" ~ entry.step_run_id if entry.step_run_id else "run" }}</td><td>{{ entry.entry_type }}</td><td>{{ entry.amount | exact_decimal }}</td><td><code>{{ entry.currency }}</code></td><td>{{ entry.confidence if entry.confidence is not none else "—" }}</td></tr>
           {% endfor %}
           </tbody></table>
           {% else %}<div class="empty">Nenhuma observação financeira vinculada.</div>{% endif %}

@@ -24,7 +24,9 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.briefs.executor import OperationsBriefReview
 from src.core.database import get_session
+from src.dashboard.formatting import format_exact_decimal
 from src.dashboard.service import (
     load_connector_summaries,
     load_dashboard_snapshot,
@@ -97,6 +99,7 @@ _REVIEW_TEMPLATES: dict[type, str] = {
     NarrationReview: "content_narration_review.html",
     FinalVideoReview: "content_final_video_review.html",
     ThumbnailReview: "content_thumbnail_review.html",
+    OperationsBriefReview: "operations_brief_review.html",
 }
 _DASHBOARD_NOTICES = {
     "schedule-change-blocked": (
@@ -107,6 +110,7 @@ _DASHBOARD_NOTICES = {
 _TEMPLATE_DIRECTORY = Path(__file__).resolve().parent / "templates"
 _STATIC_DIRECTORY = Path(__file__).resolve().parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIRECTORY))
+templates.env.filters["exact_decimal"] = format_exact_decimal
 HealthCollector = Callable[[AsyncSession], Awaitable[HealthReport]]
 RetentionCollector = Callable[[AsyncSession], Awaitable[RetentionInventory]]
 DispatchPublisher = Callable[[int, str, QueueClass], None]

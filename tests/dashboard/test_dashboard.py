@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from src.briefs import executor as brief_executor
 from src.core.config import Settings
 from src.core.database import Base, get_session
 from src.dashboard.main import create_app
@@ -1359,6 +1360,7 @@ async def test_dashboard_ledger_is_exactly_attributed_by_automation_and_currency
     assert "alpha-automation" in response.text
     assert "beta-automation" in response.text
     assert "2.3456789012" in response.text
+    assert "0E-10" not in response.text
     assert "private-attributed-category" not in response.text
     assert "private-attributed-source" not in response.text
 
@@ -1447,8 +1449,8 @@ async def test_dashboard_home_renders_redacted_state_and_safe_controls(
     assert "Content Engine" in response.text
     assert "Worker unavailable" in response.text
     assert ">Idade<" in response.text
-    assert ">0.3<" in response.text
-    assert ">0.7<" in response.text
+    assert ">0.30<" in response.text
+    assert ">0.70<" in response.text
     assert f'href="/runs/{run_id}"' in response.text
     assert "/kill-switch" in response.text
     assert "Ativar kill switch" in response.text
@@ -2175,6 +2177,7 @@ async def test_content_outcome_renders_local_scope_and_no_external_claim(
     assert "0.3000000003" in response.text
     assert "0.7000000001" in response.text
     assert "-0.4000000004" in response.text
+    assert "E-" not in response.text
     assert "Nenhuma plataforma externa foi consultada" in response.text
     assert "private-content-outcome-source" not in response.text
     assert "content-outcome-dimension" not in response.text
@@ -2460,7 +2463,7 @@ async def test_run_detail_renders_linked_evidence_without_mutation_or_private_da
     assert "UNEXPECTED_TASK_ERROR" in response.text
     assert "video/mp4" in response.text
     assert "render_duration" in response.text
-    assert ">0.1<" in response.text
+    assert ">0.10<" in response.text
     assert "controle local" in response.text
     assert '<script src="/static/htmx.min.js" defer></script>' in response.text
     assert "cdn.jsdelivr.net" not in response.text
@@ -4138,6 +4141,63 @@ async def test_dashboard_a8_rejects_arbitrary_id_and_tampered_candidate(
     assert run.output_payload is None
     assert persisted is not None and persisted.status == ApprovalStatus.PENDING.value
     assert persisted.decision_payload is None
+
+
+async def test_dashboard_reviews_and_approves_the_operations_brief(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(
+        brief_executor,
+        "settings",
+        SimpleNamespace(storage_root=str(storage_root)),
+    )
+    async with session_factory() as session:
+        result = await brief_executor.execute_operations_brief_run(
+            session,
+            idempotency_key="dashboard-operations-brief",
+            input_payload={"window_days": 7, "window_end": "2026-10-08"},
+            storage_root=storage_root,
+            clock=lambda: datetime(2026, 10, 8, 12, 0, 0),
+        )
+        await session.commit()
+    assert result.approval_id is not None
+
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        home = await client.get("/")
+        detail = await client.get(f"/runs/{result.run_id}")
+        review = await client.get(f"/approvals/{result.approval_id}/review")
+        brief_file = next(storage_root.rglob("brief.md"))
+        brief_file.write_text(
+            brief_file.read_text(encoding="utf-8") + "adulterado", encoding="utf-8"
+        )
+        tampered = await client.get(f"/approvals/{result.approval_id}/review")
+
+    assert home.status_code == 200
+    assert (
+        f'href="/approvals/{result.approval_id}/review">review_operations_brief</a>'
+    ) in home.text
+    assert "Abrir o brief completo e verificado" in detail.text
+    assert review.status_code == 200
+    assert review.headers["cache-control"] == "no-store"
+    assert "# Brief operacional do Automation Foundry" in review.text
+    assert "Nada foi enviado, publicado ou gasto" in review.text
+    assert f'action="/approvals/{result.approval_id}/approve"' in review.text
+    assert f'action="/approvals/{result.approval_id}/reject"' in review.text
+    assert 'value="test-csrf-token"' in review.text
+    assert tampered.status_code == 409
 
 
 async def test_javascript_media_type_does_not_depend_on_the_operating_system(

@@ -4,10 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.briefs.executor import (
+    execute_operations_brief_run,
+    finalize_operations_brief_approval,
+    load_operations_brief_review,
+    parse_operations_brief_form,
+    prepare_operations_brief_run,
+    resolve_operations_brief_schedule_input,
+)
 from src.pipeline.a1_executor import (
     execute_content_script_run,
     finalize_content_script_approval,
@@ -33,6 +42,7 @@ class AutomationRunResult(Protocol):
 Executor = Callable[..., Awaitable[AutomationRunResult]]
 Preparer = Callable[..., Awaitable[RunCreationResult]]
 ManualInputParser = Callable[[dict[str, str]], dict[str, object]]
+ScheduledInputResolver = Callable[[dict[str, object], datetime], dict[str, object]]
 
 
 class ApprovalFinalizer(Protocol):
@@ -85,6 +95,10 @@ class AutomationExecutor:
     execute: Executor
     finalize_approval: ApprovalFinalizer | None = None
     load_approval_review: ApprovalReviewLoader | None = None
+    # Derives the run input of one schedule occurrence from the schedule's stored
+    # payload and the occurrence time. It must be a pure function of its arguments so
+    # a replayed tick reproduces exactly the input already persisted.
+    resolve_scheduled_input: ScheduledInputResolver | None = None
 
 
 _EXECUTORS = {
@@ -131,6 +145,35 @@ _EXECUTORS = {
         execute=execute_content_script_run,
         finalize_approval=finalize_content_script_approval,
         load_approval_review=load_content_approval_review,
+    ),
+    "operations-brief": AutomationExecutor(
+        slug="operations-brief",
+        name="Operations Brief",
+        supports_manual_start=True,
+        supports_retry=True,
+        runs_in_background=True,
+        queue=QueueClass.IO,
+        manual_input_fields=(
+            ManualInputField(
+                "window_days",
+                "Janela do brief",
+                "select",
+                True,
+                2,
+                (
+                    ("1", "Último dia"),
+                    ("7", "Últimos 7 dias"),
+                    ("14", "Últimos 14 dias"),
+                    ("30", "Últimos 30 dias"),
+                ),
+            ),
+        ),
+        parse_manual_input=parse_operations_brief_form,
+        prepare=prepare_operations_brief_run,
+        execute=execute_operations_brief_run,
+        finalize_approval=finalize_operations_brief_approval,
+        load_approval_review=load_operations_brief_review,
+        resolve_scheduled_input=resolve_operations_brief_schedule_input,
     ),
 }
 

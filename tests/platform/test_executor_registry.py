@@ -33,9 +33,13 @@ async def test_registry_dispatches_only_declared_manual_executor(
     executors = list_automation_executors()
     assert [executor.slug for executor in executors] == [
         "content-engine",
+        "operations-brief",
         "platform-smoke",
     ]
-    content_executor, smoke_executor = executors
+    content_executor, brief_executor, smoke_executor = executors
+    assert brief_executor.queue.value == "io"
+    assert brief_executor.runs_in_background is True
+    assert [field.name for field in brief_executor.manual_input_fields] == ["window_days"]
     assert content_executor.queue.value == "gpu"
     assert content_executor.runs_in_background is True
     assert [field.name for field in content_executor.manual_input_fields] == [

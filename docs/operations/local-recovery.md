@@ -25,6 +25,62 @@ loopback. Isso é um diagnóstico seguro, não uma corrupção de run. O comando
 `status` não expõe PIDs e mostra apenas o runtime que foi iniciado pelo
 supervisor.
 
+## Início automático no Windows
+
+O runtime pode iniciar sozinho no login do usuário por uma tarefa do Agendador de Tarefas
+chamada `AutomationFoundryRuntime`. Ela é por usuário, sem elevação, e só decide *quando* o
+supervisor inicia; o runtime continua preso a loopback e todo efeito externo mantém seu gate
+humano. O schedule semanal do brief só dispara se o runtime estiver ligado, então essa tarefa é
+o que o mantém funcionando depois de um reinício.
+
+```powershell
+powershell -File scripts\windows\runtime-autostart.ps1 install
+powershell -File scripts\windows\runtime-autostart.ps1 status
+powershell -File scripts\windows\runtime-autostart.ps1 uninstall
+```
+
+Comportamento:
+
+- A tarefa roda um minuto depois do login e espera até 10 minutos pelo engine do Docker
+  (PostgreSQL e Redis são containers). Se o Docker não ficar pronto, desiste e registra a causa.
+- Se o supervisor falhar ao iniciar, tenta de novo até 5 vezes com espera crescente.
+- Se o runtime já estiver ligado, não faz nada.
+- Um `automation-foundry-runtime stop` encerra o supervisor com código 0 e a tarefa **não** o
+  religa. Para voltar, faça login de novo ou rode `Start-ScheduledTask -TaskName AutomationFoundryRuntime`.
+- O registro fica em `storage/runtime/logs/autostart.log`; os logs de cada serviço continuam na
+  mesma pasta.
+
+Limites conhecidos: a tarefa depende do login do usuário (com a sessão encerrada, nada roda), uma
+janela pode piscar no início por causa do PowerShell oculto, e suspensão ou hibernação do
+computador impede o Beat de disparar o schedule naquele horário. A tolerância de 12 h do brief
+semanal cobre um computador que volte a ligar na própria segunda-feira.
+
+## Alerta de ocorrência de schedule não executada
+
+Quando o Beat encontra uma ocorrência que não pode executar, ele a registra como `skipped` e abre um alerta `Schedule '<nome>' não executou uma ocorrência` no painel de alertas ativos. O resumo traz a hora prevista e o motivo:
+
+| Motivo | Severidade | O que significa e o que fazer |
+|---|---|---|
+| `MISFIRE_GRACE_EXCEEDED` | warning | O horário passou da tolerância, em geral porque o runtime estava parado. A ocorrência não é recuperada; gere o conteúdo manualmente se ainda precisar dele. |
+| `OVERLAP_BLOCKED` | warning | Uma run anterior do mesmo schedule ainda está aberta ou aguardando approval. Decida a approval pendente. |
+| `KILL_SWITCH_ACTIVE`, `AUTOMATION_DISABLED` | info | Pausa feita pelo operador. Reverta se não foi intencional. |
+| `EXECUTOR_NOT_REGISTERED`, `INVALID_SCHEDULE_INPUT` | error | Falha de configuração do schedule ou do módulo; exige correção. |
+
+Há um único alerta por schedule. A próxima ocorrência preparada normalmente o resolve sozinho, e uma nova ocorrência pulada o reabre. Para encerrar um alerta antes disso: `automation-foundry set-alert --alert-id <id> --resolve --actor <quem> --reason <motivo>`.
+
+Limite: o alerta só é criado quando o tick roda. Se o runtime não voltar, nenhum alerta surge; confira a saúde do Beat em `/health` e o `Próxima UTC` do schedule vencido na home.
+
+## Beat não inicia depois de um encerramento sujo
+
+Se o Windows foi desligado ou o processo do Beat foi encerrado à força, o
+`storage/celerybeat.pid` pode permanecer no disco. O Celery não distingue um PID
+morto de um processo vivo no Windows e recusaria a partida com "Pidfile already
+exists". O entrypoint do Beat primeiro adquire o mutex nomeado
+`Local\AutomationFoundryCeleryBeat`; somente se o mutex estiver livre, nenhum
+outro Beat existe e ele descarta o pidfile órfão antes de iniciar. Se outro Beat
+estiver realmente ativo, o mutex continua recusando a segunda instância e o
+pidfile não é tocado. Nenhum procedimento manual é necessário.
+
 ## Redis indisponível
 
 Se o diagnóstico mostrar Redis indisponível, confirme primeiro a configuração

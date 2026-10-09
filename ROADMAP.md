@@ -163,11 +163,11 @@ Avaliar candidatos por valor esperado, qualidade de dados, risco, esforço e man
 3. pesquisa e qualificação de leads com rascunhos aprováveis;
 4. geração recorrente de relatórios e briefs.
 
-- [ ] Selecionar um único candidato com hipótese e métrica de sucesso.
-- [ ] Especificar pelo contrato `$build-automation-module`.
-- [ ] Implementar primeiro uma execução manual.
-- [ ] Integrar estado, aprovações, custos e métricas ao dashboard.
-- [ ] Avaliar o experimento antes de automatizar o schedule.
+- [x] Selecionar um único candidato com hipótese e métrica de sucesso. Escolhido: relatórios e briefs recorrentes, pela comparação em `docs/planning/phase-6-candidates.md` (menor risco, sem credencial, primeiro produtor real de `ConnectorObservation`). Hipótese e métrica estão propostas, mas o baseline manual, o tema e as fontes dependem do proprietário e precisam ser fechados antes da especificação.
+- [x] Especificar pelo contrato `$build-automation-module`. A especificação do módulo `operations-brief` (tema: a operação do próprio Automation Foundry) está em `docs/planning/operations-brief-spec.md`.
+- [x] Implementar primeiro uma execução manual. `src/briefs/` implementa a primeira fatia: uma run manual na fila `io` lê somente estado persistido, gera evidência JSON redigida e um brief Markdown determinístico, registra dois artifacts (retenção de 180 dias), três métricas, custo externo zero e uma `ConnectorObservation` (`platform-database`), e abre a approval `review_operations_brief` com página de revisão completa que reconfere SHA-256 e reconstrói o texto a partir da evidência. Aprovar conclui localmente; rejeitar cancela; adulteração bloqueia. Falha de disco e de persistência, replay e cancelamento têm testes. Validado ponta a ponta com PostgreSQL, Redis e worker `io` reais (run 7). Sem schedule, sem narrativa por LLM e sem envio de nada.
+- [x] Integrar estado, aprovações, custos e métricas ao dashboard. O formulário de disparo, o detalhe da run (steps, approval, artifacts, métricas, ledger), a fila de approvals com link para a revisão completa e o painel de connectors, que agora exibe a primeira observação real, usam os contratos compartilhados sem página própria de domínio além da revisão.
+- [ ] Avaliar o experimento antes de automatizar o schedule. Pendente: por decisão do proprietário em 2026-10-09, o schedule semanal (`Brief semanal`, segunda 08:00 em America/Sao_Paulo) foi habilitado antes desta avaliação. Cada ocorrência continua passando pela approval humana e não envia nada; a avaliação da hipótese segue dependendo do baseline manual.
 
 **Portão:** o segundo módulo reutiliza o kernel sem copiar o control plane e demonstra valor mensurável em um caso real.
 

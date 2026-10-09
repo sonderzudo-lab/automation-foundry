@@ -99,7 +99,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         celery_app.log.setup_logging_subsystem(
             loglevel=configuration.log_level.upper(),
         )
-        pidlock = platforms.create_pidlock(str(storage_root / "celerybeat.pid"))
+        pidfile = storage_root / "celerybeat.pid"
+        if singleton is not None:
+            # Owning the named mutex proves no other Beat is alive, so a leftover
+            # pidfile is orphaned. Celery cannot tell on Windows: os.kill(pid, 0)
+            # raises EINVAL for a dead PID and it reports "already running".
+            pidfile.unlink(missing_ok=True)
+        pidlock = platforms.create_pidlock(str(pidfile))
         service = Service(
             app=celery_app,
             max_interval=1.0,

@@ -90,6 +90,8 @@ def test_current_policy_preserves_the_ninety_day_pipeline_baseline() -> None:
         "caption_alignment_report": 90,
         "final_video": 90,
         "originality_report": 90,
+        "operations_brief": 180,
+        "operations_brief_evidence": 180,
     }
 
     assert {
