@@ -26,7 +26,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.briefs.executor import OperationsBriefReview
 from src.core.database import get_session
-from src.dashboard.formatting import format_exact_decimal
+from src.dashboard.formatting import (
+    format_byte_size,
+    format_duration_seconds,
+    format_exact_decimal,
+    format_relative_label,
+    format_utc_label,
+)
 from src.dashboard.service import (
     load_connector_summaries,
     load_dashboard_snapshot,
@@ -111,6 +117,10 @@ _TEMPLATE_DIRECTORY = Path(__file__).resolve().parent / "templates"
 _STATIC_DIRECTORY = Path(__file__).resolve().parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIRECTORY))
 templates.env.filters["exact_decimal"] = format_exact_decimal
+templates.env.filters["utc_label"] = format_utc_label
+templates.env.filters["age_label"] = format_relative_label
+templates.env.filters["duration_label"] = format_duration_seconds
+templates.env.filters["byte_size"] = format_byte_size
 HealthCollector = Callable[[AsyncSession], Awaitable[HealthReport]]
 RetentionCollector = Callable[[AsyncSession], Awaitable[RetentionInventory]]
 DispatchPublisher = Callable[[int, str, QueueClass], None]
