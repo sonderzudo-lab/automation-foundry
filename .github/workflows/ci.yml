@@ -23,7 +23,9 @@ permissions:
 jobs:
   checks:
     name: Lint, tipos e testes (Windows, Python 3.12)
-    runs-on: windows-latest
+    # Versão fixa, pelo mesmo motivo do job de PostgreSQL: o rótulo windows-latest muda de imagem
+    # sem uma alteração neste repositório.
+    runs-on: windows-2025
     timeout-minutes: 25
     env:
       PYTHONUTF8: "1"
