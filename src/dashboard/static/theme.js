@@ -122,7 +122,14 @@
       restoreAfterClose();
     }
   });
-  if (openDialog()) focusDialog();
+  /* Abertura por URL direta: :target só vale depois do passo de rolagem ao fragmento, que
+     pode vir depois deste script; tenta de novo em load e só se o foco ainda estiver fora. */
+  function focusDialogIfOutside() {
+    var dialog = openDialog();
+    if (dialog && !dialog.contains(document.activeElement)) focusDialog();
+  }
+  focusDialogIfOutside();
+  window.addEventListener("load", focusDialogIfOutside);
 
   document.addEventListener("keydown", function (event) {
     var dialog = openDialog();

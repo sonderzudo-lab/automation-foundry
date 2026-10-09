@@ -2563,6 +2563,85 @@ async def test_run_detail_live_fragment_polls_locally_until_terminal(
     assert "hx-trigger=" not in terminal_fragment.text
 
 
+async def test_run_fragment_asks_htmx_to_reload_once_the_run_finishes(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # Cancel, retry and export live in the page header, outside the polled fragment.
+    run_id = await _seed_cancellable_run(session_factory)
+    application = create_app()
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    polling = {"HX-Request": "true"}
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        while_running = await client.get(f"/runs/{run_id}/fragment", headers=polling)
+
+        async with session_factory() as session:
+            run = await session.scalar(select(Run).where(Run.id == run_id))
+            assert run is not None
+            await transition_run(session, run, RunStatus.RUNNING)
+            await transition_run(session, run, RunStatus.SUCCEEDED)
+            await session.commit()
+
+        finished_by_polling = await client.get(f"/runs/{run_id}/fragment", headers=polling)
+        finished_plain = await client.get(f"/runs/{run_id}/fragment")
+
+    assert "hx-refresh" not in while_running.headers
+    assert finished_by_polling.headers["hx-refresh"] == "true"
+    assert "hx-refresh" not in finished_plain.headers
+
+
+async def test_dashboard_does_not_offer_manual_start_while_kill_switch_is_active(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        automation = Automation(
+            slug="platform-smoke",
+            name="Platform Smoke Automation",
+            owner="local-operator",
+        )
+        session.add(automation)
+        await session.commit()
+        automation_id = automation.id
+
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        before = await client.get("/")
+        blocked = await client.post(
+            f"/automations/{automation_id}/kill-switch",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "kill-switch-enable",
+                "target": "enable",
+                "actor": "local-owner",
+                "reason": "stop new dashboard intake",
+            },
+        )
+        after = await client.get("/")
+
+    assert blocked.status_code == 303
+    assert "Disparo manual disponível" in before.text
+    assert 'href="#executar-platform-smoke"' in before.text
+    assert "Disparo manual disponível" not in after.text
+    assert "Kill switch ativo; novos disparos" in after.text
+    assert 'href="#executar-platform-smoke"' not in after.text
+
+
 async def test_run_detail_returns_not_found_without_database_mutation(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

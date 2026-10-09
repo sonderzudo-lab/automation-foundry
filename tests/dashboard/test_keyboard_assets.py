@@ -36,6 +36,7 @@ def test_script_keeps_dialog_focus_and_scroll_position() -> None:
         "restoreAfterClose",
         "savedScroll",
         "insideClosedDetails",
+        "focusDialogIfOutside",
         'event.key === "Escape"',
     ):
         assert marker in script

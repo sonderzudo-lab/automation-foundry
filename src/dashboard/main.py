@@ -405,11 +405,16 @@ def create_app(
         detail = await load_run_detail(session, run_id=run_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="run not found")
+        headers = {"Cache-Control": "no-store"}
+        if detail.is_terminal and request.headers.get("hx-request") == "true":
+            # The header actions (cancel, retry, export) live outside this fragment. When a
+            # polling page sees the run finish, reload once so they match the final state.
+            headers["HX-Refresh"] = "true"
         return templates.TemplateResponse(
             request=request,
             name="run_status_fragment.html",
             context={"run": detail},
-            headers={"Cache-Control": "no-store"},
+            headers=headers,
         )
 
     @application.get("/approvals/{approval_id}/review", response_class=HTMLResponse)

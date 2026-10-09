@@ -52,6 +52,8 @@
                   {% set registered = snapshot.automations|selectattr("slug", "equalto", executor.slug)|first %}
                   {% if registered and not registered.enabled %}
                   <span class="menu-item muted" aria-disabled="true">{{ ui.icon("power") }}{{ executor.name }} · desabilitada</span>
+                  {% elif registered and registered.kill_switch_active %}
+                  <span class="menu-item muted" aria-disabled="true">{{ ui.icon("octagon-x") }}{{ executor.name }} · kill switch ativo</span>
                   {% else %}
                   <a class="menu-item" href="#executar-{{ executor.slug }}">{{ ui.icon("play") }}{{ executor.name }}</a>
                   {% endif %}
@@ -263,9 +265,12 @@
               </div>
               <div class="card-footer">
                 {% if executor and executor.supports_manual_start %}
-                  {% if automation.enabled %}
+                  {% if automation.enabled and not automation.kill_switch_active %}
                   <span>Disparo manual disponível</span>
                   <a class="btn btn-sm" href="#executar-{{ automation.slug }}">{{ ui.icon("play") }}Executar</a>
+                  {% elif automation.enabled %}
+                  <span>Kill switch ativo; novos disparos de {{ executor.name }} permanecem bloqueados.</span>
+                  <button class="btn btn-sm" type="button" disabled>{{ ui.icon("play") }}Executar</button>
                   {% else %}
                   <span>{{ executor.name }} está administrativamente desabilitada; novos disparos permanecem bloqueados.</span>
                   <button class="btn btn-sm" type="button" disabled>{{ ui.icon("play") }}Executar</button>
