@@ -1,49 +1,75 @@
-<!doctype html>
-<html lang="pt-BR">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Export local · Run #{{ run_id }} · Automation Foundry</title>
-    <style>
-      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
-      body { margin: 0; background: #0b0d10; color: #f2f4f7; }
-      main { width: min(920px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
-      h1 { margin: 1rem 0 .35rem; letter-spacing: -.03em; }
-      h2 { color: #b7c0cc; font-size: 1rem; text-transform: uppercase; letter-spacing: .08em; }
-      p { color: #9ba6b4; }
-      a { color: #8ab4f8; }
-      section { margin-top: 1.25rem; background: #13171c; border: 1px solid #262d36; border-radius: 14px; padding: 1.15rem; }
-      table { width: 100%; border-collapse: collapse; }
-      th, td { text-align: left; border-bottom: 1px solid #252c34; padding: .65rem .4rem; }
-      th { color: #8995a3; }
-      code { color: #d2a8ff; overflow-wrap: anywhere; }
-      .notice { border-left: 3px solid #7ee787; padding-left: .8rem; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <a href="/runs/{{ run_id }}">← Voltar à run</a>
-      <h1>Export local revisável</h1>
-      <p class="notice">Os arquivos abaixo foram reconferidos contra os gates A7/A8 e permanecem somente locais. <code>published=false</code>; nenhum upload, envio ou gasto é executado.</p>
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% set active_page = "runs" %}
 
-      <section>
-        <h2>Manifesto</h2>
-        <p>SHA-256 canônico: <code>{{ manifest_sha256 }}</code></p>
-        <p><a href="/runs/{{ run_id }}/local-export/manifest.json" download>Baixar manifesto JSON</a></p>
-      </section>
+{% block title %}Export local · Automation Foundry{% endblock %}
+{% block breadcrumb %}
+<li><a href="/runs/{{ run_id }}">Run #{{ run_id }}</a></li>
+<li><span aria-current="page">Export local</span></li>
+{% endblock %}
 
-      <section>
-        <h2>Arquivos verificados</h2>
-        <table>
-          <thead><tr><th>Papel</th><th>Artifact</th><th>Bytes</th><th>SHA-256</th><th>Download</th></tr></thead>
-          <tbody>
-            <tr><td>Vídeo final</td><td>#{{ video.artifact_id }}</td><td>{{ video.size_bytes }}</td><td><code>{{ video.sha256 }}</code></td><td><a href="/runs/{{ run_id }}/local-export/video" download>MP4</a></td></tr>
-            {% if thumbnail %}
-            <tr><td>Thumbnail</td><td>#{{ thumbnail.artifact_id }}</td><td>{{ thumbnail.size_bytes }}</td><td><code>{{ thumbnail.sha256 }}</code></td><td><a href="/runs/{{ run_id }}/local-export/thumbnail" download>PNG</a></td></tr>
-            {% endif %}
-          </tbody>
-        </table>
-      </section>
-    </main>
-  </body>
-</html>
+{% block content %}
+  <header class="page-header">
+    <div>
+      <a class="back-link" href="/runs/{{ run_id }}">{{ ui.icon("arrow-left") }}Voltar à run #{{ run_id }}</a>
+      <div class="title-row" style="margin-top:.5rem"><h1>Export local revisável</h1>{{ ui.badge("neutral", "lock", "Não publicado") }}</div>
+      <p>Run #{{ run_id }} · pacote para revisão e entrega manual.</p>
+    </div>
+  </header>
+
+  <div class="verify-strip">
+    <span class="alert-icon">{{ ui.icon("shield-check") }}</span>
+    <div>
+      <p><strong>Reconferido agora.</strong> Os arquivos abaixo foram reconferidos contra os gates A7/A8 e permanecem somente locais. <code>published=false</code>; nenhum upload, envio ou gasto é executado.</p>
+      <ul class="check-list">
+        <li>{{ ui.icon("circle-check") }}<span>Approvals A7{% if thumbnail %} e A8{% endif %} aprovadas</span></li>
+        <li>{{ ui.icon("circle-check") }}<span>Tamanho e SHA-256 do vídeo conferem com o registro</span></li>
+        {% if thumbnail %}<li>{{ ui.icon("circle-check") }}<span>Tamanho e SHA-256 da thumbnail conferem com o registro</span></li>{% endif %}
+      </ul>
+    </div>
+  </div>
+
+  <section class="card" aria-labelledby="h-manifesto">
+    <div class="card-header row">
+      <div><h2 class="card-title" id="h-manifesto" style="font-size:1rem">Manifesto</h2><p class="card-description">Descreve o pacote e fixa os hashes; permite conferir os arquivos fora do painel.</p></div>
+      <a class="btn btn-outline" href="/runs/{{ run_id }}/local-export/manifest.json" download>{{ ui.icon("file-text") }}Baixar manifesto JSON</a>
+    </div>
+    <div class="card-content">
+      <dl class="kv">
+        <dt>SHA-256 canônico</dt><dd>{{ ui.hash_chip(manifest_sha256, "SHA-256 do manifesto") }}</dd>
+        <dt>Arquivos no pacote</dt><dd>{{ 2 if thumbnail else 1 }} ({{ "vídeo final e thumbnail" if thumbnail else "vídeo final" }})</dd>
+        <dt>Publicação</dt><dd><code>published=false</code></dd>
+      </dl>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="h-arquivos">
+    <div class="section-head"><div><h2 id="h-arquivos">Arquivos verificados</h2><p>Cada download é servido apenas pelo dashboard local.</p></div></div>
+    <div class="grid grid-2">
+      <article class="card file-card" aria-labelledby="f-video">
+        <div class="card-header"><div class="automation-title"><span class="alert-icon">{{ ui.icon("video") }}</span><div><h3 id="f-video">Vídeo final</h3><code>artefato #{{ video.artifact_id }}</code></div></div></div>
+        <div class="card-content">
+          <dl class="kv">
+            <dt>Tamanho</dt><dd><abbr title="{{ video.size_bytes }} bytes">{{ video.size_bytes|byte_size }}</abbr></dd>
+            <dt>Formato</dt><dd>MP4</dd>
+            <dt>SHA-256</dt><dd>{{ ui.hash_chip(video.sha256, "SHA-256 do vídeo") }}</dd>
+          </dl>
+        </div>
+        <div class="card-footer plain"><a class="btn" href="/runs/{{ run_id }}/local-export/video" download>{{ ui.icon("download") }}Baixar MP4</a></div>
+      </article>
+      {% if thumbnail %}
+      <article class="card file-card" aria-labelledby="f-thumbnail">
+        <div class="card-header"><div class="automation-title"><span class="alert-icon">{{ ui.icon("image") }}</span><div><h3 id="f-thumbnail">Thumbnail</h3><code>artefato #{{ thumbnail.artifact_id }}</code></div></div></div>
+        <div class="card-content">
+          <dl class="kv">
+            <dt>Tamanho</dt><dd><abbr title="{{ thumbnail.size_bytes }} bytes">{{ thumbnail.size_bytes|byte_size }}</abbr></dd>
+            <dt>Formato</dt><dd>PNG</dd>
+            <dt>SHA-256</dt><dd>{{ ui.hash_chip(thumbnail.sha256, "SHA-256 da thumbnail") }}</dd>
+          </dl>
+        </div>
+        <div class="card-footer plain"><a class="btn" href="/runs/{{ run_id }}/local-export/thumbnail" download>{{ ui.icon("download") }}Baixar PNG</a></div>
+      </article>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

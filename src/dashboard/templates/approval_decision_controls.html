@@ -1,29 +1,58 @@
+{% import "_macros.html" as ui %}
+{#
+  Painel de decisão fixo. Variáveis opcionais (via {% with %}): effect, approve_label, reject_label,
+  approve_confirm, reject_confirm, reject_note, pick_hint.
+  O seletor Aprovar/Rejeitar revela um formulário por vez, sem JavaScript; cada formulário continua
+  sendo um POST independente (/approvals/{id}/approve e /reject) com csrf_token, actor, reason e confirmation.
+#}
 {% if approval_status == "pending" %}
-<section>
-  <h2>Decisão humana</h2>
-  <p>Decida somente depois de revisar integralmente as evidências acima. A decisão é imutável.</p>
-  <form method="post" action="/approvals/{{ review.approval_id }}/approve">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="review-approve-actor">Actor local</label>
-    <input id="review-approve-actor" type="text" name="actor" maxlength="200" autocomplete="username" required>
-    <label for="review-approve-reason">Motivo da aprovação</label>
-    <textarea id="review-approve-reason" name="reason" minlength="1" maxlength="500" required></textarea>
-    <label class="confirm"><input type="checkbox" name="confirmation" value="approve-approval" required> Confirmo a aprovação com base nas evidências verificadas desta página.</label>
-    <button type="submit">Aprovar approval</button>
-  </form>
-  <form class="reject-form" method="post" action="/approvals/{{ review.approval_id }}/reject">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="review-reject-actor">Actor local</label>
-    <input id="review-reject-actor" type="text" name="actor" maxlength="200" autocomplete="username" required>
-    <label for="review-reject-reason">Motivo da rejeição</label>
-    <textarea id="review-reject-reason" name="reason" minlength="1" maxlength="500" required></textarea>
-    <label class="confirm"><input type="checkbox" name="confirmation" value="reject-approval" required> Confirmo a rejeição definitiva desta approval.</label>
-    <button class="reject" type="submit">Rejeitar approval</button>
-  </form>
-</section>
+<aside class="decision-panel" aria-label="Decisão humana">
+  <section class="card">
+    <div class="card-header"><h2 class="card-title" style="font-size:1rem">Decisão humana</h2><p class="card-description">Decida somente depois de revisar integralmente as evidências ao lado. A decisão é imutável.</p></div>
+    <div class="card-content">
+      <p class="immutable">{{ ui.icon("lock") }}<span><strong>A decisão é imutável.</strong> {{ effect|default("Nada é publicado, enviado ou gasto.") }}</span></p>
+      <div class="decision-choice">
+        <input type="radio" name="decision" id="dec-approve" aria-label="Aprovar">
+        <input type="radio" name="decision" id="dec-reject" aria-label="Rejeitar">
+        <div class="choices" role="group" aria-label="Escolha a decisão">
+          <label for="dec-approve">{{ ui.icon("circle-check") }}Aprovar</label>
+          <label for="dec-reject">{{ ui.icon("circle-x") }}Rejeitar</label>
+        </div>
+        <div class="decision-forms">
+          <p class="decision-hint">Escolha uma decisão para continuar.</p>
+
+          <form class="decision-form form-stack" id="form-approve" method="post" action="/approvals/{{ review.approval_id }}/approve">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            {% if pick_hint %}<p class="hint">{{ pick_hint }}</p>{% endif %}
+            <div class="field"><label for="review-approve-actor">Actor local</label><input class="input" id="review-approve-actor" type="text" name="actor" maxlength="200" autocomplete="username" required></div>
+            <div class="field"><label for="review-approve-reason">{{ approve_reason_label|default("Motivo da aprovação") }}</label><textarea class="textarea" id="review-approve-reason" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="approve-approval" required> {{ approve_confirm|default("Confirmo a aprovação com base nas evidências verificadas desta página.") }}</label>
+            <button class="btn btn-success btn-block" type="submit">{{ ui.icon("circle-check") }}{{ approve_label|default("Aprovar approval") }}</button>
+          </form>
+
+          <form class="decision-form form-stack" id="form-reject" method="post" action="/approvals/{{ review.approval_id }}/reject">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            {% if reject_heading %}<h3>{{ reject_heading }}</h3>{% endif %}
+            {% if reject_note %}<p class="hint">{{ reject_note }}</p>{% endif %}
+            <div class="field"><label for="review-reject-actor">Actor local</label><input class="input" id="review-reject-actor" type="text" name="actor" maxlength="200" autocomplete="username" required></div>
+            <div class="field"><label for="review-reject-reason">Motivo da rejeição</label><textarea class="textarea" id="review-reject-reason" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="reject-approval" required> {{ reject_confirm|default("Confirmo a rejeição definitiva desta approval.") }}</label>
+            <button class="btn btn-destructive btn-block" type="submit">{{ ui.icon("circle-x") }}{{ reject_label|default("Rejeitar approval") }}</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </section>
+</aside>
 {% else %}
-<section>
-  <h2>Decisão registrada</h2>
-  <p>Esta approval já está <strong>{{ approval_status }}</strong>. As evidências permanecem disponíveis somente para consulta local.</p>
-</section>
+<aside class="decision-panel" aria-label="Decisão">
+  <section class="card">
+    <div class="card-content decision-record">
+      <span class="seal">{{ ui.icon("lock") }}Decisão registrada</span>
+      {% if approval_status == "approved" %}{{ ui.badge("approved", "circle-check", "Aprovada") }}{% elif approval_status == "rejected" %}{{ ui.badge("rejected", "circle-x", "Rejeitada") }}{% else %}{{ ui.badge("neutral", "circle", approval_status) }}{% endif %}
+      <p class="muted text-sm">Esta approval já está <strong>{{ approval_status }}</strong>. As evidências permanecem disponíveis somente para consulta local.</p>
+      <a class="btn btn-outline btn-sm" href="/runs/{{ review.run_id }}">{{ ui.icon("arrow-left") }}Voltar à run #{{ review.run_id }}</a>
+    </div>
+  </section>
+</aside>
 {% endif %}

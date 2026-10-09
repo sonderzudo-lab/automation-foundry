@@ -209,7 +209,8 @@ src/
 └── dashboard/
     ├── routers/
     ├── services/
-    └── templates/
+    ├── static/        # styles.css (design system), theme.js (opcional), htmx.min.js vendorizado
+    └── templates/     # base.html, _macros.html, _icons.html e uma página por tela
 tests/
 ├── platform/
 └── modules/
@@ -277,6 +278,8 @@ No Windows, `automation-foundry-runtime start` e o caminho operacional canonico.
 ## 9. Control plane
 
 A arquitetura do dashboard usa FastAPI, Jinja e HTMX e escuta apenas em `127.0.0.1` por padrao. A home, o detalhe de run, saúde e os fragmentos operacionais respondem `no-store`. O detalhe de run carrega HTMX 2.0.10 vendorizado no pacote, sem CDN, e consulta um fragmento a cada dois segundos somente enquanto a run nao e terminal. O fragmento reutiliza a mesma projecao redigida da pagina completa e substitui apenas status e steps. A home usa o mesmo asset local para atualizar a cada trinta segundos o fragmento de connectors, freshness e qualidade; o servidor seleciona a observação persistida mais recente, deixa estados vencerem para `stale`, prioriza indisponíveis/degradados, sinaliza listas limitadas e mostra o horário UTC absoluto sem tocar na integração. A fila liga approvals editoriais com evidência integral às suas páginas locais `no-store`; nelas, aprovação e rejeição usam formulários HTML nativos com POST seguido de redirect, confirmação e CSRF, e uma decisão já registrada torna a página somente leitura. Uma run Content Engine concluída por A7/A8 oferece uma página separada de export local, manifesto e downloads que reconferem toda a evidência antes de servir. O controle de schedule usa o mesmo padrão nativo e auditado: apenas habilita ou desabilita futuros disparos locais, recusa habilitação quando a automação está pausada, o kill switch está ativo ou não há executor registrado, e não renderiza o payload. Um bloqueio esperado retorna por redirect com aviso seguro; estado efetivo e causas allowlisted permanecem diagnosticáveis sem JavaScript. Os demais formulários e controles seguem o mesmo padrão.
+
+**Camada visual do dashboard.** Todas as páginas estendem `base.html` (sidebar com grupos e recolhimento só com CSS, barra superior, tema claro/escuro por `prefers-color-scheme` ou `data-theme`) e usam `_macros.html` (ícones SVG inline, selos de estado com ícone, texto e cor, estado vazio, chip de hash com cópia) sobre um único `static/styles.css` com tokens no padrão shadcn/ui; não há CDN, fonte externa nem framework de JavaScript, e tudo funciona sem JavaScript (`theme.js` só alterna tema, copia hash e fecha diálogo com Esc). Diálogos abrem por `:target`, abas e o seletor aprovar/rejeitar usam radios CSS, e controles administrativos ficam recolhidos em diálogos. Indicadores novos da home são derivados somente do snapshot já carregado, sem consulta nova. Cada decisão de approval tem um único lugar: ações com página de revisão dedicada decidem lá; a página da run só aponta para ela e mantém um diálogo "Decidir" para approvals sem página própria. Os filtros de formatação (`utc_label`, `age_label`, `duration_label`, `byte_size`, `exact_decimal`) são helpers puros de `src/dashboard/formatting.py` e nunca alteram o valor apresentado: o valor exato permanece em `title` ou atributo `datetime`.
 
 Visões mínimas:
 

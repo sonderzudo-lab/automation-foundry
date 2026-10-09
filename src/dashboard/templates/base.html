@@ -1,0 +1,101 @@
+{% import "_macros.html" as ui %}
+{#
+  Layout comum do painel.
+  A página filha pode definir (no topo, antes dos blocos):
+    {% set active_page = "home" %}   -> item ativo da sidebar: home | runs | approvals | alerts | schedules | health | storage
+  Se o contexto tiver `snapshot` (só a home), a sidebar mostra contadores e a lista de automações.
+#}
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}Automation Foundry{% endblock %}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/theme.js" defer></script>
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {% include "_icons.html" %}
+  <a class="skip-link" href="#conteudo">Pular para o conteúdo</a>
+
+  {# Irmão anterior de .app: recolhe a sidebar (desktop) e abre a gaveta (mobile), sem JavaScript. #}
+  <input class="nav-toggle" type="checkbox" id="nav-toggle" aria-label="Recolher ou expandir o menu lateral">
+
+  <div class="app">
+    <aside class="sidebar" aria-label="Navegação principal">
+      <div class="sidebar-header">
+        <a class="workspace" href="/">
+          <span class="workspace-mark">{{ ui.icon("bot") }}</span>
+          <span class="workspace-text"><strong>Automation Foundry</strong><span>Local · 127.0.0.1</span></span>
+        </a>
+      </div>
+      <nav class="sidebar-content">
+        <div class="nav-group">
+          <div class="nav-label">Operação</div>
+          <ul class="nav-list">
+            <li><a class="nav-item" href="/"{% if active_page == "home" %} aria-current="page"{% endif %}>{{ ui.icon("layout-dashboard") }}<span class="nav-text">Visão geral</span></a></li>
+            <li><a class="nav-item" href="/#runs"{% if active_page == "runs" %} aria-current="page"{% endif %}>{{ ui.icon("layers") }}<span class="nav-text">Runs</span></a></li>
+            <li><a class="nav-item" href="/#precisa-de-voce"{% if active_page == "approvals" %} aria-current="page"{% endif %}>{{ ui.icon("shield-check") }}<span class="nav-text">Approvals</span>{% if snapshot is defined and snapshot.pending_approvals %}<span class="badge badge-pending nav-count">{{ snapshot.pending_approvals|length }}</span>{% endif %}</a></li>
+            <li><a class="nav-item" href="/#precisa-de-voce"{% if active_page == "alerts" %} aria-current="page"{% endif %}>{{ ui.icon("bell") }}<span class="nav-text">Alertas</span>{% if snapshot is defined and snapshot.active_alerts %}<span class="badge badge-warning nav-count">{{ snapshot.active_alerts|length }}</span>{% endif %}</a></li>
+            <li><a class="nav-item" href="/#schedules"{% if active_page == "schedules" %} aria-current="page"{% endif %}>{{ ui.icon("calendar-clock") }}<span class="nav-text">Schedules</span></a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">Automações</div>
+          <ul class="nav-list">
+            <li>
+              <a class="nav-item" href="/#automacoes">{{ ui.icon("bot") }}<span class="nav-text">Todas as automações</span></a>
+              {% if snapshot is defined and snapshot.automations %}
+              <ul class="nav-sub">
+                {% for automation in snapshot.automations %}
+                <li><a class="nav-item" href="/#auto-{{ automation.slug }}"><span class="nav-text">{{ automation.slug }}</span></a></li>
+                {% endfor %}
+              </ul>
+              {% endif %}
+            </li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">Sistema</div>
+          <ul class="nav-list">
+            <li><a class="nav-item" href="/health"{% if active_page == "health" %} aria-current="page"{% endif %}>{{ ui.icon("activity") }}<span class="nav-text">Saúde operacional</span></a></li>
+            <li><a class="nav-item" href="/storage"{% if active_page == "storage" %} aria-current="page"{% endif %}>{{ ui.icon("hard-drive") }}<span class="nav-text">Storage e retenção</span></a></li>
+            <li><a class="nav-item" href="/#ledger">{{ ui.icon("wallet") }}<span class="nav-text">Ledger</span></a></li>
+          </ul>
+        </div>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="row"><span class="dot dot-success"></span><span class="text"><strong>Runtime local ativo</strong></span></div>
+        <div class="row">{{ ui.icon("database") }}<span class="text">controle local · loopback 127.0.0.1</span></div>
+      </div>
+    </aside>
+
+    <div class="main-col">
+      <header class="topbar">
+        <label class="sidebar-toggle" for="nav-toggle" title="Recolher menu">{{ ui.icon("panel-left") }}<span class="sr-only">Alternar menu lateral</span></label>
+        <span class="topbar-sep" aria-hidden="true"></span>
+        <nav aria-label="Trilha de navegação">
+          <ol class="breadcrumb">
+            <li><a href="/">Automation Foundry</a></li>
+            {% block breadcrumb %}<li><span aria-current="page">Visão geral</span></li>{% endblock %}
+          </ol>
+        </nav>
+        <span class="topbar-spacer"></span>
+        <div class="topbar-actions">
+          {% block topbar_status %}{% endblock %}
+          <button class="btn btn-ghost btn-icon theme-toggle" id="theme-toggle" type="button" aria-label="Alternar tema claro e escuro" hidden>{{ ui.icon("moon", "moon") }}{{ ui.icon("sun", "sun") }}</button>
+        </div>
+      </header>
+
+      <main class="page" id="conteudo">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
+
+  {# Diálogos ficam fora de .app para cobrirem a tela inteira (abrem por :target, sem JavaScript). #}
+  {% block dialogs %}{% endblock %}
+</body>
+</html>

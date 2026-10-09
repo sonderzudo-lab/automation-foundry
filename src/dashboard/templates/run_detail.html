@@ -1,247 +1,362 @@
-<!doctype html>
-<html lang="pt-BR">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Run #{{ run.id }} · Automation Foundry</title>
-    <style>
-      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
-      body { margin: 0; background: #0b0d10; color: #f2f4f7; }
-      main { width: min(1180px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
-      header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin: 1rem 0 1.5rem; }
-      h1, h2 { margin: 0; letter-spacing: -0.03em; }
-      h1 { font-size: clamp(2rem, 5vw, 3.5rem); }
-      h2 { font-size: 1rem; margin-bottom: 1rem; color: #b7c0cc; text-transform: uppercase; letter-spacing: .08em; }
-      p { margin: .35rem 0 0; color: #9ba6b4; }
-      a { color: #8ab4f8; text-decoration: none; }
-      a:hover { text-decoration: underline; }
-      code { color: #d2a8ff; }
-      .local { color: #7ee787; font-size: .85rem; }
-      .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 1rem; }
-      .live-fragment { display: contents; }
-      section { grid-column: span 6; background: #13171c; border: 1px solid #262d36; border-radius: 14px; padding: 1.15rem; overflow: auto; }
-      section.wide { grid-column: 1 / -1; }
-      .facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
-      .fact span { display: block; color: #8995a3; font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; margin-bottom: .3rem; }
-      table { width: 100%; border-collapse: collapse; min-width: 620px; }
-      th, td { text-align: left; border-bottom: 1px solid #252c34; padding: .7rem .5rem; font-size: .9rem; }
-      th { color: #8995a3; font-weight: 600; }
-      tr:last-child td { border-bottom: 0; }
-      .badge { display: inline-block; border: 1px solid #3b4552; border-radius: 999px; padding: .15rem .5rem; font-size: .75rem; }
-      .danger { color: #ff7b72; }
-      .empty { padding: 1rem 0; color: #75808d; }
-      .note { margin-top: 1rem; font-size: .85rem; }
-      .control { border-color: #5c342f; }
-      label { display: block; color: #b7c0cc; font-size: .85rem; margin-bottom: .5rem; }
-      textarea { box-sizing: border-box; width: 100%; min-height: 5rem; resize: vertical; background: #0b0d10; color: #f2f4f7; border: 1px solid #3b4552; border-radius: 8px; padding: .7rem; font: inherit; }
-      input[type="text"] { box-sizing: border-box; width: 100%; background: #0b0d10; color: #f2f4f7; border: 1px solid #3b4552; border-radius: 8px; padding: .7rem; font: inherit; margin-bottom: .8rem; }
-      .confirm { display: flex; align-items: center; gap: .5rem; margin: .85rem 0; }
-      .confirm input { margin: 0; }
-      .approval-control { border-top: 1px solid #3a2b29; margin-top: 1rem; padding-top: 1rem; }
-      button { border: 1px solid #8e4b43; border-radius: 8px; background: #351916; color: #ffb4aa; padding: .6rem .9rem; font: inherit; font-weight: 650; cursor: pointer; }
-      button:hover { background: #47201c; }
-      @media (max-width: 820px) { section { grid-column: 1 / -1; } header { align-items: start; flex-direction: column; } .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-    </style>
-    <script src="/static/htmx.min.js" defer></script>
-  </head>
-  <body>
-    <main>
-      <a href="/">← Visão geral</a>
-      <header>
-        <div>
-          <h1>Run #{{ run.id }}</h1>
-          <p>{{ run.automation_name }} · <code>{{ run.automation_slug }}</code></p>
-        </div>
-        <span class="local">● controle local</span>
-      </header>
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% set active_page = "runs" %}
 
-      <div class="grid">
-        {% include "run_status_fragment.html" %}
+{% block title %}Run #{{ run.id }} · Automation Foundry{% endblock %}
 
-        {% if run.can_retry %}
-        <section class="wide control">
-          <h2>Retentar run</h2>
-          <p>Cria uma nova run ligada a esta falha; a execução anterior permanece imutável.</p>
-          <form method="post" action="/runs/{{ run.id }}/retry">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <label for="retry-key">Nova chave de idempotência</label>
-            <input id="retry-key" type="text" name="idempotency_key" maxlength="255" required>
-            <label for="retry-actor">Actor local</label>
-            <input id="retry-actor" type="text" name="actor" maxlength="200" required>
-            <label for="retry-reason">Motivo do retry</label>
-            <textarea id="retry-reason" name="reason" minlength="1" maxlength="500" required></textarea>
-            <label class="confirm"><input type="checkbox" name="confirmation" value="retry-run" required> Confirmo a criação de uma nova tentativa.</label>
-            <button type="submit">Retentar run</button>
-          </form>
-        </section>
-        {% endif %}
+{% block breadcrumb %}
+<li><a href="/#runs">Runs</a></li>
+<li><span aria-current="page">Run #{{ run.id }}</span></li>
+{% endblock %}
 
-        {% if run.can_request_cancellation %}
-        <section class="wide control">
-          <h2>Solicitar cancelamento</h2>
-          <p>O pedido é persistido e auditado. Runs em execução param no próximo checkpoint seguro.</p>
-          <form method="post" action="/runs/{{ run.id }}/cancel">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <label for="reason">Motivo operacional</label>
-            <textarea id="reason" name="reason" minlength="1" maxlength="500" required></textarea>
-            <label class="confirm"><input type="checkbox" name="confirmation" value="cancel-run" required> Confirmo o cancelamento desta run.</label>
-            <button type="submit">Solicitar cancelamento</button>
-          </form>
-        </section>
-        {% endif %}
+{% block content %}
+  {% set review_actions = ("review_content_script_a1", "review_content_narration_a2", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}
+  {% set review_links = {
+    "review_content_script_a1": "Abrir roteiro completo e verificado antes de decidir",
+    "review_content_narration_a2": "Ouvir a narração completa e verificada antes de decidir",
+    "review_content_final_video_a7": "Assistir ao vídeo final verificado antes de decidir",
+    "select_content_thumbnail_a8": "Escolher uma thumbnail entre os PNGs A3 verificados",
+    "review_operations_brief": "Abrir o brief completo e verificado antes de decidir",
+  } %}
+  {% set pending_approvals = run.approvals|selectattr("status", "equalto", "pending")|list %}
+  {% set deciding = run.status == "awaiting_approval" %}
+  {% set approval_labels = {"pending": ("clock", "Pendente"), "approved": ("circle-check", "Aprovada"), "rejected": ("circle-x", "Rejeitada")} %}
 
-        {% if run.has_local_export %}
-        <section class="wide">
-          <h2>Export local</h2>
-          <p>O pacote local reconfere as approvals e os SHA-256 do vídeo e da thumbnail antes de disponibilizar qualquer download.</p>
-          <p><a href="/runs/{{ run.id }}/local-export">Abrir export local revisável</a></p>
-        </section>
-        {% endif %}
+  {# Abas (ordem = ordem dos painéis abaixo). Só aparecem as que têm conteúdo. #}
+  {% set tabs = [("approvals", "Approvals", run.approvals|length, pending_approvals|length > 0)] %}
+  {% if run.content_outcome %}{% set tabs = tabs + [("resultado", "Resultado do conteúdo", 0, false)] %}{% endif %}
+  {% if caption_alignment or caption_alignment_unavailable %}{% set tabs = tabs + [("alinhamento", "Alinhamento da legenda", 0, false)] %}{% endif %}
+  {% if run.has_local_export %}{% set tabs = tabs + [("export", "Export local", 0, false)] %}{% endif %}
+  {% set tabs = tabs + [("artefatos", "Artefatos", run.artifacts|length, false), ("metricas", "Métricas", run.metrics|length, false), ("ledger", "Ledger", run.ledger_entries|length, false)] %}
 
-        <section class="wide">
-          <h2>Approvals vinculadas</h2>
-          {% if run.approvals %}
-          <table><thead><tr><th>ID</th><th>Ação</th><th>Status</th><th>Solicitada UTC</th><th>Decidida UTC</th></tr></thead><tbody>
-          {% for approval in run.approvals %}
-            <tr><td>#{{ approval.id }}</td><td>{{ approval.action }}</td><td>{{ approval.status }}</td><td>{{ approval.requested_at.isoformat() }}Z</td><td>{{ approval.decided_at.isoformat() ~ "Z" if approval.decided_at else "—" }}</td></tr>
-          {% endfor %}
-          </tbody></table>
-          {% for approval in run.approvals %}
-          {% if approval.status == "pending" and run.status == "awaiting_approval" %}
-          <div class="approval-control">
-            <strong>Approval #{{ approval.id }} · {{ approval.action }}</strong>
-            {% if approval.review_payload %}
-            <p>Contexto seguro para revisão:</p>
-            <table><tbody>{% for key, value in approval.review_payload.items() %}<tr><th>{{ key }}</th><td>{{ value }}</td></tr>{% endfor %}</tbody></table>
-            {% if approval.action == "review_content_script_a1" %}
-            <p><a href="/approvals/{{ approval.id }}/review">Abrir roteiro completo e verificado antes de decidir</a></p>
-            {% elif approval.action == "review_content_final_video_a7" %}
-            <p><a href="/approvals/{{ approval.id }}/review">Assistir ao vídeo final verificado antes de decidir</a></p>
-            {% elif approval.action == "review_operations_brief" %}
-            <p><a href="/approvals/{{ approval.id }}/review">Abrir o brief completo e verificado antes de decidir</a></p>
-            {% elif approval.action == "select_content_thumbnail_a8" %}
-            <p><a href="/approvals/{{ approval.id }}/review">Escolher uma thumbnail entre os PNGs A3 verificados</a></p>
-            {% endif %}
-            {% if approval.action != "select_content_thumbnail_a8" %}
-            <form method="post" action="/approvals/{{ approval.id }}/approve">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <label for="approve-actor-{{ approval.id }}">Actor local</label>
-              <input id="approve-actor-{{ approval.id }}" type="text" name="actor" maxlength="200" autocomplete="username" required>
-              <label for="approve-reason-{{ approval.id }}">Motivo da aprovação</label>
-              <textarea id="approve-reason-{{ approval.id }}" name="reason" minlength="1" maxlength="500" required></textarea>
-              <label class="confirm"><input type="checkbox" name="confirmation" value="approve-approval" required> Confirmo a aprovação desta ação conforme a revisão acima.</label>
-              <button type="submit">Aprovar approval</button>
-            </form>
+  <header class="page-header">
+    <div>
+      <div class="title-row"><h1>Run #{{ run.id }}</h1></div>
+      <p><a href="/#auto-{{ run.automation_slug }}">{{ run.automation_name }}</a> · <code>{{ run.automation_slug }}</code></p>
+    </div>
+    <div class="page-actions">
+      {% if run.can_request_cancellation %}
+      <a class="btn btn-outline-danger" href="#cancelar">{{ ui.icon("ban") }}Solicitar cancelamento</a>
+      {% endif %}
+      {% if run.can_retry %}
+      <a class="btn" href="#retentar">{{ ui.icon("rotate-cw") }}Retentar run</a>
+      {% endif %}
+      {% if run.has_local_export %}
+      <a class="btn" href="/runs/{{ run.id }}/local-export">{{ ui.icon("package") }}Export local</a>
+      {% endif %}
+    </div>
+  </header>
+
+  {% include "run_status_fragment.html" %}
+
+  <div class="tabset">
+    {% for key, label, count, attention in tabs %}
+    <input type="radio" name="run-tab" id="tab-{{ key }}"{% if loop.first %} checked{% endif %} aria-label="{{ label }}">
+    {% endfor %}
+    <div class="tablist">
+      {% for key, label, count, attention in tabs %}
+      <label for="tab-{{ key }}">{{ label }}{% if count %}<span class="count{{ ' is-attn' if attention }}">{{ count }}</span>{% endif %}</label>
+      {% endfor %}
+    </div>
+
+    <div class="tab-panels">
+      {# ---------- Approvals ---------- #}
+      <div class="tab-panel" id="panel-approvals" role="region" aria-label="Approvals">
+        <div class="card">
+          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Approvals vinculadas</h3><p class="card-description">Decisões são irreversíveis e ficam registradas com actor e motivo.</p></div>
+          <div class="card-content flush" style="padding-top:.75rem">
+            {% if run.approvals %}
+            {% for approval in pending_approvals if deciding %}
+            <div class="alert alert-info" style="margin:0 1.25rem 1rem;display:grid;gap:.75rem;grid-template-columns:minmax(0,1fr)">
+              <div class="flex items-center gap-3"><span class="alert-icon">{{ ui.icon("shield-check") }}</span><div class="alert-body"><p class="alert-title">Approval #{{ approval.id }} · <code>{{ approval.action }}</code></p>
+                <p class="alert-description">{% if approval.review_payload %}Contexto seguro para revisão:{% else %}Sem contexto seguro de revisão; somente a rejeição está disponível.{% endif %}</p></div></div>
+              {% if approval.review_payload %}
+              <dl class="kv" style="background:var(--card);border-radius:var(--radius-md);padding:0 .75rem">
+                {% for key, value in approval.review_payload.items() %}
+                <dt>{{ key }}</dt><dd>{% if key.endswith("sha256") and value|length == 64 %}{{ ui.hash_chip(value, key) }}{% else %}{{ value }}{% endif %}</dd>
+                {% endfor %}
+              </dl>
+              {% endif %}
+              <div>
+                {% if approval.action in review_actions %}
+                <a class="btn btn-outline" href="/approvals/{{ approval.id }}/review">{{ ui.icon("eye") }}{{ review_links[approval.action] }}</a>
+                {% if approval.action == "select_content_thumbnail_a8" %}
+                <p class="muted text-sm" style="margin-top:.5rem">A aprovação A8 exige uma escolha na página dedicada; nenhum ID enviado fora desse conjunto será aceito.</p>
+                {% endif %}
+                {% else %}
+                <a class="btn btn-outline" href="#decidir-{{ approval.id }}">{{ ui.icon("shield-check") }}Decidir approval #{{ approval.id }}</a>
+                {% endif %}
+              </div>
+            </div>
+            {% endfor %}
+            <div class="table-wrap">
+              <table class="table">
+                <caption class="sr-only">Approvals vinculadas</caption>
+                <thead><tr><th scope="col">ID</th><th scope="col">Ação</th><th scope="col">Status</th><th scope="col">Solicitada (UTC)</th><th scope="col">Decidida (UTC)</th></tr></thead>
+                <tbody>
+                  {% for approval in run.approvals %}
+                  {% set entry = approval_labels.get(approval.status, ("circle", approval.status)) %}
+                  <tr>
+                    <td><strong>#{{ approval.id }}</strong></td>
+                    <td><code>{{ approval.action }}</code></td>
+                    <td>{{ ui.badge(approval.status if approval.status in approval_labels else "neutral", entry[0], entry[1]) }}</td>
+                    <td class="nowrap"><time datetime="{{ approval.requested_at.isoformat() }}Z">{{ approval.requested_at|utc_label }}</time></td>
+                    <td class="nowrap">{% if approval.decided_at %}<time datetime="{{ approval.decided_at.isoformat() }}Z">{{ approval.decided_at|utc_label }}</time>{% else %}—{% endif %}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
             {% else %}
-            <p>A aprovação A8 exige uma escolha na página dedicada; nenhum ID enviado fora desse conjunto será aceito.</p>
+            {{ ui.empty("shield-check", "Nenhuma approval vinculada", "Esta run não pediu decisão humana.") }}
             {% endif %}
-            {% else %}<p>Sem contexto seguro de revisão; somente a rejeição está disponível.</p>{% endif %}
-            <form method="post" action="/approvals/{{ approval.id }}/reject">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <label for="actor-{{ approval.id }}">Actor local</label>
-              <input id="actor-{{ approval.id }}" type="text" name="actor" maxlength="200" autocomplete="username" required>
-              <label for="approval-reason-{{ approval.id }}">Motivo da rejeição</label>
-              <textarea id="approval-reason-{{ approval.id }}" name="reason" minlength="1" maxlength="500" required></textarea>
-              <label class="confirm"><input type="checkbox" name="confirmation" value="reject-approval" required> Confirmo a rejeição definitiva desta approval.</label>
-              <button type="submit">Rejeitar approval</button>
-            </form>
           </div>
-          {% endif %}
-          {% endfor %}
-          {% else %}<div class="empty">Nenhuma approval vinculada.</div>{% endif %}
-        </section>
-
-        {% if run.content_outcome %}
-        <section class="wide">
-          <h2>Resultado local do conteúdo</h2>
-          <div class="facts">
-            <div class="fact"><span>Publicação</span>{% if run.content_outcome.published is sameas false %}não publicado{% elif run.content_outcome.published is sameas true %}publicado{% else %}não registrada{% endif %}</div>
-            <div class="fact"><span>Energia estimada</span>{{ run.content_outcome.estimated_energy_kwh ~ " kWh" if run.content_outcome.estimated_energy_kwh is not none else "—" }}</div>
-            <div class="fact"><span>Evidência observada até</span>{{ run.content_outcome.observed_through.isoformat() ~ "Z" if run.content_outcome.observed_through else "—" }}</div>
-            <div class="fact"><span>Escopo</span>run #{{ run.id }}</div>
-          </div>
-          {% if run.content_outcome.indicators %}
-          <table><thead><tr><th>Step</th><th>Indicador</th><th>Valor</th><th>Unidade</th><th>Confiança</th></tr></thead><tbody>
-          {% for indicator in run.content_outcome.indicators %}
-            <tr><td>{{ "#" ~ indicator.step_run_id if indicator.step_run_id else "run" }}</td><td>{{ indicator.label }}</td><td>{{ indicator.value }}</td><td>{{ indicator.unit }}</td><td>{{ indicator.confidence if indicator.confidence is not none else "—" }}</td></tr>
-          {% endfor %}
-          </tbody></table>
-          {% else %}<div class="empty">Nenhum indicador editorial allowlisted foi observado nesta run.</div>{% endif %}
-          {% if run.content_outcome.ledger_totals %}
-          <table><thead><tr><th>Moeda</th><th>Custo observado</th><th>Receita observada</th><th>Valor atribuído</th><th>Receita líquida observada</th></tr></thead><tbody>
-          {% for total in run.content_outcome.ledger_totals %}
-            <tr><td><code>{{ total.currency }}</code></td><td>{{ total.cost | exact_decimal }}</td><td>{{ total.revenue | exact_decimal }}</td><td>{{ total.attributed_value | exact_decimal }}</td><td>{{ total.net_revenue | exact_decimal }}</td></tr>
-          {% endfor %}
-          </tbody></table>
-          {% else %}<div class="empty">Nenhuma observação financeira foi atribuída a esta run.</div>{% endif %}
-          <p class="note">Consolidação somente leitura de métricas e ledger locais atribuídos à run. Nenhuma plataforma externa foi consultada; não há conversão cambial, pagamento ou promessa de resultado.</p>
-        </section>
-        {% endif %}
-
-        {% if caption_alignment or caption_alignment_unavailable %}
-        <section class="wide">
-          <h2>Alinhamento da legenda</h2>
-          {% if caption_alignment_unavailable %}
-          <div class="empty">O relatório de alinhamento registrado não pôde ser reconferido. Execute o diagnóstico local novamente pela CLI.</div>
-          {% else %}
-          <div class="facts">
-            <div class="fact"><span>Resultado</span>{{ "dentro da tolerância" if caption_alignment.status == "pass" else "fora da tolerância" }}</div>
-            <div class="fact"><span>Fala coberta</span>{{ caption_alignment.speech_coverage_ratio }}</div>
-            <div class="fact"><span>Legenda sobre silêncio</span>{{ caption_alignment.caption_outside_speech_ratio }}</div>
-            <div class="fact"><span>Desvio de início</span>{{ caption_alignment.onset_offset_seconds ~ " s" }}</div>
-            <div class="fact"><span>Desvio de fim</span>{{ caption_alignment.end_offset_seconds ~ " s" }}</div>
-            <div class="fact"><span>Duração do áudio</span>{{ caption_alignment.audio_duration_seconds ~ " s" }}</div>
-            <div class="fact"><span>Fala medida</span>{{ caption_alignment.speech_seconds ~ " s" }}</div>
-            <div class="fact"><span>Trechos de fala</span>{{ caption_alignment.speech_segment_count }}</div>
-            <div class="fact"><span>Blocos de legenda</span>{{ caption_alignment.caption_block_count }}</div>
-            <div class="fact"><span>Eventos além do áudio</span>{{ caption_alignment.events_beyond_audio }}</div>
-          </div>
-          {% if caption_alignment.reasons %}
-          <table><thead><tr><th>Motivo registrado</th></tr></thead><tbody>
-          {% for reason in caption_alignment.reasons %}
-            <tr><td><code>{{ reason }}</code></td></tr>
-          {% endfor %}
-          </tbody></table>
-          {% endif %}
-          <p class="note">Diagnóstico local somente leitura sobre o WAV e o ASS desta run, reconferidos por SHA-256 antes desta exibição (relatório #{{ caption_alignment.report_artifact_id }}, parâmetros <code>{{ caption_alignment.parameters_digest }}</code>). Ele mede sincronismo observável, não substitui revisão humana e não publica nada.</p>
-          {% endif %}
-        </section>
-        {% endif %}
-
-        <section>
-          <h2>Artefatos vinculados</h2>
-          {% if run.artifacts %}
-          <table><thead><tr><th>ID</th><th>Step</th><th>Tipo</th><th>Mídia</th><th>Bytes</th><th>Sensibilidade</th></tr></thead><tbody>
-          {% for artifact in run.artifacts %}
-            <tr><td>#{{ artifact.id }}</td><td>{{ "#" ~ artifact.step_run_id if artifact.step_run_id else "run" }}</td><td>{{ artifact.artifact_type }}</td><td><code>{{ artifact.media_type }}</code></td><td>{{ artifact.size_bytes }}</td><td>{{ artifact.sensitivity }}</td></tr>
-          {% endfor %}
-          </tbody></table>
-          {% else %}<div class="empty">Nenhum artefato vinculado.</div>{% endif %}
-        </section>
-
-        <section>
-          <h2>Métricas vinculadas</h2>
-          {% if run.metrics %}
-          <table><thead><tr><th>ID</th><th>Step</th><th>Métrica</th><th>Tipo</th><th>Valor</th><th>Unidade</th><th>Confiança</th></tr></thead><tbody>
-          {% for metric in run.metrics %}
-            <tr><td>#{{ metric.id }}</td><td>{{ "#" ~ metric.step_run_id if metric.step_run_id else "run" }}</td><td>{{ metric.name }}</td><td>{{ metric.kind }}</td><td>{{ metric.value | exact_decimal }}</td><td>{{ metric.unit }}</td><td>{{ metric.confidence if metric.confidence is not none else "—" }}</td></tr>
-          {% endfor %}
-          </tbody></table>
-          {% else %}<div class="empty">Nenhuma métrica vinculada.</div>{% endif %}
-        </section>
-
-        <section>
-          <h2>Ledger vinculado</h2>
-          {% if run.ledger_entries %}
-          <table><thead><tr><th>ID</th><th>Step</th><th>Tipo</th><th>Valor</th><th>Moeda</th><th>Confiança</th></tr></thead><tbody>
-          {% for entry in run.ledger_entries %}
-            <tr><td>#{{ entry.id }}</td><td>{{ "#" ~ entry.step_run_id if entry.step_run_id else "run" }}</td><td>{{ entry.entry_type }}</td><td>{{ entry.amount | exact_decimal }}</td><td><code>{{ entry.currency }}</code></td><td>{{ entry.confidence if entry.confidence is not none else "—" }}</td></tr>
-          {% endfor %}
-          </tbody></table>
-          {% else %}<div class="empty">Nenhuma observação financeira vinculada.</div>{% endif %}
-          <p class="note">Observações financeiras não representam pagamentos, cobranças ou promessas.</p>
-        </section>
+        </div>
       </div>
-    </main>
-  </body>
-</html>
+
+      {# ---------- Resultado do conteúdo ---------- #}
+      {% if run.content_outcome %}
+      {% set outcome = run.content_outcome %}
+      <div class="tab-panel" id="panel-resultado" role="region" aria-label="Resultado do conteúdo">
+        <div class="card">
+          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Resultado local do conteúdo</h3><p class="card-description">Indicadores editoriais allowlisted desta run.</p></div>
+          <div class="card-content flush" style="padding-top:.75rem">
+            <dl class="facts" style="padding:0 1.25rem 1rem">
+              <div class="fact"><dt>Publicação</dt><dd>{% if outcome.published is sameas false %}{{ ui.badge("neutral", "lock", "não publicado") }}{% elif outcome.published is sameas true %}{{ ui.badge("warning", "triangle-alert", "publicado") }}{% else %}não registrada{% endif %}</dd></div>
+              <div class="fact"><dt>Energia estimada</dt><dd>{{ outcome.estimated_energy_kwh ~ " kWh" if outcome.estimated_energy_kwh is not none else "—" }}</dd></div>
+              <div class="fact"><dt>Evidência observada até</dt><dd>{% if outcome.observed_through %}<time datetime="{{ outcome.observed_through.isoformat() }}Z">{{ outcome.observed_through.isoformat() }}Z</time>{% else %}—{% endif %}</dd></div>
+              <div class="fact"><dt>Escopo</dt><dd>run #{{ run.id }}</dd></div>
+            </dl>
+            {% if outcome.indicators %}
+            <div class="table-wrap">
+              <table class="table">
+                <caption class="sr-only">Indicadores editoriais</caption>
+                <thead><tr><th scope="col">Step</th><th scope="col">Indicador</th><th scope="col" class="num">Valor</th><th scope="col">Unidade</th><th scope="col" class="num">Confiança</th></tr></thead>
+                <tbody>
+                  {% for indicator in outcome.indicators %}
+                  <tr><td>{{ "#" ~ indicator.step_run_id if indicator.step_run_id else "run" }}</td><td>{{ indicator.label }}</td><td class="num">{{ indicator.value }}</td><td>{{ indicator.unit }}</td><td class="num">{{ indicator.confidence if indicator.confidence is not none else "—" }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            {{ ui.empty("chart", "Nenhum indicador editorial", "Nenhum indicador editorial allowlisted foi observado nesta run.") }}
+            {% endif %}
+            {% if outcome.ledger_totals %}
+            <div class="table-wrap">
+              <table class="table">
+                <caption class="sr-only">Ledger da run por moeda</caption>
+                <thead><tr><th scope="col">Moeda</th><th scope="col" class="num">Custo observado</th><th scope="col" class="num">Receita observada</th><th scope="col" class="num">Valor atribuído</th><th scope="col" class="num">Receita líquida observada</th></tr></thead>
+                <tbody>
+                  {% for total in outcome.ledger_totals %}
+                  <tr><th scope="row"><code>{{ total.currency }}</code></th><td class="num">{{ total.cost|exact_decimal }}</td><td class="num">{{ total.revenue|exact_decimal }}</td><td class="num">{{ total.attributed_value|exact_decimal }}</td><td class="num">{{ total.net_revenue|exact_decimal }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            <p class="muted text-sm" style="padding:1rem 1.25rem 0">Nenhuma observação financeira foi atribuída a esta run.</p>
+            {% endif %}
+            <p class="note" style="padding:1rem 1.25rem">Consolidação somente leitura de métricas e ledger locais atribuídos à run. Nenhuma plataforma externa foi consultada; não há conversão cambial, pagamento ou promessa de resultado.</p>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {# ---------- Alinhamento da legenda ---------- #}
+      {% if caption_alignment or caption_alignment_unavailable %}
+      <div class="tab-panel" id="panel-alinhamento" role="region" aria-label="Alinhamento da legenda">
+        <div class="card">
+          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Alinhamento da legenda</h3><p class="card-description">Sincronismo entre áudio e legenda.</p></div>
+          <div class="card-content">
+            {% if caption_alignment_unavailable %}
+            {{ ui.empty("triangle-alert", "Relatório indisponível", "O relatório de alinhamento registrado não pôde ser reconferido. Execute o diagnóstico local novamente pela CLI.") }}
+            {% else %}
+            <dl class="facts">
+              <div class="fact"><dt>Resultado</dt><dd>{% if caption_alignment.status == "pass" %}{{ ui.badge("pass", "circle-check", "dentro da tolerância") }}{% else %}{{ ui.badge("fail", "circle-x", "fora da tolerância") }}{% endif %}</dd></div>
+              <div class="fact"><dt>Fala coberta</dt><dd>{{ caption_alignment.speech_coverage_ratio }}</dd></div>
+              <div class="fact"><dt>Legenda sobre silêncio</dt><dd>{{ caption_alignment.caption_outside_speech_ratio }}</dd></div>
+              <div class="fact"><dt>Desvio de início</dt><dd>{{ caption_alignment.onset_offset_seconds ~ " s" }}</dd></div>
+              <div class="fact"><dt>Desvio de fim</dt><dd>{{ caption_alignment.end_offset_seconds ~ " s" }}</dd></div>
+              <div class="fact"><dt>Duração do áudio</dt><dd>{{ caption_alignment.audio_duration_seconds ~ " s" }}</dd></div>
+              <div class="fact"><dt>Fala medida</dt><dd>{{ caption_alignment.speech_seconds ~ " s" }}</dd></div>
+              <div class="fact"><dt>Trechos de fala</dt><dd>{{ caption_alignment.speech_segment_count }}</dd></div>
+              <div class="fact"><dt>Blocos de legenda</dt><dd>{{ caption_alignment.caption_block_count }}</dd></div>
+              <div class="fact"><dt>Eventos além do áudio</dt><dd>{{ caption_alignment.events_beyond_audio }}</dd></div>
+            </dl>
+            {% if caption_alignment.reasons %}
+            <div class="table-wrap" style="margin-top:1rem">
+              <table class="table">
+                <caption class="sr-only">Motivos registrados</caption>
+                <thead><tr><th scope="col">Motivo registrado</th></tr></thead>
+                <tbody>{% for reason in caption_alignment.reasons %}<tr><td><code>{{ reason }}</code></td></tr>{% endfor %}</tbody>
+              </table>
+            </div>
+            {% endif %}
+            <p class="note" style="margin-top:1rem">Diagnóstico local somente leitura sobre o WAV e o ASS desta run, reconferidos por SHA-256 antes desta exibição (relatório #{{ caption_alignment.report_artifact_id }}, parâmetros <code>{{ caption_alignment.parameters_digest }}</code>). Ele mede sincronismo observável, não substitui revisão humana e não publica nada.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {# ---------- Export local ---------- #}
+      {% if run.has_local_export %}
+      <div class="tab-panel" id="panel-export" role="region" aria-label="Export local">
+        <div class="card">
+          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Export local</h3><p class="card-description">Pacote revisável do vídeo final.</p></div>
+          <div class="card-content">
+            <p class="muted text-sm" style="margin-bottom:1rem">O pacote local reconfere as approvals e os SHA-256 do vídeo e da thumbnail antes de disponibilizar qualquer download.</p>
+            <a class="btn" href="/runs/{{ run.id }}/local-export">{{ ui.icon("package") }}Abrir export local revisável</a>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      {# ---------- Artefatos ---------- #}
+      <div class="tab-panel" id="panel-artefatos" role="region" aria-label="Artefatos">
+        <div class="card">
+          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Artefatos vinculados</h3><p class="card-description">Metadados apenas; caminhos, hashes e origens não aparecem aqui.</p></div>
+          <div class="card-content flush" style="padding-top:.75rem">
+            {% if run.artifacts %}
+            <div class="table-wrap">
+              <table class="table">
+                <caption class="sr-only">Artefatos</caption>
+                <thead><tr><th scope="col">ID</th><th scope="col">Step</th><th scope="col">Tipo</th><th scope="col">Mídia</th><th scope="col" class="num">Tamanho</th><th scope="col">Sensibilidade</th></tr></thead>
+                <tbody>
+                  {% for artifact in run.artifacts %}
+                  <tr><td><strong>#{{ artifact.id }}</strong></td><td>{{ "#" ~ artifact.step_run_id if artifact.step_run_id else "run" }}</td><td><code>{{ artifact.artifact_type }}</code></td><td><code>{{ artifact.media_type }}</code></td><td class="num nowrap"><abbr title="{{ artifact.size_bytes }} bytes">{{ artifact.size_bytes|byte_size }}</abbr></td><td>{{ ui.badge("neutral", "lock", artifact.sensitivity) }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            {{ ui.empty("package", "Nenhum artefato vinculado", "Artefatos gerados pelos steps aparecem aqui.") }}
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      {# ---------- Métricas ---------- #}
+      <div class="tab-panel" id="panel-metricas" role="region" aria-label="Métricas">
+        <div class="card">
+          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Métricas vinculadas</h3></div>
+          <div class="card-content flush" style="padding-top:.75rem">
+            {% if run.metrics %}
+            <div class="table-wrap">
+              <table class="table">
+                <caption class="sr-only">Métricas</caption>
+                <thead><tr><th scope="col">ID</th><th scope="col">Step</th><th scope="col">Métrica</th><th scope="col">Tipo</th><th scope="col" class="num">Valor</th><th scope="col">Unidade</th><th scope="col" class="num">Confiança</th></tr></thead>
+                <tbody>
+                  {% for metric in run.metrics %}
+                  <tr><td><strong>#{{ metric.id }}</strong></td><td>{{ "#" ~ metric.step_run_id if metric.step_run_id else "run" }}</td><td>{{ metric.name }}</td><td>{{ metric.kind }}</td><td class="num">{{ metric.value|exact_decimal }}</td><td>{{ metric.unit }}</td><td class="num">{{ metric.confidence if metric.confidence is not none else "—" }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            {{ ui.empty("chart", "Nenhuma métrica vinculada", "Métricas medidas pelos steps aparecem aqui.") }}
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      {# ---------- Ledger ---------- #}
+      <div class="tab-panel" id="panel-ledger" role="region" aria-label="Ledger">
+        <div class="card">
+          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Ledger vinculado</h3><p class="card-description">Observações financeiras não representam pagamentos, cobranças ou promessas.</p></div>
+          <div class="card-content flush" style="padding-top:.75rem">
+            {% if run.ledger_entries %}
+            <div class="table-wrap">
+              <table class="table">
+                <caption class="sr-only">Ledger</caption>
+                <thead><tr><th scope="col">ID</th><th scope="col">Step</th><th scope="col">Tipo</th><th scope="col" class="num">Valor</th><th scope="col">Moeda</th><th scope="col" class="num">Confiança</th></tr></thead>
+                <tbody>
+                  {% for entry in run.ledger_entries %}
+                  <tr><td><strong>#{{ entry.id }}</strong></td><td>{{ "#" ~ entry.step_run_id if entry.step_run_id else "run" }}</td><td>{{ entry.entry_type }}</td><td class="num">{{ entry.amount|exact_decimal }}</td><td><code>{{ entry.currency }}</code></td><td class="num">{{ entry.confidence if entry.confidence is not none else "—" }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            {{ ui.empty("wallet", "Nenhuma observação financeira vinculada", "Esta run não registrou custo nem receita.") }}
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block dialogs %}
+  {% set review_actions = ("review_content_script_a1", "review_content_narration_a2", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}
+
+  {% if run.can_request_cancellation %}
+  <div class="dialog-backdrop" id="cancelar">
+    <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="cancelar-title" tabindex="-1">
+      <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar">{{ ui.icon("x") }}</a>
+      <header class="dialog-header"><h2 id="cancelar-title">Cancelar a run #{{ run.id }}?</h2><p>O pedido é persistido e auditado. Runs em execução param no próximo checkpoint seguro.</p></header>
+      <form class="form-stack" method="post" action="/runs/{{ run.id }}/cancel">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="field"><label for="reason">Motivo operacional</label><textarea class="textarea" id="reason" name="reason" minlength="1" maxlength="500" required></textarea></div>
+        <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="cancel-run" required> Confirmo o cancelamento desta run.</label>
+        <div class="dialog-footer"><a class="btn btn-outline" href="#">Voltar</a><button class="btn btn-destructive" type="submit">{{ ui.icon("ban") }}Solicitar cancelamento</button></div>
+      </form>
+    </section>
+  </div>
+  {% endif %}
+
+  {% if run.can_retry %}
+  <div class="dialog-backdrop" id="retentar">
+    <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="retentar-title" tabindex="-1">
+      <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar">{{ ui.icon("x") }}</a>
+      <header class="dialog-header"><h2 id="retentar-title">Retentar a run #{{ run.id }}?</h2><p>Cria uma nova run ligada a esta falha; a execução anterior permanece imutável.</p></header>
+      <form class="form-stack" method="post" action="/runs/{{ run.id }}/retry">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="field"><label for="retry-key">Nova chave de idempotência</label><input class="input mono" id="retry-key" type="text" name="idempotency_key" maxlength="255" required></div>
+        <div class="field"><label for="retry-actor">Actor local</label><input class="input" id="retry-actor" type="text" name="actor" maxlength="200" required></div>
+        <div class="field"><label for="retry-reason">Motivo do retry</label><textarea class="textarea" id="retry-reason" name="reason" minlength="1" maxlength="500" required></textarea></div>
+        <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="retry-run" required> Confirmo a criação de uma nova tentativa.</label>
+        <div class="dialog-footer"><a class="btn btn-outline" href="#">Cancelar</a><button class="btn" type="submit">{{ ui.icon("rotate-cw") }}Retentar run</button></div>
+      </form>
+    </section>
+  </div>
+  {% endif %}
+
+  {# Decisão na própria run: só para approvals que NÃO têm página de revisão dedicada. #}
+  {% if run.status == "awaiting_approval" %}
+  {% for approval in run.approvals if approval.status == "pending" and approval.action not in review_actions %}
+  <div class="dialog-backdrop" id="decidir-{{ approval.id }}">
+    <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="decidir-{{ approval.id }}-title" tabindex="-1">
+      <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar">{{ ui.icon("x") }}</a>
+      <header class="dialog-header"><h2 id="decidir-{{ approval.id }}-title">Approval #{{ approval.id }} · {{ approval.action }}</h2><p>A decisão é imutável e fica registrada com actor e motivo.</p></header>
+      {% if approval.review_payload %}
+      <details class="disclosure neutral">
+        <summary>{{ ui.icon("circle-check") }}Aprovar approval<span class="chev">{{ ui.icon("chevron-right") }}</span></summary>
+        <form class="form-stack" method="post" action="/approvals/{{ approval.id }}/approve">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="field"><label for="approve-actor-{{ approval.id }}">Actor local</label><input class="input" id="approve-actor-{{ approval.id }}" type="text" name="actor" maxlength="200" autocomplete="username" required></div>
+          <div class="field"><label for="approve-reason-{{ approval.id }}">Motivo da aprovação</label><textarea class="textarea" id="approve-reason-{{ approval.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
+          <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="approve-approval" required> Confirmo a aprovação desta ação conforme a revisão acima.</label>
+          <div><button class="btn btn-success" type="submit">{{ ui.icon("circle-check") }}Aprovar approval</button></div>
+        </form>
+      </details>
+      {% endif %}
+      <details class="disclosure">
+        <summary>{{ ui.icon("circle-x") }}Rejeitar approval<span class="chev">{{ ui.icon("chevron-right") }}</span></summary>
+        <form class="form-stack" method="post" action="/approvals/{{ approval.id }}/reject">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="field"><label for="actor-{{ approval.id }}">Actor local</label><input class="input" id="actor-{{ approval.id }}" type="text" name="actor" maxlength="200" autocomplete="username" required></div>
+          <div class="field"><label for="approval-reason-{{ approval.id }}">Motivo da rejeição</label><textarea class="textarea" id="approval-reason-{{ approval.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
+          <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="reject-approval" required> Confirmo a rejeição definitiva desta approval.</label>
+          <div><button class="btn btn-destructive" type="submit">{{ ui.icon("circle-x") }}Rejeitar approval</button></div>
+        </form>
+      </details>
+    </section>
+  </div>
+  {% endfor %}
+  {% endif %}
+{% endblock %}

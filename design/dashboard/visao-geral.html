@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Visão geral · Automation Foundry</title>
+  <link rel="stylesheet" href="../../src/dashboard/static/styles.css">
+  <script src="../../src/dashboard/static/theme.js" defer></script>
+  <!-- PRODUÇÃO: <script src="/static/htmx.min.js" defer></script> (já existe em src/dashboard/static) -->
+</head>
+<body>
+  <!-- Sprite de ícones (estilo Lucide). Em Jinja: {% include "_icons.html" %} -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><symbol id="i-layout-dashboard" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></symbol><symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol><symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol><symbol id="i-circle-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol><symbol id="i-circle-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol><symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol><symbol id="i-triangle-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol><symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol><symbol id="i-calendar-clock" viewBox="0 0 24 24"><path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h5"/><path d="M17.5 17.5 16 16.3V14"/><circle cx="16" cy="16" r="6"/></symbol><symbol id="i-hard-drive" viewBox="0 0 24 24"><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></symbol><symbol id="i-wallet" viewBox="0 0 24 24"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></symbol><symbol id="i-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol><symbol id="i-ellipsis" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol><symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol><symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol><symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol><symbol id="i-zap" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></symbol><symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></symbol><symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></symbol><symbol id="i-loader" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol><symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></symbol><symbol id="i-octagon-x" viewBox="0 0 24 24"><path d="m15 9-6 6"/><path d="m9 9 6 6"/><path d="M2.586 16.726A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2h6.624a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586z"/></symbol><symbol id="i-layers" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></symbol><symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol><symbol id="i-coins" viewBox="0 0 24 24"><circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/></symbol><symbol id="i-flask" viewBox="0 0 24 24"><path d="M14 2v6a2 2 0 0 0 .245.96l5.51 10.08A2 2 0 0 1 18 22H6a2 2 0 0 1-1.755-2.96l5.51-10.08A2 2 0 0 0 10 8V2"/><path d="M6.453 15h11.094"/><path d="M8.5 2h7"/></symbol><symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol><symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></symbol><symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></symbol><symbol id="i-trending-up" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></symbol><symbol id="i-cpu" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></symbol></svg>
+
+  <a class="skip-link" href="#conteudo">Pular para o conteúdo</a>
+
+  <!-- Checkbox irmão anterior de .app: recolhe a sidebar (desktop) e abre a gaveta (mobile), sem JS -->
+  <input class="nav-toggle" type="checkbox" id="nav-toggle" aria-label="Recolher ou expandir o menu lateral">
+
+  <div class="app">
+    <!-- ===================== SIDEBAR ===================== -->
+    <aside class="sidebar" aria-label="Navegação principal">
+      <div class="sidebar-header">
+        <a class="workspace" href="/">
+          <span class="workspace-mark"><svg class="icon" aria-hidden="true"><use href="#i-bot"/></svg></span>
+          <span class="workspace-text"><strong>Automation Foundry</strong><span>Local · 127.0.0.1</span></span>
+        </a>
+      </div>
+      <nav class="sidebar-content">
+        <div class="nav-group">
+          <div class="nav-label">Operação</div>
+          <ul class="nav-list">
+            <li><a class="nav-item" href="/" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-layout-dashboard"/></svg><span class="nav-text">Visão geral</span></a></li>
+            <li><a class="nav-item" href="#runs"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg><span class="nav-text">Runs</span></a></li>
+            <li><a class="nav-item" href="#precisa-de-voce"><svg class="icon" aria-hidden="true"><use href="#i-shield-check"/></svg><span class="nav-text">Approvals</span><!-- DINÂMICO: contagem de approvals pendentes --><span class="badge badge-pending nav-count">1</span></a></li>
+            <li><a class="nav-item" href="#precisa-de-voce"><svg class="icon" aria-hidden="true"><use href="#i-bell"/></svg><span class="nav-text">Alertas</span><!-- DINÂMICO: contagem de alertas ativos --><span class="badge badge-warning nav-count">1</span></a></li>
+            <li><a class="nav-item" href="#schedules"><svg class="icon" aria-hidden="true"><use href="#i-calendar-clock"/></svg><span class="nav-text">Schedules</span></a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">Automações</div>
+          <ul class="nav-list">
+            <li>
+              <a class="nav-item" href="#automacoes"><svg class="icon" aria-hidden="true"><use href="#i-bot"/></svg><span class="nav-text">Todas as automações</span></a>
+              <!-- DINÂMICO: um subitem por automação registrada -->
+              <ul class="nav-sub">
+                <li><a class="nav-item" href="#auto-content-engine"><span class="nav-text">content-engine</span></a></li>
+                <li><a class="nav-item" href="#auto-operations-brief"><span class="nav-text">operations-brief</span></a></li>
+                <li><a class="nav-item" href="#auto-platform-health"><span class="nav-text">platform-health</span></a></li>
+                <li><a class="nav-item" href="#auto-platform-smoke"><span class="nav-text">platform-smoke</span></a></li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">Sistema</div>
+          <ul class="nav-list">
+            <li><a class="nav-item" href="/health"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg><span class="nav-text">Saúde operacional</span></a></li>
+            <li><a class="nav-item" href="/storage"><svg class="icon" aria-hidden="true"><use href="#i-hard-drive"/></svg><span class="nav-text">Storage e retenção</span></a></li>
+            <li><a class="nav-item" href="#ledger"><svg class="icon" aria-hidden="true"><use href="#i-wallet"/></svg><span class="nav-text">Ledger</span></a></li>
+          </ul>
+        </div>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="row"><span class="dot dot-success"></span><span class="text"><strong>Runtime local ativo</strong></span></div>
+        <div class="row"><svg class="icon" aria-hidden="true"><use href="#i-database"/></svg><span class="text">loopback · 127.0.0.1:8000</span></div>
+      </div>
+    </aside>
+
+    <!-- ===================== COLUNA PRINCIPAL ===================== -->
+    <div class="main-col">
+      <header class="topbar">
+        <label class="sidebar-toggle" for="nav-toggle" title="Recolher menu"><svg class="icon" aria-hidden="true"><use href="#i-panel-left"/></svg><span class="sr-only">Alternar menu lateral</span></label>
+        <span class="topbar-sep" aria-hidden="true"></span>
+        <nav aria-label="Trilha de navegação">
+          <ol class="breadcrumb">
+            <li><a href="/">Automation Foundry</a></li>
+            <li><span aria-current="page">Visão geral</span></li>
+          </ol>
+        </nav>
+        <span class="topbar-spacer"></span>
+        <div class="topbar-actions">
+          <!-- DINÂMICO: estado global. Atenção se houver approval/alerta; "Tudo em ordem" caso contrário -->
+          <a class="badge badge-warning hide-sm" href="#precisa-de-voce"><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg>2 itens pedem atenção</a>
+          <button class="btn btn-ghost btn-icon theme-toggle" id="theme-toggle" type="button" aria-label="Alternar tema claro e escuro" hidden><svg class="icon moon" aria-hidden="true"><use href="#i-moon"/></svg><svg class="icon sun" aria-hidden="true"><use href="#i-sun"/></svg></button>
+        </div>
+      </header>
+
+      <main class="page" id="conteudo">
+        <!-- DINÂMICO: {% if notice %} -->
+        <!-- <div class="alert alert-success" role="status"><span class="alert-icon">…</span><div class="alert-body"><p class="alert-title">{{ notice }}</p></div></div> -->
+
+        <header class="page-header">
+          <div>
+            <h1>Visão geral</h1>
+            <p>Estado do control plane em <time datetime="2026-10-09T14:20:00Z">2026-10-09 14:20 UTC</time>.</p>
+          </div>
+          <div class="page-actions">
+            <details class="menu">
+              <summary class="btn"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>Executar<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+              <div class="menu-content">
+                <div class="menu-label">Disparo manual seguro</div>
+                <!-- DINÂMICO: executors com supports_manual_start; habilitada → link para #executar-{slug} -->
+                <a class="menu-item" href="#executar-content-engine"><svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg>Content Engine</a>
+                <a class="menu-item" href="#executar-operations-brief"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>Operations Brief</a>
+                <span class="menu-item muted" aria-disabled="true"><svg class="icon" aria-hidden="true"><use href="#i-shield-check"/></svg>Platform Smoke · desabilitada</span>
+              </div>
+            </details>
+          </div>
+        </header>
+
+        <!-- ============ 1. PRECISA DE VOCÊ ============ -->
+        <section class="attention" id="precisa-de-voce" aria-labelledby="h-atencao">
+          <div class="attention-head">
+            <h2 id="h-atencao"><svg class="icon" aria-hidden="true"><use href="#i-bell"/></svg>Precisa de você</h2>
+            <span class="badge badge-warning">2 itens</span>
+          </div>
+          <div class="attention-body alert-list">
+            <!-- DINÂMICO: loop em snapshot.pending_approvals (link só se a action tiver tela de revisão) -->
+            <div class="alert alert-info">
+              <span class="alert-icon"><svg class="icon" aria-hidden="true"><use href="#i-shield-check"/></svg></span>
+              <div class="alert-body">
+                <p class="alert-title">Aprovação pendente · <code>review_operations_brief</code></p>
+                <p class="alert-description">Run <a href="/runs/10">#10</a> · <code>operations-brief</code> · solicitada <time datetime="2026-10-09T13:33:00Z">2026-10-09 13:33 UTC</time> · <strong>há 47 min</strong>. Nada sai sem a sua decisão.</p>
+              </div>
+              <a class="btn btn-sm alert-action" href="/approvals/1/review"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>Revisar</a>
+            </div>
+            <!-- DINÂMICO: loop em snapshot.active_alerts (error/critical → .alert-destructive; warning → .alert-warning; info → .alert-info) -->
+            <div class="alert alert-warning">
+              <span class="alert-icon"><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg></span>
+              <div class="alert-body">
+                <p class="alert-title">Storage health degraded</p>
+                <p class="alert-description"><span class="badge badge-warning"><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg>Warning</span> <span class="badge badge-neutral"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>Aberto</span> · <span class="tabular">1.079</span> ocorrências · última <time datetime="2026-10-09T14:18:00Z">14:18 UTC</time> (há 2 min)</p>
+              </div>
+              <a class="btn btn-outline btn-sm alert-action" href="/storage">Ver storage</a>
+            </div>
+            <!-- ESTADO VAZIO (quando não houver nada): classe .attention.is-clear + .empty.is-good
+            <div class="empty is-good"><span class="empty-icon">…circle-check…</span><h3>Nada precisa de você agora</h3><p>Nenhuma aprovação pendente e nenhum alerta ativo.</p></div> -->
+          </div>
+        </section>
+
+        <!-- ============ 2. KPIs ============ -->
+        <section class="grid grid-kpi" aria-label="Indicadores das últimas 24 horas">
+          <article class="card kpi">
+            <div class="card-header"><h3 class="card-title">Runs · 24 h</h3></div>
+            <div class="card-content">
+              <p class="metric">4</p>
+              <div class="spark" role="img" aria-label="Runs por intervalo de 2 horas nas últimas 24 horas; pico de 2 runs há 16 horas"><i style="--h:8%"></i><i style="--h:8%"></i><i style="--h:8%"></i><i class=on style="--h:100%"></i><i style="--h:8%"></i><i style="--h:8%"></i><i style="--h:8%"></i><i style="--h:8%"></i><i style="--h:8%"></i><i style="--h:8%"></i><i class=on style="--h:50%"></i><i class=on style="--h:50%"></i></div>
+            </div>
+            <div class="card-footer plain"><span class="kpi-foot"><strong>2 canceladas · 1 aguardando</strong><span>1 concluída</span></span></div>
+          </article>
+          <article class="card kpi">
+            <div class="card-header"><h3 class="card-title">Taxa de sucesso</h3></div>
+            <div class="card-content">
+              <p class="metric">100<small>%</small></p>
+              <div class="progress is-brand" role="progressbar" aria-label="Taxa de sucesso" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100" style="--value:100%"><span></span></div>
+            </div>
+            <div class="card-footer plain"><span class="kpi-foot"><strong>2 de 2 concluídas</strong><span>Canceladas e em andamento ficam fora</span></span></div>
+          </article>
+          <a class="card kpi" href="#precisa-de-voce">
+            <div class="card-header"><h3 class="card-title">Aprovações pendentes</h3></div>
+            <div class="card-content"><p class="metric">1</p></div>
+            <div class="card-footer plain"><span class="kpi-foot"><strong>Mais antiga há 47 min</strong><span>Exigem decisão humana</span></span></div>
+          </a>
+          <a class="card kpi" href="#precisa-de-voce">
+            <div class="card-header"><h3 class="card-title">Alertas ativos</h3></div>
+            <div class="card-content"><p class="metric">1</p></div>
+            <div class="card-footer plain"><span class="kpi-foot"><strong>1 warning · 0 críticos</strong><span>Storage health degraded</span></span></div>
+          </a>
+          <a class="card kpi" href="#ledger">
+            <div class="card-header"><h3 class="card-title">Custo · BRL</h3></div>
+            <div class="card-content"><p class="metric"><small>R$</small> 0,00</p></div>
+            <div class="card-footer plain"><span class="kpi-foot"><strong>Receita 0,00</strong><span>Valor atribuído 0,00</span></span></div>
+          </a>
+        </section>
+
+        <!-- ============ 3. RUNS + LATERAL ============ -->
+        <div class="split">
+          <div class="grid">
+          <section class="card" id="runs" aria-labelledby="h-runs">
+            <div class="card-header row">
+              <div><h2 class="card-title" id="h-runs" style="font-size:1rem">Runs recentes</h2><p class="card-description">Horários em UTC, com idade relativa.</p></div>
+            </div>
+            <div class="card-content flush">
+              <div class="table-wrap">
+                <table class="table">
+                  <caption class="sr-only">Runs recentes</caption>
+                  <thead><tr>
+                    <th scope="col">Run · trigger</th><th scope="col">Automação · fila</th><th scope="col">Status</th>
+                    <th scope="col" class="num">Duração</th><th scope="col">Enfileirada (UTC)</th>
+                  </tr></thead>
+                  <tbody>
+                    <!-- DINÂMICO: loop em snapshot.recent_runs (badge por status; ver COMPONENTES.md) -->
+            <tr>
+              <td><a href="/runs/10"><strong>#10</strong></a><small>manual</small></td>
+              <td class="nowrap"><code>operations-brief</code><small>fila <code>io</code></small></td>
+              <td><span class="badge badge-awaiting_approval"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg>Aguardando aprovação</span></td>
+              <td class="num nowrap">—</td>
+              <td class="nowrap"><time datetime="2026-10-09T13:33:00Z">2026-10-09 13:33</time><small>há 47 min</small></td>
+            </tr>
+            <tr>
+              <td><a href="/runs/9"><strong>#9</strong></a><small>manual</small></td>
+              <td class="nowrap"><code>operations-brief</code><small>fila <code>io</code></small></td>
+              <td><span class="badge badge-succeeded"><svg class="icon" aria-hidden="true"><use href="#i-circle-check"/></svg>Concluída</span></td>
+              <td class="num nowrap">1 h 42 min</td>
+              <td class="nowrap"><time datetime="2026-10-09T11:50:00Z">2026-10-09 11:50</time><small>há 2 h 30 min</small></td>
+            </tr>
+            <tr>
+              <td><a href="/runs/8"><strong>#8</strong></a><small>manual</small></td>
+              <td class="nowrap"><code>operations-brief</code><small>fila <code>io</code></small></td>
+              <td><span class="badge badge-cancelled"><svg class="icon" aria-hidden="true"><use href="#i-ban"/></svg>Cancelada</span></td>
+              <td class="num nowrap">—</td>
+              <td class="nowrap"><time datetime="2026-10-08T22:10:00Z">2026-10-08 22:10</time><small>há 16 h</small></td>
+            </tr>
+            <tr>
+              <td><a href="/runs/7"><strong>#7</strong></a><small>manual</small></td>
+              <td class="nowrap"><code>operations-brief</code><small>fila <code>io</code></small></td>
+              <td><span class="badge badge-cancelled"><svg class="icon" aria-hidden="true"><use href="#i-ban"/></svg>Cancelada</span></td>
+              <td class="num nowrap">—</td>
+              <td class="nowrap"><time datetime="2026-10-08T21:58:00Z">2026-10-08 21:58</time><small>há 16 h</small></td>
+            </tr>
+            <tr>
+              <td><a href="/runs/5"><strong>#5</strong></a><small>manual</small></td>
+              <td class="nowrap"><code>content-engine</code><small>fila <code>gpu</code></small></td>
+              <td><span class="badge badge-succeeded"><svg class="icon" aria-hidden="true"><use href="#i-circle-check"/></svg>Concluída</span></td>
+              <td class="num nowrap">4 min 12 s</td>
+              <td class="nowrap"><time datetime="2026-10-07T16:40:00Z">2026-10-07 16:40</time><small>há 1 d 21 h</small></td>
+            </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+                      <!-- Connectors: área que atualiza sozinha a cada 30 s -->
+            <!-- ÁREA AUTO-ATUALIZÁVEL: substitui o fragmento data_observability_fragment.html (hx-get a cada 30 s) -->
+            <section class="card" id="data-observability" aria-labelledby="h-conn"
+                     hx-get="/data-observability/fragment" hx-trigger="every 30s" hx-swap="outerHTML" aria-live="polite">
+              <div class="card-header row">
+                <div><h2 class="card-title" id="h-conn">Connectors e dados</h2><p class="card-description">Frescor e qualidade</p></div>
+                <span class="live"><span class="dot dot-live" aria-hidden="true"></span>Atualiza a cada 30 s</span>
+              </div>
+              <div class="card-content flush">
+                <ul class="list">
+                  <!-- DINÂMICO: loop em snapshot.connectors (se truncado: alert-warning "Lista limitada") -->
+                  <li>
+                    <span class="alert-icon" style="flex:none"><svg class="icon" aria-hidden="true"><use href="#i-database"/></svg></span>
+                    <div class="grow">
+                      <strong class="truncate" style="display:block"><code>operations-brief · platform-database</code></strong>
+                      <span class="cell-sub">Observado há 4 min · SLO de status 15 min · dado há 4 min</span>
+                      <div class="chips" style="margin-top:.375rem">
+                        <span class="badge badge-healthy"><svg class="icon" aria-hidden="true"><use href="#i-circle-check"/></svg>Healthy</span><span class="badge badge-pass"><svg class="icon" aria-hidden="true"><use href="#i-circle-check"/></svg>Qualidade: pass</span><span class="badge badge-fresh"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg>Fresco · SLO 7 d</span>
+                      </div>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+            </section>
+          </div>
+
+          <div class="grid">
+            <!-- Saúde -->
+            <section class="card" aria-labelledby="h-saude">
+              <div class="card-header row">
+                <div><h2 class="card-title" id="h-saude">Saúde da máquina</h2><p class="card-description">1 componente degradado</p></div>
+                <span class="badge badge-warning"><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg>Degradado</span>
+              </div>
+              <div class="card-content meters">
+                <!-- DINÂMICO: percentuais de /health (barra passa a is-warning ≥ 80% e is-danger ≥ 95%) -->
+                <div class="meter"><span>CPU</span><div class="progress" role="progressbar" aria-label="CPU" aria-valuenow="35" aria-valuemin="0" aria-valuemax="100" style="--value:35%"><span></span></div><span class="num">35%</span></div>
+                <div class="meter"><span>Memória</span><div class="progress" role="progressbar" aria-label="Memória" aria-valuenow="51" aria-valuemin="0" aria-valuemax="100" style="--value:51%"><span></span></div><span class="num">51%</span></div>
+                <div class="meter"><span>Disco</span><div class="progress is-warning" role="progressbar" aria-label="Disco" aria-valuenow="88" aria-valuemin="0" aria-valuemax="100" style="--value:88%"><span></span></div><span class="num">88%</span></div>
+                <div class="meter"><span>VRAM</span><div class="progress" role="progressbar" aria-label="VRAM da GPU" aria-valuenow="18.5" aria-valuemin="0" aria-valuemax="100" style="--value:18.5%"><span></span></div><span class="num">18,5%</span></div>
+                <p class="note">NVIDIA GeForce RTX 3090 · 4.551 de 24.576 MiB · 1 worker por fila</p>
+              </div>
+              <div class="card-footer"><span>Disco acima de 80%</span><a class="btn btn-outline btn-sm" href="/health">Saúde operacional</a></div>
+            </section>
+
+            <!-- Schedules -->
+            <section class="card" id="schedules" aria-labelledby="h-sched">
+              <div class="card-header"><h2 class="card-title" id="h-sched">Próximos schedules</h2></div>
+              <div class="card-content flush">
+                <ul class="list">
+                  <!-- DINÂMICO: loop em snapshot.schedules. Payloads e motivos internos nunca aparecem -->
+                  <li>
+                    <span class="alert-icon" style="flex:none"><svg class="icon" aria-hidden="true"><use href="#i-calendar-clock"/></svg></span>
+                    <div class="grow">
+                      <strong>Brief semanal</strong>
+                      <span class="cell-sub"><code>0 8 * * 1</code> · America/Sao_Paulo · <code>operations-brief</code></span>
+                      <span class="cell-sub">Próxima: <time datetime="2026-10-12T11:00:00Z">2026-10-12 11:00 UTC</time> · em 2 d 20 h</span>
+                    </div>
+                    <span class="badge badge-success"><svg class="icon" aria-hidden="true"><use href="#i-circle-check"/></svg>Habilitado</span>
+                  </li>
+                </ul>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <!-- ============ 4. AUTOMAÇÕES ============ -->
+        <section class="section" id="automacoes" aria-labelledby="h-auto">
+          <div class="section-head">
+            <div><h2 id="h-auto">Automações</h2><p>Estado, desempenho recente e ações. Controles administrativos ficam em “Gerenciar módulo…”.</p></div>
+          </div>
+          <div class="grid grid-cards">
+            <!-- DINÂMICO: loop em snapshot.automations + snapshot.execution_summaries (um card por automação) -->
+      <article class="card automation" aria-labelledby="auto-content-engine">
+        <div class="card-header">
+          <div class="automation-title">
+            <span class="alert-icon"><svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg></span>
+            <div><h3 id="auto-content-engine">Content Engine</h3><code>content-engine</code></div>
+          </div>
+          <details class="menu">
+            <summary class="btn btn-ghost btn-icon btn-sm" aria-label="Mais ações de Content Engine"><svg class="icon" aria-hidden="true"><use href="#i-ellipsis"/></svg></summary>
+            <div class="menu-content">
+              <a class="menu-item" href="#runs"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>Ver runs</a>
+              <a class="menu-item" href="#schedules"><svg class="icon" aria-hidden="true"><use href="#i-calendar-clock"/></svg>Ver schedules</a>
+              <div class="menu-sep"></div>
+              <a class="menu-item danger" href="#gerenciar-content-engine"><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg>Gerenciar módulo…</a>
+            </div>
+          </details>
+        </div>
+        <div class="card-content" style="display:grid;gap:1rem;align-content:start">
+          <p class="card-description">Roteiro, narração, vídeo e thumbnail com revisão humana.</p>
+          <div class="chips"><span class="badge badge-success"><svg class="icon" aria-hidden="true"><use href="#i-circle-check"/></svg>Ativa</span><span class="badge badge-neutral"><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Kill switch livre</span><span class="badge badge-secondary">Fila <code class="mono" style="background:none;padding:0">gpu</code></span></div>
+          <div class="stat-row">
+            <div class="stat"><span>Taxa de sucesso</span><strong>100%</strong><span>1 de 1 concluída</span></div>
+            <div class="stat"><span>Duração média</span><strong>4 min 12 s</strong></div>
+            <div class="stat"><span>Última run</span><strong>#5 · há 2 d</strong></div>
+          </div>
+        </div>
+        <div class="card-footer"><span>Disparo manual disponível</span><a class="btn btn-sm" href="#executar-content-engine"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>Executar</a></div>
+      </article>
+      <article class="card automation" aria-labelledby="auto-operations-brief">
+        <div class="card-header">
+          <div class="automation-title">
+            <span class="alert-icon"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg></span>
+            <div><h3 id="auto-operations-brief">Operations Brief</h3><code>operations-brief</code></div>
+          </div>
+          <details class="menu">
+            <summary class="btn btn-ghost btn-icon btn-sm" aria-label="Mais ações de Operations Brief"><svg class="icon" aria-hidden="true"><use href="#i-ellipsis"/></svg></summary>
+            <div class="menu-content">
+              <a class="menu-item" href="#runs"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>Ver runs</a>
+              <a class="menu-item" href="#schedules"><svg class="icon" aria-hidden="true"><use href="#i-calendar-clock"/></svg>Ver schedules</a>
+              <div class="menu-sep"></div>
+              <a class="menu-item danger" href="#gerenciar-operations-brief"><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg>Gerenciar módulo…</a>
+            </div>
+          </details>
+        </div>
+        <div class="card-content" style="display:grid;gap:1rem;align-content:start">
+          <p class="card-description">Resumo operacional semanal aprovado por você antes de sair.</p>
+          <div class="chips"><span class="badge badge-success"><svg class="icon" aria-hidden="true"><use href="#i-circle-check"/></svg>Ativa</span><span class="badge badge-neutral"><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Kill switch livre</span><span class="badge badge-secondary">Fila <code class="mono" style="background:none;padding:0">io</code></span></div>
+          <div class="stat-row">
+            <div class="stat"><span>Taxa de sucesso</span><strong>100%</strong><span>1 de 1 concluída</span></div>
+            <div class="stat"><span>Duração média</span><strong>1 h 42 min</strong></div>
+            <div class="stat"><span>Última run</span><strong>#10 · há 47 min</strong></div>
+          </div>
+        </div>
+        <div class="card-footer"><span>Disparo manual disponível</span><a class="btn btn-sm" href="#executar-operations-brief"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>Executar</a></div>
+      </article>
+      <article class="card automation" aria-labelledby="auto-platform-health">
+        <div class="card-header">
+          <div class="automation-title">
+            <span class="alert-icon"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg></span>
+            <div><h3 id="auto-platform-health">Platform Health Monitor</h3><code>platform-health</code></div>
+          </div>
+          <details class="menu">
+            <summary class="btn btn-ghost btn-icon btn-sm" aria-label="Mais ações de Platform Health Monitor"><svg class="icon" aria-hidden="true"><use href="#i-ellipsis"/></svg></summary>
+            <div class="menu-content">
+              <a class="menu-item" href="#runs"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>Ver runs</a>
+              <a class="menu-item" href="#schedules"><svg class="icon" aria-hidden="true"><use href="#i-calendar-clock"/></svg>Ver schedules</a>
+              <div class="menu-sep"></div>
+              <a class="menu-item danger" href="#gerenciar-platform-health"><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg>Gerenciar módulo…</a>
+            </div>
+          </details>
+        </div>
+        <div class="card-content" style="display:grid;gap:1rem;align-content:start">
+          <p class="card-description">Observa CPU, memória, disco, banco, Redis e workers.</p>
+          <div class="chips"><span class="badge badge-success"><svg class="icon" aria-hidden="true"><use href="#i-circle-check"/></svg>Ativa</span><span class="badge badge-neutral"><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Kill switch livre</span><span class="badge badge-secondary">Fila <code class="mono" style="background:none;padding:0">io</code></span></div>
+          <div class="stat-row">
+            <div class="stat"><span>Taxa de sucesso</span><strong>—</strong><span>sem amostra</span></div>
+            <div class="stat"><span>Duração média</span><strong>—</strong></div>
+            <div class="stat"><span>Última run</span><strong>Nenhuma run</strong></div>
+          </div>
+        </div>
+        <div class="card-footer"><span>Sem disparo manual · roda por schedule</span></div>
+      </article>
+      <!-- EXEMPLO DE VARIANTE: módulo desabilitado (card esmaecido, Executar bloqueado) -->
+      <article class="card automation" aria-labelledby="auto-platform-smoke">
+        <div class="card-header">
+          <div class="automation-title">
+            <span class="alert-icon"><svg class="icon" aria-hidden="true"><use href="#i-shield-check"/></svg></span>
+            <div><h3 id="auto-platform-smoke">Platform Smoke Automation</h3><code>platform-smoke</code></div>
+          </div>
+          <details class="menu">
+            <summary class="btn btn-ghost btn-icon btn-sm" aria-label="Mais ações de Platform Smoke Automation"><svg class="icon" aria-hidden="true"><use href="#i-ellipsis"/></svg></summary>
+            <div class="menu-content">
+              <a class="menu-item" href="#runs"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg>Ver runs</a>
+              <a class="menu-item" href="#schedules"><svg class="icon" aria-hidden="true"><use href="#i-calendar-clock"/></svg>Ver schedules</a>
+              <div class="menu-sep"></div>
+              <a class="menu-item danger" href="#gerenciar-platform-smoke"><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg>Gerenciar módulo…</a>
+            </div>
+          </details>
+        </div>
+        <div class="card-content" style="display:grid;gap:1rem;align-content:start">
+          <p class="card-description">Verificação ponta a ponta do control plane.</p>
+          <div class="chips"><span class="badge badge-disabled"><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>Desabilitada</span><span class="badge badge-neutral"><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Kill switch livre</span><span class="badge badge-secondary">Fila <code class="mono" style="background:none;padding:0">io</code></span></div>
+          <div class="stat-row">
+            <div class="stat"><span>Taxa de sucesso</span><strong>—</strong><span>sem amostra</span></div>
+            <div class="stat"><span>Duração média</span><strong>—</strong></div>
+            <div class="stat"><span>Última run</span><strong>Nenhuma run</strong></div>
+          </div>
+        </div>
+        <div class="card-footer"><span>Habilite o módulo para disparar</span><button class="btn btn-sm" type="button" disabled><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>Executar</button></div>
+      </article>
+          </div>
+        </section>
+
+        <!-- ============ 5. FINANCEIRO E EXPERIMENTOS ============ -->
+        <div class="grid grid-2">
+          <section class="card" id="ledger" aria-labelledby="h-ledger">
+            <div class="card-header"><h2 class="card-title" id="h-ledger" style="font-size:1rem">Ledger</h2><p class="card-description">Cada moeda permanece separada; sem conversão cambial.</p></div>
+            <div class="card-content flush" style="padding-top:.75rem">
+              <div class="table-wrap">
+                <table class="table">
+                  <caption class="sr-only">Ledger por moeda</caption>
+                  <thead><tr><th scope="col">Moeda</th><th scope="col" class="num">Custo</th><th scope="col" class="num">Receita</th><th scope="col" class="num">Líquida observada</th><th scope="col" class="num">Valor atribuído</th></tr></thead>
+                  <tbody>
+                    <!-- DINÂMICO: loop em snapshot.ledger_totals (filtro exact_decimal) -->
+                    <tr><th scope="row"><code>BRL</code></th><td class="num">0,00</td><td class="num">0,00</td><td class="num">0,00</td><td class="num">0,00</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <details class="disclosure neutral" style="margin:.75rem 1.25rem 0">
+                <summary>Por automação<span class="chev"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"/></svg></span></summary>
+                <div class="table-wrap">
+                  <table class="table">
+                    <caption class="sr-only">Ledger por automação</caption>
+                    <thead><tr><th scope="col">Automação</th><th scope="col">Moeda</th><th scope="col" class="num">Custo</th><th scope="col" class="num">Receita</th><th scope="col" class="num">Valor atribuído</th></tr></thead>
+                    <tbody>
+                      <!-- DINÂMICO: loop em snapshot.automation_ledger_totals -->
+                      <tr><td><code>operations-brief</code></td><td><code>BRL</code></td><td class="num">0,00</td><td class="num">0,00</td><td class="num">0,00</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            </div>
+            <div class="card-footer plain"><span class="note">Valores não representam pagamentos ou promessas.</span></div>
+          </section>
+
+          <section class="card" aria-labelledby="h-exp">
+            <div class="card-header"><h2 class="card-title" id="h-exp" style="font-size:1rem">Experimentos</h2><p class="card-description">Comparações entre variantes de uma automação.</p></div>
+            <div class="card-content">
+              <!-- DINÂMICO: se houver, tabela (ID, automação, experimento, status, variantes, métrica primária) -->
+              <div class="empty">
+                <span class="empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-flask"/></svg></span>
+                <h3>Nenhum experimento registrado</h3>
+                <p>Quando houver um experimento em andamento, ele aparece aqui e como opção ao executar um módulo.</p>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- ===================== DIÁLOGOS (um por módulo; abrem por :target, sem JS) ===================== -->
+  <!-- DINÂMICO: executar-{slug} para cada executor habilitado com disparo manual; gerenciar-{slug} para cada automação -->
+    <div class="dialog-backdrop" id="executar-content-engine">
+      <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+      <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="executar-content-engine-title" tabindex="-1">
+        <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></a>
+        <header class="dialog-header"><h2 id="executar-content-engine-title">Executar · Content Engine</h2><p>Roda localmente; runs, steps e evidências ficam registrados no banco.</p></header>
+        
+        <!-- DINÂMICO: executor.manual_input_fields (loop Jinja: textarea | select | input) -->
+        <form class="form-stack" method="post" action="/automations/content-engine/runs">
+          <input type="hidden" name="csrf_token" value="CSRF_TOKEN"><!-- {{ csrf_token }} -->
+          
+          <div class="field"><label for="m-content-engine-topic">Tema ou pauta</label><textarea class="textarea" id="m-content-engine-topic" name="topic" maxlength="500" required></textarea></div>
+          <div class="field"><label for="m-content-engine-persona">Persona editorial</label><textarea class="textarea" id="m-content-engine-persona" name="persona" maxlength="1000" required></textarea></div>
+          <div class="field"><label for="m-content-engine-format">Formato</label>
+            <select class="select" id="m-content-engine-format" name="format" required>
+              <option value="short">Short · até 60 s</option><option value="long">Longo · 10+ min</option>
+            </select></div>
+          <div class="field"><label for="m-content-engine-recent">Aberturas recentes <span class="muted">(opcional, uma por linha)</span></label><textarea class="textarea" id="m-content-engine-recent" name="recent_openings" maxlength="2000"></textarea></div>
+          <div class="field"><label for="m-content-engine-idem">Chave de idempotência</label>
+            <input class="input mono" id="m-content-engine-idem" type="text" name="idempotency_key" maxlength="255" required value="content-engine-20261009-1420">
+            <span class="hint">Repetir a mesma chave não cria uma segunda run.</span></div>
+          <div class="field"><label for="m-content-engine-exp">Experimento ativo <span class="muted">(opcional)</span></label>
+            <select class="select" id="m-content-engine-exp" name="experiment_id"><option value="">Sem experimento</option></select></div>
+          <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="start-example-run" required> Confirmo a execução local sem publicação, mensagem ou gasto externo.</label>
+          <div class="dialog-footer">
+            <a class="btn btn-outline" href="#">Cancelar</a>
+            <button class="btn" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>Executar módulo</button>
+          </div>
+        </form>
+        
+      </section>
+    </div>
+    <div class="dialog-backdrop" id="executar-operations-brief">
+      <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+      <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="executar-operations-brief-title" tabindex="-1">
+        <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></a>
+        <header class="dialog-header"><h2 id="executar-operations-brief-title">Executar · Operations Brief</h2><p>Roda localmente; runs, steps e evidências ficam registrados no banco.</p></header>
+        
+        <!-- DINÂMICO: executor.manual_input_fields (loop Jinja: textarea | select | input) -->
+        <form class="form-stack" method="post" action="/automations/operations-brief/runs">
+          <input type="hidden" name="csrf_token" value="CSRF_TOKEN"><!-- {{ csrf_token }} -->
+          
+          <div class="field"><label for="m-operations-brief-window">Janela do brief</label>
+            <select class="select" id="m-operations-brief-window" name="window_days" required>
+              <option value="1">Último dia</option><option value="7" selected>Últimos 7 dias</option>
+            </select></div>
+          <div class="field"><label for="m-operations-brief-idem">Chave de idempotência</label>
+            <input class="input mono" id="m-operations-brief-idem" type="text" name="idempotency_key" maxlength="255" required value="operations-brief-20261009-1420">
+            <span class="hint">Repetir a mesma chave não cria uma segunda run.</span></div>
+          <div class="field"><label for="m-operations-brief-exp">Experimento ativo <span class="muted">(opcional)</span></label>
+            <select class="select" id="m-operations-brief-exp" name="experiment_id"><option value="">Sem experimento</option></select></div>
+          <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="start-example-run" required> Confirmo a execução local sem publicação, mensagem ou gasto externo.</label>
+          <div class="dialog-footer">
+            <a class="btn btn-outline" href="#">Cancelar</a>
+            <button class="btn" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>Executar módulo</button>
+          </div>
+        </form>
+        
+      </section>
+    </div>
+    <div class="dialog-backdrop" id="gerenciar-content-engine">
+      <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+      <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="gerenciar-content-engine-title" tabindex="-1">
+        <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></a>
+        <header class="dialog-header"><h2 id="gerenciar-content-engine-title">Gerenciar · Content Engine</h2><p><code>content-engine</code> · controles administrativos</p></header>
+        
+        <!-- DINÂMICO: automation.id, automation.enabled, automation.kill_switch_active -->
+        
+        <div class="danger-zone">
+          <h3><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg>Zona de perigo</h3>
+          <p>Ações administrativas ficam registradas com actor e motivo. Cada uma exige confirmação.</p>
+          
+          <details class="disclosure">
+            <summary><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>Desabilitar módulo<span class="chev"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"/></svg></span></summary>
+            <div class="form-stack">
+              <p>Bloqueia a admissão de novas runs. Não interrompe trabalho que já esteja em execução.</p>
+              
+          <form class="form-stack" method="post" action="/automations/1/enabled">
+            <input type="hidden" name="csrf_token" value="CSRF_TOKEN">
+            <input type="hidden" name="target" value="disable">
+            <div class="field"><label for="enabled-actor-1">Actor local</label><input class="input" id="enabled-actor-1" type="text" name="actor" maxlength="200" required></div>
+            <div class="field"><label for="enabled-reason-1">Motivo administrativo</label><textarea class="textarea" id="enabled-reason-1" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="automation-disable" required> Confirmo a desabilitação de novos disparos.</label>
+            <div><button class="btn btn-destructive" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>Desabilitar módulo</button></div>
+          </form>
+            </div>
+          </details>
+          <details class="disclosure">
+            <summary><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Ativar kill switch<span class="chev"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"/></svg></span></summary>
+            <div class="form-stack">
+              <p>Bloqueia o módulo imediatamente, inclusive schedules futuros, até ser liberado.</p>
+              
+          <form class="form-stack" method="post" action="/automations/1/kill-switch">
+            <input type="hidden" name="csrf_token" value="CSRF_TOKEN">
+            <input type="hidden" name="target" value="enable">
+            <div class="field"><label for="kill-actor-1">Actor local</label><input class="input" id="kill-actor-1" type="text" name="actor" maxlength="200" required></div>
+            <div class="field"><label for="kill-reason-1">Motivo operacional</label><textarea class="textarea" id="kill-reason-1" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="kill-switch-enable" required> Confirmo o bloqueio deste módulo.</label>
+            <div><button class="btn btn-destructive" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Ativar kill switch</button></div>
+          </form>
+            </div>
+          </details>
+        </div>
+        
+      </section>
+    </div>
+    <div class="dialog-backdrop" id="gerenciar-operations-brief">
+      <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+      <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="gerenciar-operations-brief-title" tabindex="-1">
+        <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></a>
+        <header class="dialog-header"><h2 id="gerenciar-operations-brief-title">Gerenciar · Operations Brief</h2><p><code>operations-brief</code> · controles administrativos</p></header>
+        
+        <!-- DINÂMICO: automation.id, automation.enabled, automation.kill_switch_active -->
+        
+        <div class="danger-zone">
+          <h3><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg>Zona de perigo</h3>
+          <p>Ações administrativas ficam registradas com actor e motivo. Cada uma exige confirmação.</p>
+          
+          <details class="disclosure">
+            <summary><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>Desabilitar módulo<span class="chev"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"/></svg></span></summary>
+            <div class="form-stack">
+              <p>Bloqueia a admissão de novas runs. Não interrompe trabalho que já esteja em execução.</p>
+              
+          <form class="form-stack" method="post" action="/automations/2/enabled">
+            <input type="hidden" name="csrf_token" value="CSRF_TOKEN">
+            <input type="hidden" name="target" value="disable">
+            <div class="field"><label for="enabled-actor-2">Actor local</label><input class="input" id="enabled-actor-2" type="text" name="actor" maxlength="200" required></div>
+            <div class="field"><label for="enabled-reason-2">Motivo administrativo</label><textarea class="textarea" id="enabled-reason-2" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="automation-disable" required> Confirmo a desabilitação de novos disparos.</label>
+            <div><button class="btn btn-destructive" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>Desabilitar módulo</button></div>
+          </form>
+            </div>
+          </details>
+          <details class="disclosure">
+            <summary><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Ativar kill switch<span class="chev"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"/></svg></span></summary>
+            <div class="form-stack">
+              <p>Bloqueia o módulo imediatamente, inclusive schedules futuros, até ser liberado.</p>
+              
+          <form class="form-stack" method="post" action="/automations/2/kill-switch">
+            <input type="hidden" name="csrf_token" value="CSRF_TOKEN">
+            <input type="hidden" name="target" value="enable">
+            <div class="field"><label for="kill-actor-2">Actor local</label><input class="input" id="kill-actor-2" type="text" name="actor" maxlength="200" required></div>
+            <div class="field"><label for="kill-reason-2">Motivo operacional</label><textarea class="textarea" id="kill-reason-2" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="kill-switch-enable" required> Confirmo o bloqueio deste módulo.</label>
+            <div><button class="btn btn-destructive" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Ativar kill switch</button></div>
+          </form>
+            </div>
+          </details>
+        </div>
+        
+      </section>
+    </div>
+    <div class="dialog-backdrop" id="gerenciar-platform-health">
+      <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+      <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="gerenciar-platform-health-title" tabindex="-1">
+        <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></a>
+        <header class="dialog-header"><h2 id="gerenciar-platform-health-title">Gerenciar · Platform Health Monitor</h2><p><code>platform-health</code> · controles administrativos</p></header>
+        
+        <!-- DINÂMICO: automation.id, automation.enabled, automation.kill_switch_active -->
+        
+        <div class="danger-zone">
+          <h3><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg>Zona de perigo</h3>
+          <p>Ações administrativas ficam registradas com actor e motivo. Cada uma exige confirmação.</p>
+          
+          <details class="disclosure">
+            <summary><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>Desabilitar módulo<span class="chev"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"/></svg></span></summary>
+            <div class="form-stack">
+              <p>Bloqueia a admissão de novas runs. Não interrompe trabalho que já esteja em execução.</p>
+              
+          <form class="form-stack" method="post" action="/automations/3/enabled">
+            <input type="hidden" name="csrf_token" value="CSRF_TOKEN">
+            <input type="hidden" name="target" value="disable">
+            <div class="field"><label for="enabled-actor-3">Actor local</label><input class="input" id="enabled-actor-3" type="text" name="actor" maxlength="200" required></div>
+            <div class="field"><label for="enabled-reason-3">Motivo administrativo</label><textarea class="textarea" id="enabled-reason-3" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="automation-disable" required> Confirmo a desabilitação de novos disparos.</label>
+            <div><button class="btn btn-destructive" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>Desabilitar módulo</button></div>
+          </form>
+            </div>
+          </details>
+          <details class="disclosure">
+            <summary><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Ativar kill switch<span class="chev"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"/></svg></span></summary>
+            <div class="form-stack">
+              <p>Bloqueia o módulo imediatamente, inclusive schedules futuros, até ser liberado.</p>
+              
+          <form class="form-stack" method="post" action="/automations/3/kill-switch">
+            <input type="hidden" name="csrf_token" value="CSRF_TOKEN">
+            <input type="hidden" name="target" value="enable">
+            <div class="field"><label for="kill-actor-3">Actor local</label><input class="input" id="kill-actor-3" type="text" name="actor" maxlength="200" required></div>
+            <div class="field"><label for="kill-reason-3">Motivo operacional</label><textarea class="textarea" id="kill-reason-3" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="kill-switch-enable" required> Confirmo o bloqueio deste módulo.</label>
+            <div><button class="btn btn-destructive" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Ativar kill switch</button></div>
+          </form>
+            </div>
+          </details>
+        </div>
+        
+      </section>
+    </div>
+    <div class="dialog-backdrop" id="gerenciar-platform-smoke">
+      <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+      <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="gerenciar-platform-smoke-title" tabindex="-1">
+        <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></a>
+        <header class="dialog-header"><h2 id="gerenciar-platform-smoke-title">Gerenciar · Platform Smoke Automation</h2><p><code>platform-smoke</code> · controles administrativos</p></header>
+        
+        <!-- DINÂMICO: automation.id, automation.enabled, automation.kill_switch_active -->
+        
+        <div class="form-stack">
+          <h3>Habilitação administrativa</h3>
+          <p class="muted text-sm">Este módulo está desabilitado: novos disparos permanecem bloqueados.</p>
+          
+          <form class="form-stack" method="post" action="/automations/4/enabled">
+            <input type="hidden" name="csrf_token" value="CSRF_TOKEN">
+            <input type="hidden" name="target" value="enable">
+            <div class="field"><label for="enabled-actor-4">Actor local</label><input class="input" id="enabled-actor-4" type="text" name="actor" maxlength="200" required></div>
+            <div class="field"><label for="enabled-reason-4">Motivo administrativo</label><textarea class="textarea" id="enabled-reason-4" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="automation-enable" required> Confirmo a habilitação de novos disparos.</label>
+            <div><button class="btn" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>Habilitar módulo</button></div>
+          </form>
+        </div>
+        <div class="danger-zone">
+          <h3><svg class="icon" aria-hidden="true"><use href="#i-triangle-alert"/></svg>Zona de perigo</h3>
+          <p>Ações administrativas ficam registradas com actor e motivo. Cada uma exige confirmação.</p>
+          
+          <details class="disclosure">
+            <summary><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Ativar kill switch<span class="chev"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"/></svg></span></summary>
+            <div class="form-stack">
+              <p>Bloqueia o módulo imediatamente, inclusive schedules futuros, até ser liberado.</p>
+              
+          <form class="form-stack" method="post" action="/automations/4/kill-switch">
+            <input type="hidden" name="csrf_token" value="CSRF_TOKEN">
+            <input type="hidden" name="target" value="enable">
+            <div class="field"><label for="kill-actor-4">Actor local</label><input class="input" id="kill-actor-4" type="text" name="actor" maxlength="200" required></div>
+            <div class="field"><label for="kill-reason-4">Motivo operacional</label><textarea class="textarea" id="kill-reason-4" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="kill-switch-enable" required> Confirmo o bloqueio deste módulo.</label>
+            <div><button class="btn btn-destructive" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-octagon-x"/></svg>Ativar kill switch</button></div>
+          </form>
+            </div>
+          </details>
+        </div>
+        
+      </section>
+    </div>
+</body>
+</html>
