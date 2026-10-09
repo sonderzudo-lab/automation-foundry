@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Retenção de storage · Automation Foundry</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      body { margin: 0; background: #0b0d10; color: #f2f4f7; }
+      main { width: min(1000px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
+      header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin-bottom: 1.5rem; }
+      h1 { margin: 0; letter-spacing: -.03em; }
+      h2 { margin: 2rem 0 .8rem; font-size: 1rem; color: #c7d0da; letter-spacing: -.01em; }
+      p { color: #9ba6b4; }
+      a { color: #8ab4f8; text-decoration: none; }
+      table { width: 100%; border-collapse: collapse; background: #13171c; border: 1px solid #262d36; border-radius: 14px; overflow: hidden; }
+      th, td { text-align: left; border-bottom: 1px solid #252c34; padding: .8rem; vertical-align: top; }
+      th { color: #8995a3; }
+      td.numeric, th.numeric { text-align: right; font-variant-numeric: tabular-nums; }
+      tr:last-child td { border-bottom: 0; }
+      .badge { display: inline-block; border: 1px solid #3b4552; border-radius: 999px; padding: .15rem .5rem; font-size: .75rem; }
+      .retained { color: #7ee787; }
+      .retention_hold { color: #f2cc60; }
+      .expired { color: #f2cc60; }
+      .orphan { color: #f2cc60; }
+      .missing { color: #ff7b72; }
+      .unsafe { color: #ff7b72; }
+      .notice { border: 1px solid #262d36; background: #13171c; border-radius: 14px; padding: 1rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Retenção de storage</h1>
+          <p>Inventário somente leitura em dry-run. Caminhos de arquivo não são exibidos aqui; use a CLI local.</p>
+        </div>
+        <a href="/">← Dashboard</a>
+      </header>
+
+      {% if error %}
+        <p class="notice">{{ error }}</p>
+      {% elif not inventory.storage_root_present %}
+        <p class="notice">A raiz de storage configurada ainda não existe. Nada foi criado, alterado ou apagado.</p>
+      {% else %}
+        <p class="notice">
+          Dry-run em {{ inventory.generated_at.isoformat() }}Z ·
+          arquivos {{ inventory.scanned_file_count }} ·
+          bytes {{ inventory.scanned_bytes }} ·
+          excluídos da varredura {{ inventory.excluded_file_count }} ({{ inventory.excluded_bytes }} bytes) ·
+          <strong>apagados {{ inventory.deleted_file_count }}</strong>.
+          Nenhuma exclusão material está implementada.
+        </p>
+
+        <h2>Classes de retenção</h2>
+        <table>
+          <thead><tr><th>Classe</th><th class="numeric">Arquivos</th><th class="numeric">Bytes</th></tr></thead>
+          <tbody>
+          {% for entry in inventory.classes %}
+            <tr>
+              <td><span class="badge {{ entry.classification.value }}">{{ entry.classification.value }}</span></td>
+              <td class="numeric">{{ entry.file_count }}</td>
+              <td class="numeric">{{ entry.total_bytes }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+
+        <h2>Por automação</h2>
+        {% if inventory.automations %}
+        <table>
+          <thead>
+            <tr>
+              <th>Automação</th>
+              <th class="numeric">Arquivos</th>
+              <th class="numeric">Bytes</th>
+              <th class="numeric">Expirados</th>
+              <th class="numeric">Bytes expirados</th>
+              <th class="numeric">Retidos</th>
+              <th class="numeric">Ausentes</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for automation in inventory.automations %}
+            <tr>
+              <td><code>{{ automation.automation_slug }}</code></td>
+              <td class="numeric">{{ automation.file_count }}</td>
+              <td class="numeric">{{ automation.total_bytes }}</td>
+              <td class="numeric">{{ automation.expired_file_count }}</td>
+              <td class="numeric">{{ automation.expired_bytes }}</td>
+              <td class="numeric">{{ automation.hold_file_count }}</td>
+              <td class="numeric">{{ automation.missing_file_count }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p>Nenhum artifact registrado.</p>
+        {% endif %}
+
+        <p>
+          <code>retention_hold</code> reúne artefatos com retenção vencida que não podem ser
+          tratados como expirados: run aberta, approval pendente, evidência divergente ou caminho
+          compartilhado por mais de um registro.
+        </p>
+      {% endif %}
+
+      <h2>Política declarativa por tipo de artifact</h2>
+      <table>
+        <thead>
+          <tr><th>Tipo</th><th class="numeric">Retenção</th><th>Produtor</th><th>Justificativa</th></tr>
+        </thead>
+        <tbody>
+        {% for policy in retention_policies %}
+          <tr>
+            <td><code>{{ policy.artifact_type }}</code></td>
+            <td class="numeric">{{ "indefinida" if policy.indefinite else policy.retention_days ~ " dias" }}</td>
+            <td><code>{{ policy.producer }}</code></td>
+            <td>{{ policy.rationale }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p>
+        A política vale para registros novos: cada artifact grava o próprio prazo no momento do
+        registro, então alterar a tabela nunca antecipa o vencimento de algo já registrado. Um tipo
+        não declarado resolve para retenção indefinida, nunca expira e por isso nunca entra em um
+        plano de expurgo por omissão.
+      </p>
+    </main>
+  </body>
+</html>

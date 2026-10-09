@@ -768,6 +768,19 @@ def _safe_configuration(configuration: Settings) -> dict[str, Any]:
         },
         "content_captions": {
             "backend": configuration.content_caption_backend,
+            "model_snapshot_configured": bool(configuration.content_caption_model_path),
+            "alignment_gate_enabled": (
+                configuration.content_caption_alignment_gate_enabled
+            ),
+            "alignment_min_speech_coverage": (
+                configuration.content_caption_alignment_min_speech_coverage
+            ),
+            "alignment_max_outside_speech": (
+                configuration.content_caption_alignment_max_outside_speech
+            ),
+            "alignment_tolerance_seconds": (
+                configuration.content_caption_alignment_tolerance_seconds
+            ),
         },
         "content_assembly": {
             "backend": configuration.content_assembly_backend,

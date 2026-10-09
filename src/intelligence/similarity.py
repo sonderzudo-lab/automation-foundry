@@ -20,6 +20,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from src.operations.retention_policy import resolve_retention_days
 from src.platform.alert_service import record_alert_occurrence
 from src.platform.approval_service import approval_payload_digest
 from src.platform.artifact_service import register_local_artifact
@@ -55,7 +56,7 @@ _SOURCE = "content-engine:a6"
 _ALGORITHM = "lexical-cosine-unigram+jaccard-trigram-v1"
 _REPORT_SCHEMA_VERSION = 1
 _MAX_SCRIPT_BYTES = 5 * 1024 * 1024
-_RETENTION_DAYS = 90
+_RETENTION_DAYS = resolve_retention_days("originality_report")
 _QUANTUM = Decimal("0.0000000001")
 _TOKEN_PATTERN = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -82,6 +83,7 @@ class SimilarityExecutionResult:
     reference_count: int
     blocked: bool
     replayed: bool
+    output_payload: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +134,7 @@ async def execute_similarity_gate_step(
     reference_limit: int,
     cpu_power_watts: int,
     timeout_seconds: float,
+    finalize_run: bool = True,
     sleep: Sleeper = asyncio.sleep,
 ) -> SimilarityExecutionResult:
     """Evaluate A6 and fail the run closed when similarity reaches the threshold."""
@@ -388,7 +391,7 @@ async def execute_similarity_gate_step(
             )
         return _result(run, step_run, None, replayed=task_result.replayed)
 
-    output_payload = {
+    output_payload: dict[str, object] = {
         "script_artifact_id": script_artifact.id,
         "script_approval_id": script_approval.id,
         "final_video_artifact_id": final_video_artifact.id,
@@ -418,7 +421,7 @@ async def execute_similarity_gate_step(
                 },
                 note="Content Engine A6 blocked a highly similar script; nothing published",
             )
-        else:
+        elif finalize_run:
             await transition_run(
                 session,
                 run,
@@ -436,6 +439,7 @@ async def execute_similarity_gate_step(
         reference_count=reference_count,
         blocked=blocked,
         replayed=task_result.replayed,
+        output_payload=output_payload,
     )
 
 

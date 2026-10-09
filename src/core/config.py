@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     database_command_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
     database_echo: bool = False
     storage_root: str = "./storage"
+    # Limite fail-closed do inventário de retenção. Um storage maior que isso
+    # interrompe a varredura em vez de produzir um resultado parcial.
+    retention_inventory_max_files: int = Field(default=200_000, ge=1, le=5_000_000)
+    retention_inventory_max_items: int = Field(default=200, ge=1, le=100_000)
+    # Único caminho do projeto que apaga dados do operador. Permanece desabilitado
+    # por default; mesmo habilitado exige approval humana, runtime parado e backup.
+    retention_purge_enabled: bool = False
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = Field(default=8000, ge=1, le=65535)
     health_probe_timeout_seconds: float = Field(default=1.5, gt=0, le=10)
@@ -68,6 +75,8 @@ class Settings(BaseSettings):
     content_tts_backend: Literal["disabled", "kokoro_quality_test"] = "disabled"
     content_tts_voice_id: str = Field(default="pf_dora", min_length=1, max_length=100)
     content_tts_language_code: str = Field(default="p", min_length=1, max_length=20)
+    # Quando habilitado, A2 pausa para audição humana antes de A3/A4/A5.
+    content_narration_review_enabled: bool = False
     # FLUX.1 permanece bloqueado. O único modo opt-in importa PNGs escolhidos
     # pelo operador e exige manifesto de direitos + SHA-256 por arquivo.
     content_visual_backend: Literal["disabled", "local_assets_quality_test"] = (
@@ -83,11 +92,27 @@ class Settings(BaseSettings):
         min_length=1,
         max_length=1000,
     )
-    # O modo opt-in estima timings a partir do texto aprovado; não transcreve o áudio.
+    # Os modos opt-in A4 continuam locais. O backend faster-whisper exige um
+    # snapshot fixado já presente no disco e nunca baixa pesos no runtime.
     content_caption_backend: Literal[
         "disabled",
         "approved_text_timing_quality_test",
+        "faster_whisper_small_quality_test",
     ] = "disabled"
+    content_caption_model_path: str | None = Field(default=None, max_length=1000)
+    # Diagnóstico local somente leitura do alinhamento A4. Ele mede a energia do
+    # WAV aprovado contra os eventos do ASS publicado e não regenera legenda.
+    # O gate opcional executa esse diagnóstico antes de A7 e bloqueia warning.
+    content_caption_alignment_gate_enabled: bool = False
+    content_caption_alignment_min_speech_coverage: float = Field(
+        default=0.90, gt=0, le=1
+    )
+    content_caption_alignment_max_outside_speech: float = Field(
+        default=0.25, ge=0, le=1
+    )
+    content_caption_alignment_tolerance_seconds: float = Field(
+        default=0.50, gt=0, le=30
+    )
     # A5 aceita adapters injetados em testes; o build FFmpeg local ainda não foi auditado.
     content_assembly_backend: Literal["disabled", "ffmpeg_quality_test"] = "disabled"
     content_ffmpeg_path: str = Field(default="ffmpeg", min_length=1, max_length=1000)
@@ -97,6 +122,12 @@ class Settings(BaseSettings):
     # A6 usa comparação lexical determinística local; o escopo inicial é a automação.
     content_similarity_threshold: float = Field(default=0.85, gt=0, le=1)
     content_similarity_window: int = Field(default=20, ge=1, le=100)
+    # A7 é o gate humano do vídeo final. Ele não publica nada; aprovar apenas
+    # conclui a run local e registra a decisão ligada aos hashes das evidências.
+    content_final_review_enabled: bool = False
+    # A8 congela os PNGs A3 e exige a seleção humana de exatamente um deles.
+    # Só pode ser habilitado junto com A7 e também não publica nada.
+    content_thumbnail_review_enabled: bool = False
 
     # ── YouTube / Google APIs ─────────────────────────────────────────────────
 
@@ -214,6 +245,16 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _narration_review_requires_tts(self) -> Settings:
+        if not self.content_narration_review_enabled:
+            return self
+        if self.content_tts_backend == "disabled":
+            raise ValueError("A2 narration review requires an enabled TTS backend")
+        if self.content_visual_backend == "disabled":
+            raise ValueError("A2 narration review requires A3 visual continuation")
+        return self
+
+    @model_validator(mode="after")
     def _ffmpeg_quality_test_must_pin_external_binaries(self) -> Settings:
         if self.content_assembly_backend != "ffmpeg_quality_test":
             return self
@@ -226,6 +267,35 @@ class Settings(BaseSettings):
                 character not in "0123456789abcdef" for character in normalized
             ):
                 raise ValueError(f"{field} must pin one SHA-256 digest")
+        return self
+
+    @model_validator(mode="after")
+    def _faster_whisper_quality_test_requires_local_snapshot(self) -> Settings:
+        if self.content_caption_backend != "faster_whisper_small_quality_test":
+            return self
+        if (
+            not isinstance(self.content_caption_model_path, str)
+            or not self.content_caption_model_path.strip()
+        ):
+            raise ValueError("faster-whisper quality test requires a local model path")
+        return self
+
+    @model_validator(mode="after")
+    def _thumbnail_review_requires_final_review(self) -> Settings:
+        if self.content_thumbnail_review_enabled and not self.content_final_review_enabled:
+            raise ValueError("A8 thumbnail review requires A7 final review")
+        return self
+
+    @model_validator(mode="after")
+    def _caption_alignment_gate_requires_a7_pipeline(self) -> Settings:
+        if not self.content_caption_alignment_gate_enabled:
+            return self
+        if not self.content_final_review_enabled:
+            raise ValueError("caption alignment gate requires A7 final review")
+        if self.content_caption_backend == "disabled":
+            raise ValueError("caption alignment gate requires A4 captions")
+        if self.content_assembly_backend == "disabled":
+            raise ValueError("caption alignment gate requires A5 assembly")
         return self
 
     @property

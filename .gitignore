@@ -45,6 +45,9 @@ htmlcov/
 storage/*
 !storage/.gitkeep
 
+# Imports locais escolhidos pelo operador também são mídia privada, não código.
+imports/content-visuals/*
+
 # ── Alembic (revisions são versionadas; o banco local não) ───────────────────
 
 # ── IDEs e editores ───────────────────────────────────────────────────────────

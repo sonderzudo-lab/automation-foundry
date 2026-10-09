@@ -1,0 +1,29 @@
+{% if approval_status == "pending" %}
+<section>
+  <h2>Decisão humana</h2>
+  <p>Decida somente depois de revisar integralmente as evidências acima. A decisão é imutável.</p>
+  <form method="post" action="/approvals/{{ review.approval_id }}/approve">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="review-approve-actor">Actor local</label>
+    <input id="review-approve-actor" type="text" name="actor" maxlength="200" autocomplete="username" required>
+    <label for="review-approve-reason">Motivo da aprovação</label>
+    <textarea id="review-approve-reason" name="reason" minlength="1" maxlength="500" required></textarea>
+    <label class="confirm"><input type="checkbox" name="confirmation" value="approve-approval" required> Confirmo a aprovação com base nas evidências verificadas desta página.</label>
+    <button type="submit">Aprovar approval</button>
+  </form>
+  <form class="reject-form" method="post" action="/approvals/{{ review.approval_id }}/reject">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="review-reject-actor">Actor local</label>
+    <input id="review-reject-actor" type="text" name="actor" maxlength="200" autocomplete="username" required>
+    <label for="review-reject-reason">Motivo da rejeição</label>
+    <textarea id="review-reject-reason" name="reason" minlength="1" maxlength="500" required></textarea>
+    <label class="confirm"><input type="checkbox" name="confirmation" value="reject-approval" required> Confirmo a rejeição definitiva desta approval.</label>
+    <button class="reject" type="submit">Rejeitar approval</button>
+  </form>
+</section>
+{% else %}
+<section>
+  <h2>Decisão registrada</h2>
+  <p>Esta approval já está <strong>{{ approval_status }}</strong>. As evidências permanecem disponíveis somente para consulta local.</p>
+</section>
+{% endif %}

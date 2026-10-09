@@ -24,10 +24,13 @@ from src.core.database import Base
 from src.pipeline import a1_executor, captions
 from src.pipeline.a1_executor import execute_content_script_run
 from src.pipeline.captions import (
+    FASTER_WHISPER_MODEL_REVISION,
+    FASTER_WHISPER_QUALITY_TEST_BACKEND,
     CaptionAdapterResult,
     CaptionPermanentAdapterError,
     CaptionRetryableAdapterError,
     CaptionWord,
+    FasterWhisperQualityTestConfig,
     execute_approved_caption_step,
     get_configured_caption_adapter,
 )
@@ -275,6 +278,163 @@ def test_approved_text_timing_backend_routes_a4_to_cpu(
     )
 
     assert a1_executor._captions_queue() is QueueClass.CPU
+
+
+def test_faster_whisper_backend_requires_explicit_snapshot() -> None:
+    with pytest.raises(
+        CaptionPermanentAdapterError,
+        match="CONTENT_CAPTIONS_FASTER_WHISPER_MODEL_PATH_REQUIRED",
+    ):
+        get_configured_caption_adapter(
+            FASTER_WHISPER_QUALITY_TEST_BACKEND,
+            narration=_script().narration,
+        )
+
+
+def test_faster_whisper_adapter_uses_audio_word_timestamps_and_pinned_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audio_path = tmp_path / "audio.wav"
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    _write_wav(_script().narration, audio_path, "pf_test", "p")
+    calls: list[dict[str, object]] = []
+
+    class FakeModel:
+        def transcribe(self, path: str, **options: object) -> tuple[object, object]:
+            calls.append({"path": path, **options})
+            words = [
+                SimpleNamespace(word=text, start=index * 0.45, end=index * 0.45 + 0.35)
+                for index, text in enumerate(_script().narration.split())
+            ]
+            return iter([SimpleNamespace(words=words)]), SimpleNamespace(language="pt")
+
+    monkeypatch.setattr(
+        captions,
+        "_verified_faster_whisper_snapshot",
+        lambda path: path.resolve(),
+    )
+    monkeypatch.setattr(
+        captions,
+        "_load_faster_whisper_runtime",
+        lambda _path: SimpleNamespace(model=FakeModel()),
+    )
+    adapter = get_configured_caption_adapter(
+        FASTER_WHISPER_QUALITY_TEST_BACKEND,
+        narration=_script().narration,
+        faster_whisper_config=FasterWhisperQualityTestConfig(model_path=model_path),
+    )
+
+    result = adapter(audio_path, "pt")
+
+    assert result.backend == FASTER_WHISPER_QUALITY_TEST_BACKEND
+    assert FASTER_WHISPER_MODEL_REVISION in result.model_id
+    assert result.license_id.startswith("MIT")
+    assert result.commercial_use is True
+    assert tuple(word.text for word in result.words) == tuple(
+        _script().narration.split()
+    )
+    assert result.words[0].start_seconds == Decimal("0E-10")
+    assert calls[0]["language"] == "pt"
+    assert calls[0]["word_timestamps"] is True
+    assert calls[0]["vad_filter"] is True
+    assert calls[0]["initial_prompt"] == _script().narration
+
+
+def test_faster_whisper_snapshot_digest_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    model = model_path / "model.bin"
+    model.write_bytes(b"abc")
+    monkeypatch.setattr(
+        captions,
+        "_FASTER_WHISPER_SNAPSHOT_FILES",
+        {"model.bin": (3, "sha256", hashlib.sha256(b"abc").hexdigest())},
+    )
+    assert captions._verified_faster_whisper_snapshot(model_path) == model_path.resolve()
+
+    model.write_bytes(b"abd")
+    with pytest.raises(
+        CaptionPermanentAdapterError,
+        match="CONTENT_CAPTIONS_FASTER_WHISPER_MODEL_DIGEST_MISMATCH",
+    ):
+        captions._verified_faster_whisper_snapshot(model_path)
+
+
+def test_faster_whisper_repairs_zero_duration_word_inside_next_interval() -> None:
+    segments = [
+        SimpleNamespace(
+            words=[
+                SimpleNamespace(word="prepara", start=3.54, end=4.04),
+                SimpleNamespace(word="o", start=4.04, end=4.04),
+                SimpleNamespace(word="cérebro", start=4.04, end=4.46),
+            ]
+        )
+    ]
+
+    words = captions._faster_whisper_words(iter(segments))
+
+    assert words[1].start_seconds == Decimal("4.0400000000")
+    assert words[1].end_seconds == Decimal("4.0600000000")
+    assert words[2].start_seconds == Decimal("4.0600000000")
+    assert words[2].end_seconds == Decimal("4.4600000000")
+
+
+def test_faster_whisper_runtime_is_cuda_only_local_and_version_pinned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructor_calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeFasterWhisper:
+        @staticmethod
+        def WhisperModel(model_path: str, **options: object) -> object:
+            constructor_calls.append((model_path, options))
+            return object()
+
+    versions = {
+        "faster-whisper": captions.FASTER_WHISPER_PACKAGE_VERSION,
+        "ctranslate2": captions.CTRANSLATE2_PACKAGE_VERSION,
+    }
+    modules = {
+        "faster_whisper": FakeFasterWhisper(),
+        "ctranslate2": SimpleNamespace(get_cuda_device_count=lambda: 1),
+    }
+    captions._load_faster_whisper_runtime.cache_clear()
+    monkeypatch.setattr(captions.importlib.metadata, "version", versions.__getitem__)
+    monkeypatch.setattr(captions.importlib, "import_module", modules.__getitem__)
+
+    runtime = captions._load_faster_whisper_runtime(str(tmp_path))
+
+    assert runtime.model is not None
+    assert constructor_calls == [
+        (
+            str(tmp_path),
+            {
+                "device": "cuda",
+                "device_index": 0,
+                "compute_type": "float16",
+                "local_files_only": True,
+            },
+        )
+    ]
+    captions._load_faster_whisper_runtime.cache_clear()
+
+
+def test_faster_whisper_backend_routes_a4_to_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        a1_executor,
+        "settings",
+        SimpleNamespace(content_caption_backend=FASTER_WHISPER_QUALITY_TEST_BACKEND),
+    )
+
+    assert a1_executor._captions_queue() is QueueClass.GPU
 
 
 async def test_a1_continuation_runs_a2_a3_then_a4_before_completing(

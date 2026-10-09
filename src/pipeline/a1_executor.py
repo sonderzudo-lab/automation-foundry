@@ -20,18 +20,45 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import settings
 from src.intelligence.similarity import execute_similarity_gate_step
+from src.operations.retention_policy import resolve_retention_days
 from src.pipeline.assembly import (
     AssemblyAdapter,
     FFmpegQualityTestConfig,
     execute_approved_assembly_step,
     get_configured_assembly_adapter,
 )
+from src.pipeline.caption_alignment import build_alignment_parameters
+from src.pipeline.caption_alignment_gate import execute_caption_alignment_gate_step
 from src.pipeline.captions import (
+    FASTER_WHISPER_QUALITY_TEST_BACKEND,
     CaptionAdapter,
+    FasterWhisperQualityTestConfig,
     execute_approved_caption_step,
     get_configured_caption_adapter,
 )
+from src.pipeline.final_review import (
+    FINAL_REVIEW_APPROVAL_ACTION,
+    FinalVideoReview,
+    finalize_final_video_approval,
+    load_final_video_review,
+    request_final_video_approval,
+)
+from src.pipeline.local_export import LocalExportPackage, load_local_export_package
+from src.pipeline.narration_review import (
+    NARRATION_REVIEW_APPROVAL_ACTION,
+    NarrationReview,
+    finalize_narration_approval,
+    load_narration_review,
+    request_narration_approval,
+)
 from src.pipeline.script_gen import EmptyResponseError, ScriptResult, generate_script
+from src.pipeline.thumbnail_review import (
+    THUMBNAIL_REVIEW_APPROVAL_ACTION,
+    ThumbnailReview,
+    finalize_thumbnail_approval,
+    load_thumbnail_review,
+    request_thumbnail_approval,
+)
 from src.pipeline.tts import (
     TTSSynthesizer,
     execute_approved_tts_step,
@@ -79,7 +106,7 @@ from src.platform.task_runner import (
 
 _AUTOMATION_SLUG = "content-engine"
 _STEP_NAME = "generate-script-a1"
-_ARTIFACT_RETENTION_DAYS = 90
+_ARTIFACT_RETENTION_DAYS = resolve_retention_days("script_bundle")
 _SOURCE = "content-engine:a1"
 CONTENT_SCRIPT_APPROVAL_ACTION = "review_content_script_a1"
 _MAX_BUNDLE_BYTES = 5 * 1024 * 1024
@@ -298,12 +325,15 @@ async def execute_content_script_run(
         except (APITimeoutError, APIConnectionError, EmptyResponseError) as exc:
             raise RetryableTaskError("CONTENT_LLM_UNAVAILABLE") from exc
         _validate_script_result(generated)
-        _write_script_bundle(
-            artifact_path,
-            input_data=input_data,
-            result=generated,
-            model=settings.ollama_model,
-        )
+        try:
+            _write_script_bundle(
+                artifact_path,
+                input_data=input_data,
+                result=generated,
+                model=settings.ollama_model,
+            )
+        except OSError as exc:
+            raise RetryableTaskError("CONTENT_STORAGE_WRITE_FAILED") from exc
         return {
             "artifact_relative_path": artifact_path.relative_to(root.resolve()).as_posix(),
             "format": input_data.format,
@@ -489,16 +519,24 @@ async def execute_content_script_run(
                 float(settings.celery_soft_time_limit_seconds - 15),
             ),
             finalize_run=not (
-                _visuals_enabled() or _captions_enabled() or _assembly_enabled()
+                _narration_review_enabled()
+                or _visuals_enabled()
+                or _captions_enabled()
+                or _assembly_enabled()
             ),
         )
         visual_replayed = True
         caption_replayed = True
         assembly_replayed = True
         similarity_replayed = True
+        alignment_gate_replayed = True
         audio_artifact: Artifact | None = None
         if (
-            (_visuals_enabled() or _captions_enabled())
+            (
+                _narration_review_enabled()
+                or _visuals_enabled()
+                or _captions_enabled()
+            )
             and tts_result.artifact_id is not None
             and RunStatus(run.status) is RunStatus.RUNNING
         ):
@@ -507,6 +545,21 @@ async def execute_content_script_run(
                 raise ContentScriptRunNotRunnableError(
                     "completed A2 step is missing its audio artifact"
                 )
+        if (
+            _narration_review_enabled()
+            and audio_artifact is not None
+            and RunStatus(run.status) is RunStatus.RUNNING
+        ):
+            await request_narration_approval(
+                session,
+                run=run,
+                script_approval=approval,
+                script_approval_input_payload=approval_input,
+                script_artifact=artifact,
+                audio_artifact=audio_artifact,
+                idempotency_key=idempotency_key,
+                storage_root=root,
+            )
         visual_result = None
         if (
             _visuals_enabled()
@@ -575,6 +628,7 @@ async def execute_content_script_run(
                     or get_configured_caption_adapter(
                         _captions_backend(),
                         narration=bundle.narration,
+                        faster_whisper_config=_faster_whisper_quality_test_config(),
                     )
                 ),
                 language_code="pt",
@@ -676,8 +730,47 @@ async def execute_content_script_run(
                         1.0,
                         float(settings.celery_soft_time_limit_seconds - 15),
                     ),
+                    finalize_run=not _final_review_enabled(),
                 )
                 similarity_replayed = similarity_result.replayed
+                if (
+                    _final_review_enabled()
+                    and not similarity_result.blocked
+                    and similarity_result.report_artifact_id is not None
+                    and RunStatus(run.status) is RunStatus.RUNNING
+                ):
+                    report_artifact = await session.get(
+                        Artifact,
+                        similarity_result.report_artifact_id,
+                    )
+                    if report_artifact is None:
+                        raise ContentScriptRunNotRunnableError(
+                            "completed A6 step is missing its originality report"
+                        )
+                    if _caption_alignment_gate_enabled():
+                        alignment_gate = await execute_caption_alignment_gate_step(
+                            session,
+                            run=run,
+                            idempotency_key=idempotency_key,
+                            storage_root=root,
+                            parameters=build_alignment_parameters(settings),
+                            timeout_seconds=max(
+                                1.0,
+                                float(settings.celery_soft_time_limit_seconds - 15),
+                            ),
+                        )
+                        alignment_gate_replayed = alignment_gate.replayed
+                    if RunStatus(run.status) is RunStatus.RUNNING:
+                        await request_final_video_approval(
+                            session,
+                            run=run,
+                            script_approval=approval,
+                            approval_input_payload=approval_input,
+                            final_video_artifact=final_video,
+                            originality_report_artifact=report_artifact,
+                            idempotency_key=idempotency_key,
+                            storage_root=root,
+                        )
         return _result(
             run,
             step_run,
@@ -691,6 +784,7 @@ async def execute_content_script_run(
                 and caption_replayed
                 and assembly_replayed
                 and similarity_replayed
+                and alignment_gate_replayed
             ),
         )
     return _result(
@@ -700,6 +794,54 @@ async def execute_content_script_run(
         approval_id=_persisted_id(approval.id, "approval"),
         created=creation.created,
         replayed=task_result.replayed,
+    )
+
+
+async def load_content_approval_review(
+    session: AsyncSession,
+    *,
+    approval: Approval,
+    storage_root: Path | None = None,
+) -> ContentScriptReview | NarrationReview | FinalVideoReview | ThumbnailReview:
+    """Route one Content Engine approval to its own verified review projection."""
+    root = Path(settings.storage_root) if storage_root is None else storage_root
+    if approval.action == NARRATION_REVIEW_APPROVAL_ACTION:
+        return await load_narration_review(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
+    if approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
+        return await load_thumbnail_review(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
+    if approval.action == FINAL_REVIEW_APPROVAL_ACTION:
+        return await load_final_video_review(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
+    return await load_content_script_review(
+        session,
+        approval=approval,
+        storage_root=root,
+    )
+
+
+async def load_content_local_export(
+    session: AsyncSession,
+    *,
+    run: Run,
+    storage_root: Path | None = None,
+) -> LocalExportPackage:
+    """Load a checksum-verified, local-only export for one completed run."""
+    root = Path(settings.storage_root) if storage_root is None else storage_root
+    return await load_local_export_package(
+        session,
+        run=run,
+        storage_root=root,
     )
 
 
@@ -753,6 +895,32 @@ async def finalize_content_script_approval(
     storage_root: Path | None = None,
 ) -> bool:
     """Verify approval and report whether the durable dispatch must continue."""
+    root = Path(settings.storage_root) if storage_root is None else storage_root
+    if approval.action == NARRATION_REVIEW_APPROVAL_ACTION:
+        return await finalize_narration_approval(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
+    if approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
+        return await finalize_thumbnail_approval(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
+    if approval.action == FINAL_REVIEW_APPROVAL_ACTION:
+        if _thumbnail_review_enabled():
+            await request_thumbnail_approval(
+                session,
+                final_review_approval=approval,
+                storage_root=root,
+            )
+            return False
+        return await finalize_final_video_approval(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
     if approval.action != CONTENT_SCRIPT_APPROVAL_ACTION:
         return False
     if ApprovalStatus(approval.status) is not ApprovalStatus.APPROVED:
@@ -833,6 +1001,10 @@ def _tts_enabled() -> bool:
     return _tts_backend() != "disabled"
 
 
+def _narration_review_enabled() -> bool:
+    return getattr(settings, "content_narration_review_enabled", False) is True
+
+
 def _tts_voice_id() -> str:
     value = getattr(settings, "content_tts_voice_id", "pf_dora")
     return value if isinstance(value, str) else "pf_dora"
@@ -873,6 +1045,17 @@ def _captions_queue() -> QueueClass:
     return QueueClass.GPU
 
 
+def _faster_whisper_quality_test_config() -> FasterWhisperQualityTestConfig | None:
+    if _captions_backend() != FASTER_WHISPER_QUALITY_TEST_BACKEND:
+        return None
+    model_path = getattr(settings, "content_caption_model_path", None)
+    if not isinstance(model_path, str) or not model_path.strip():
+        raise ContentScriptRunNotRunnableError(
+            "faster-whisper quality test requires a local model path"
+        )
+    return FasterWhisperQualityTestConfig(model_path=Path(model_path))
+
+
 def _assembly_backend() -> str:
     value = getattr(settings, "content_assembly_backend", "disabled")
     return value.strip().casefold() if isinstance(value, str) else "disabled"
@@ -880,6 +1063,18 @@ def _assembly_backend() -> str:
 
 def _assembly_enabled() -> bool:
     return _assembly_backend() != "disabled"
+
+
+def _final_review_enabled() -> bool:
+    return getattr(settings, "content_final_review_enabled", False) is True
+
+
+def _caption_alignment_gate_enabled() -> bool:
+    return getattr(settings, "content_caption_alignment_gate_enabled", False) is True
+
+
+def _thumbnail_review_enabled() -> bool:
+    return getattr(settings, "content_thumbnail_review_enabled", False) is True
 
 
 def _ffmpeg_quality_test_config() -> FFmpegQualityTestConfig | None:
@@ -904,11 +1099,34 @@ def _ffmpeg_quality_test_config() -> FFmpegQualityTestConfig | None:
 
 
 def _validate_pipeline_backend_dependencies() -> None:
+    if _thumbnail_review_enabled() and not _final_review_enabled():
+        raise ContentScriptRunNotRunnableError(
+            "A8 thumbnail review requires A7 final review"
+        )
     if (
-        _visuals_enabled() or _captions_enabled() or _assembly_enabled()
+        _narration_review_enabled()
+        or _visuals_enabled()
+        or _captions_enabled()
+        or _assembly_enabled()
     ) and not _tts_enabled():
         raise ContentScriptRunNotRunnableError(
             "audiovisual continuation requires A2 TTS"
+        )
+    if _caption_alignment_gate_enabled() and not _final_review_enabled():
+        raise ContentScriptRunNotRunnableError(
+            "caption alignment gate requires A7 final review"
+        )
+    if _caption_alignment_gate_enabled() and not _captions_enabled():
+        raise ContentScriptRunNotRunnableError(
+            "caption alignment gate requires A4 captions"
+        )
+    if _caption_alignment_gate_enabled() and not _assembly_enabled():
+        raise ContentScriptRunNotRunnableError(
+            "caption alignment gate requires A5 assembly"
+        )
+    if _narration_review_enabled() and not _visuals_enabled():
+        raise ContentScriptRunNotRunnableError(
+            "A2 narration review requires A3 visual continuation"
         )
     if _assembly_enabled() and not (_visuals_enabled() and _captions_enabled()):
         raise ContentScriptRunNotRunnableError(
@@ -942,10 +1160,49 @@ async def _load_completed_evidence(
     current = RunStatus(run.status)
     approval_status = ApprovalStatus(approval.status)
     if current is RunStatus.AWAITING_APPROVAL and approval_status is not ApprovalStatus.PENDING:
-        raise ContentScriptRunNotRunnableError("waiting A1 run has an invalid approval state")
+        waiting_on_later_review = (
+            approval_status is ApprovalStatus.APPROVED
+            and (
+                await _has_pending_gate(
+                    session,
+                    run=run,
+                    action=NARRATION_REVIEW_APPROVAL_ACTION,
+                )
+                or await _has_pending_gate(
+                    session,
+                    run=run,
+                    action=FINAL_REVIEW_APPROVAL_ACTION,
+                )
+                or await _has_pending_gate(
+                    session,
+                    run=run,
+                    action=THUMBNAIL_REVIEW_APPROVAL_ACTION,
+                )
+            )
+        )
+        if not waiting_on_later_review:
+            raise ContentScriptRunNotRunnableError(
+                "waiting A1 run has an invalid approval state"
+            )
     if current is RunStatus.SUCCEEDED and approval_status is not ApprovalStatus.APPROVED:
         raise ContentScriptRunNotRunnableError("completed A1 run was not approved")
     return step_run, artifact, approval
+
+
+async def _has_pending_gate(
+    session: AsyncSession,
+    *,
+    run: Run,
+    action: str,
+) -> bool:
+    pending = await session.scalar(
+        select(Approval.id).where(
+            Approval.run_id == run.id,
+            Approval.action == action,
+            Approval.status == ApprovalStatus.PENDING.value,
+        )
+    )
+    return pending is not None
 
 
 async def _load_script_evidence(

@@ -22,6 +22,8 @@ from src.core.config import Settings, settings
 
 type HealthMetric = str | int | float | bool | None
 
+_CELERY_INSPECT_TIMEOUT_MARGIN_SECONDS = 2.0
+
 
 class HealthStatus(StrEnum):
     PASS = "pass"
@@ -229,7 +231,10 @@ async def probe_workers(
     def inspect() -> object:
         return celery.control.inspect(timeout=timeout).active_queues()
 
-    replies = await asyncio.wait_for(asyncio.to_thread(inspect), timeout=timeout + 0.5)
+    replies = await asyncio.wait_for(
+        asyncio.to_thread(inspect),
+        timeout=timeout + _CELERY_INSPECT_TIMEOUT_MARGIN_SECONDS,
+    )
     counts = _worker_queue_counts(replies, assumed_queues=assumed_queues)
     missing = [queue for queue in ("gpu", "cpu", "io") if counts[queue] == 0]
     status = HealthStatus.PASS if not missing else HealthStatus.FAIL

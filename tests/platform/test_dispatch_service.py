@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.core.database import Base
@@ -39,6 +39,8 @@ from src.platform.models import (
     RunStatus,
     StepRun,
 )
+from src.platform.run_service import transition_run
+from src.platform.step_service import get_or_create_step_run, transition_step_run
 
 
 @pytest.fixture
@@ -99,6 +101,79 @@ async def test_publish_failure_is_observable_and_reuses_stable_delivery(
         ).all()
     )
     assert event_types == ["prepared", "publish_failed", "publish_succeeded"]
+
+
+async def test_broker_recovery_republishes_durable_dispatch_across_sessions(
+    tmp_path: Path,
+) -> None:
+    """Redis loss cannot discard a prepared run or create another logical run."""
+    database_path = tmp_path / "broker-recovery.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    delivered: list[tuple[int, str, QueueClass]] = []
+
+    def redis_offline(*_args: object) -> None:
+        raise ConnectionError("redis is unavailable")
+
+    try:
+        async with factory() as offline_session:
+            with pytest.raises(DispatchPublishError, match="remains retryable"):
+                await publish_registered_dispatch(
+                    offline_session,
+                    slug="platform-smoke",
+                    idempotency_key="broker-recovery-001",
+                    publish=redis_offline,
+                )
+            dispatch = await offline_session.scalar(select(RunDispatch))
+            assert dispatch is not None
+            run_id = dispatch.run_id
+            dispatch_id = dispatch.id
+            delivery_id = dispatch.delivery_id
+            assert dispatch.status == "pending"
+            assert dispatch.last_error_code == "BROKER_PUBLISH_FAILED"
+
+        async with factory() as recovered_session:
+            await publish_prepared_dispatch(
+                recovered_session,
+                dispatch_id=dispatch_id,
+                publish=lambda identifier, delivery, queue: delivered.append(
+                    (identifier, delivery, queue)
+                ),
+            )
+            dispatch = await recovered_session.get(RunDispatch, dispatch_id)
+            assert dispatch is not None and dispatch.status == "published"
+            assert dispatch.delivery_id == delivery_id
+            assert dispatch.publish_attempts == 2
+
+        async with factory() as worker_session:
+            completed = await execute_claimed_dispatch(
+                worker_session,
+                dispatch_id=dispatch_id,
+                delivery_id=delivery_id,
+                worker_id="io-worker-after-redis-recovery",
+                lease_seconds=60,
+            )
+            duplicate = await execute_claimed_dispatch(
+                worker_session,
+                dispatch_id=dispatch_id,
+                delivery_id=delivery_id,
+                worker_id="duplicate-delivery",
+                lease_seconds=60,
+            )
+            run_count = await worker_session.scalar(select(func.count()).select_from(Run))
+            step_count = await worker_session.scalar(
+                select(func.count()).select_from(StepRun).where(StepRun.run_id == run_id)
+            )
+
+        assert delivered == [(dispatch_id, delivery_id, QueueClass.IO)]
+        assert completed.acquired is True
+        assert duplicate.terminal is True
+        assert run_count == 1
+        assert step_count == 1
+    finally:
+        await engine.dispose()
 
 
 async def test_claim_lease_reclaims_only_after_expiry_and_checks_owner(
@@ -165,6 +240,103 @@ async def test_claim_lease_reclaims_only_after_expiry_and_checks_owner(
     )
     assert terminal.terminal is True
     assert terminal.acquired is False
+
+
+async def test_restart_after_expired_lease_recovers_running_step_once(
+    session: AsyncSession,
+) -> None:
+    """A dead worker leaves durable evidence that one later delivery recovers."""
+    prepared = await publish_registered_dispatch(
+        session,
+        slug="platform-smoke",
+        idempotency_key="restart-recovery-001",
+        publish=lambda *_args: None,
+    )
+    original_claim = await claim_dispatch(
+        session,
+        dispatch_id=prepared.dispatch_id,
+        delivery_id=prepared.delivery_id,
+        worker_id="worker-that-died",
+        lease_seconds=60,
+    )
+    assert original_claim.acquired is True
+
+    run = await session.get(Run, prepared.run_id)
+    assert run is not None
+    await transition_run(session, run, RunStatus.RUNNING, note="worker started")
+    interrupted = (
+        await get_or_create_step_run(
+            session,
+            run=run,
+            name="noop",
+            queue=QueueClass.IO,
+            ordinal=1,
+            idempotency_key="restart-recovery-001:noop",
+            input_payload={"operation": "noop"},
+        )
+    ).step_run
+    await transition_step_run(
+        session,
+        interrupted,
+        RunStatus.RUNNING,
+        note="attempt 1 started before process death",
+    )
+    dispatch = await session.get(RunDispatch, prepared.dispatch_id)
+    assert dispatch is not None
+    dispatch.lease_expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+        seconds=1
+    )
+    await session.commit()
+
+    recovered = await execute_claimed_dispatch(
+        session,
+        dispatch_id=prepared.dispatch_id,
+        delivery_id=prepared.delivery_id,
+        worker_id="worker-after-restart",
+        lease_seconds=60,
+    )
+    duplicate = await execute_claimed_dispatch(
+        session,
+        dispatch_id=prepared.dispatch_id,
+        delivery_id=prepared.delivery_id,
+        worker_id="duplicate-delivery",
+        lease_seconds=60,
+    )
+
+    steps = list(
+        (
+            await session.scalars(
+                select(StepRun)
+                .where(StepRun.run_id == prepared.run_id)
+                .order_by(StepRun.attempt)
+            )
+        ).all()
+    )
+    events = list(
+        (
+            await session.scalars(
+                select(RunDispatchEvent.event_type)
+                .where(RunDispatchEvent.dispatch_id == prepared.dispatch_id)
+                .order_by(RunDispatchEvent.id)
+            )
+        ).all()
+    )
+    await session.refresh(run)
+    await session.refresh(dispatch)
+
+    assert recovered.acquired is True
+    assert duplicate.terminal is True
+    assert run.status == RunStatus.SUCCEEDED.value
+    assert dispatch.status == "completed"
+    assert [step.attempt for step in steps] == [1, 2]
+    assert [step.status for step in steps] == ["failed", "succeeded"]
+    assert steps[0].error == {
+        "code": "INTERRUPTED_ATTEMPT",
+        "exception_type": "InterruptedAttempt",
+        "retryable": True,
+        "timed_out": False,
+    }
+    assert events == ["prepared", "publish_succeeded", "claimed", "lease_reclaimed", "completed"]
 
 
 async def test_duplicate_delivery_executes_run_only_once(session: AsyncSession) -> None:

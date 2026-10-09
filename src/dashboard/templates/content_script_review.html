@@ -19,6 +19,13 @@
       dt { color: #8995a3; } dd { margin: 0; }
       pre { margin: 0; color: #f2f4f7; font: inherit; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
       .notice { color: #f2cc60; }
+      label { display: block; color: #b7c0cc; font-size: .85rem; margin: .7rem 0 .35rem; }
+      input[type="text"], textarea { box-sizing: border-box; width: 100%; background: #0b0d10; color: #f2f4f7; border: 1px solid #3b4552; border-radius: 8px; padding: .7rem; font: inherit; }
+      textarea { min-height: 5rem; resize: vertical; }
+      .confirm { display: block; margin: .9rem 0; }
+      .reject-form { border-top: 1px solid #3b4552; margin-top: 1.2rem; padding-top: 1.2rem; }
+      button { border: 1px solid #39794c; border-radius: 8px; background: #17351f; color: #9ff0b5; padding: .7rem 1rem; font: inherit; font-weight: 650; cursor: pointer; }
+      button.reject { border-color: #8e4b43; background: #351916; color: #ffb4aa; }
     </style>
   </head>
   <body>
@@ -40,6 +47,7 @@
       <section><h2>Hook</h2><pre>{{ review.hook }}</pre></section>
       <section><h2>Roteiro completo</h2><pre>{{ review.full_script }}</pre></section>
       <section><h2>Narração</h2><pre>{{ review.narration }}</pre></section>
+      {% include "approval_decision_controls.html" %}
     </main>
   </body>
 </html>

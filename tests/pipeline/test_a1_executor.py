@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 from collections.abc import AsyncGenerator
@@ -9,6 +10,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from httpx import Request
+from openai import APIConnectionError
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
@@ -235,6 +238,75 @@ async def test_a1_failure_is_structured_retryable_and_has_no_artifact(
     assert not (tmp_path / "storage").exists()
 
 
+async def test_a1_ollama_connection_failure_is_structured_and_has_no_artifact(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    def ollama_offline(*_args: object) -> ScriptResult:
+        raise APIConnectionError(
+            message="private connection detail",
+            request=Request("POST", "http://127.0.0.1:11434/v1/chat/completions"),
+        )
+
+    result = await execute_content_script_run(
+        session,
+        idempotency_key="content-a1-ollama-offline",
+        input_payload=_input_payload(),
+        script_generator=ollama_offline,
+        storage_root=tmp_path / "storage",
+    )
+
+    run = await session.get(Run, result.run_id)
+    step = await session.get(StepRun, result.step_run_id)
+    artifacts = list((await session.scalars(select(Artifact))).all())
+    assert run is not None and run.status == RunStatus.FAILED.value
+    assert step is not None and step.status == RunStatus.FAILED.value
+    assert run.error == step.error == {
+        "code": "CONTENT_LLM_UNAVAILABLE",
+        "exception_type": "RetryableTaskError",
+        "retryable": True,
+        "timed_out": False,
+    }
+    assert artifacts == []
+    assert "private connection detail" not in str(run.error)
+    assert not (tmp_path / "storage").exists()
+
+
+async def test_a1_disk_full_failure_is_structured_and_leaves_no_artifact(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def disk_full(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.ENOSPC, "private filesystem detail")
+
+    monkeypatch.setattr(a1_executor, "_write_script_bundle", disk_full)
+    result = await execute_content_script_run(
+        session,
+        idempotency_key="content-a1-disk-full",
+        input_payload=_input_payload(),
+        script_generator=lambda *_args: _generated_script(),
+        storage_root=tmp_path / "storage",
+    )
+
+    run = await session.get(Run, result.run_id)
+    step = await session.get(StepRun, result.step_run_id)
+    artifacts = list((await session.scalars(select(Artifact))).all())
+    approvals = list((await session.scalars(select(Approval))).all())
+    assert run is not None and run.status == RunStatus.FAILED.value
+    assert step is not None and step.status == RunStatus.FAILED.value
+    assert run.error == step.error == {
+        "code": "CONTENT_STORAGE_WRITE_FAILED",
+        "exception_type": "RetryableTaskError",
+        "retryable": True,
+        "timed_out": False,
+    }
+    assert artifacts == []
+    assert approvals == []
+    assert "private filesystem detail" not in str(run.error)
+    assert not (tmp_path / "storage").exists()
+
+
 async def test_a1_explicit_retry_creates_a_new_run_with_same_validated_input(
     session: AsyncSession,
     tmp_path: Path,
@@ -279,7 +351,22 @@ async def test_a1_explicit_retry_creates_a_new_run_with_same_validated_input(
 async def test_a1_approval_reviews_exact_bundle_and_finalizes_idempotently(
     session: AsyncSession,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(a1_executor.settings, "content_tts_backend", "disabled")
+    monkeypatch.setattr(
+        a1_executor.settings,
+        "content_narration_review_enabled",
+        False,
+    )
+    monkeypatch.setattr(a1_executor.settings, "content_visual_backend", "disabled")
+    monkeypatch.setattr(a1_executor.settings, "content_caption_backend", "disabled")
+    monkeypatch.setattr(a1_executor.settings, "content_assembly_backend", "disabled")
+    monkeypatch.setattr(
+        a1_executor.settings,
+        "content_caption_alignment_gate_enabled",
+        False,
+    )
     result = await execute_content_script_run(
         session,
         idempotency_key="content-a1-approved",

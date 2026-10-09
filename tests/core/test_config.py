@@ -20,10 +20,12 @@ def test_defaults_use_automation_foundry_identity_and_loopback(
         "REDDIT_USER_AGENT",
         "REDIS_URL",
         "CONTENT_TTS_BACKEND",
+        "CONTENT_NARRATION_REVIEW_ENABLED",
         "CONTENT_VISUAL_BACKEND",
         "CONTENT_VISUAL_IMPORT_ROOT",
         "CONTENT_VISUAL_MANIFEST_PATH",
         "CONTENT_CAPTION_BACKEND",
+        "CONTENT_CAPTION_ALIGNMENT_GATE_ENABLED",
         "CONTENT_ASSEMBLY_BACKEND",
         "CONTENT_FFMPEG_PATH",
         "CONTENT_FFPROBE_PATH",
@@ -31,6 +33,8 @@ def test_defaults_use_automation_foundry_identity_and_loopback(
         "CONTENT_FFPROBE_EXPECTED_SHA256",
         "CONTENT_SIMILARITY_THRESHOLD",
         "CONTENT_SIMILARITY_WINDOW",
+        "CONTENT_FINAL_REVIEW_ENABLED",
+        "CONTENT_THUMBNAIL_REVIEW_ENABLED",
     ):
         monkeypatch.delenv(variable, raising=False)
 
@@ -44,20 +48,70 @@ def test_defaults_use_automation_foundry_identity_and_loopback(
     assert settings.redis_url == "redis://127.0.0.1:6379/0"
     assert settings.content_tts_backend == "disabled"
     assert settings.content_tts_voice_id == "pf_dora"
+    assert settings.content_narration_review_enabled is False
     assert settings.content_visual_backend == "disabled"
     assert settings.content_visual_import_root == "./imports/content-visuals"
     assert settings.content_visual_manifest_path == "manifest.json"
     assert settings.content_caption_backend == "disabled"
+    assert settings.content_caption_model_path is None
+    assert settings.content_caption_alignment_gate_enabled is False
+    assert settings.content_caption_alignment_min_speech_coverage == 0.90
+    assert settings.content_caption_alignment_max_outside_speech == 0.25
+    assert settings.content_caption_alignment_tolerance_seconds == 0.50
     assert settings.content_assembly_backend == "disabled"
     assert settings.content_ffmpeg_path == "ffmpeg"
     assert settings.content_ffprobe_path == "ffprobe"
     assert settings.content_similarity_threshold == 0.85
     assert settings.content_similarity_window == 20
+    assert settings.content_final_review_enabled is False
+    assert settings.content_thumbnail_review_enabled is False
+
+
+def test_thumbnail_review_requires_final_review() -> None:
+    with pytest.raises(ValidationError, match="requires A7"):
+        Settings(
+            _env_file=None,
+            content_final_review_enabled=False,
+            content_thumbnail_review_enabled=True,
+        )
+
+    settings = Settings(
+        _env_file=None,
+        content_final_review_enabled=True,
+        content_thumbnail_review_enabled=True,
+    )
+    assert settings.content_thumbnail_review_enabled is True
 
 
 def test_tts_backend_rejects_unscoped_kokoro_mode() -> None:
     with pytest.raises(ValidationError, match="content_tts_backend"):
         Settings(_env_file=None, content_tts_backend="kokoro")
+
+
+def test_narration_review_requires_enabled_tts() -> None:
+    with pytest.raises(ValidationError, match="narration review requires"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="disabled",
+            content_narration_review_enabled=True,
+        )
+
+    settings = Settings(
+        _env_file=None,
+        content_tts_backend="kokoro_quality_test",
+        content_tts_voice_id="pm_alex",
+        content_visual_backend="local_assets_quality_test",
+        content_narration_review_enabled=True,
+    )
+    assert settings.content_narration_review_enabled is True
+
+    with pytest.raises(ValidationError, match="requires A3"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="kokoro_quality_test",
+            content_tts_voice_id="pm_alex",
+            content_narration_review_enabled=True,
+        )
 
 
 def test_tts_quality_test_accepts_only_reviewed_pt_br_profiles() -> None:
@@ -113,6 +167,21 @@ def test_caption_backend_remains_fail_closed_until_model_audit() -> None:
         Settings(_env_file=None, content_caption_backend="faster_whisper")
 
 
+def test_faster_whisper_quality_test_requires_explicit_local_snapshot() -> None:
+    with pytest.raises(ValidationError, match="local model path"):
+        Settings(
+            _env_file=None,
+            content_caption_backend="faster_whisper_small_quality_test",
+        )
+
+    settings = Settings(
+        _env_file=None,
+        content_caption_backend="faster_whisper_small_quality_test",
+        content_caption_model_path="./storage/models/faster-whisper-small",
+    )
+    assert settings.content_caption_model_path.endswith("faster-whisper-small")
+
+
 def test_approved_text_timing_quality_test_is_explicitly_selectable() -> None:
     settings = Settings(
         _env_file=None,
@@ -144,6 +213,50 @@ def test_ffmpeg_quality_test_requires_pinned_binary_hashes() -> None:
             content_ffmpeg_expected_sha256="",
             content_ffprobe_expected_sha256=digest,
         )
+
+
+def test_caption_alignment_diagnostic_configuration_is_bounded() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, content_caption_alignment_min_speech_coverage=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, content_caption_alignment_min_speech_coverage=1.01)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, content_caption_alignment_max_outside_speech=-0.01)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, content_caption_alignment_max_outside_speech=1.01)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, content_caption_alignment_tolerance_seconds=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, content_caption_alignment_tolerance_seconds=30.01)
+
+
+def test_caption_alignment_gate_requires_the_complete_a7_pipeline() -> None:
+    with pytest.raises(ValidationError, match="requires A7"):
+        Settings(_env_file=None, content_caption_alignment_gate_enabled=True)
+    with pytest.raises(ValidationError, match="requires A4"):
+        Settings(
+            _env_file=None,
+            content_caption_alignment_gate_enabled=True,
+            content_final_review_enabled=True,
+        )
+    with pytest.raises(ValidationError, match="requires A5"):
+        Settings(
+            _env_file=None,
+            content_caption_alignment_gate_enabled=True,
+            content_final_review_enabled=True,
+            content_caption_backend="approved_text_timing_quality_test",
+        )
+
+    configured = Settings(
+        _env_file=None,
+        content_caption_alignment_gate_enabled=True,
+        content_final_review_enabled=True,
+        content_caption_backend="approved_text_timing_quality_test",
+        content_assembly_backend="ffmpeg_quality_test",
+        content_ffmpeg_expected_sha256="a" * 64,
+        content_ffprobe_expected_sha256="b" * 64,
+    )
+    assert configured.content_caption_alignment_gate_enabled is True
 
 
 def test_similarity_gate_configuration_is_bounded() -> None:
@@ -232,3 +345,15 @@ def test_runtime_timeouts_are_bounded() -> None:
 
     assert settings.runtime_startup_timeout_seconds == 10
     assert settings.runtime_shutdown_timeout_seconds == 5
+
+
+def test_retention_inventory_limits_are_bounded() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, retention_inventory_max_files=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, retention_inventory_max_items=0)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.retention_inventory_max_files == 200_000
+    assert settings.retention_inventory_max_items == 200

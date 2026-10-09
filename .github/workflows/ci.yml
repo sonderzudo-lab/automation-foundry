@@ -1,0 +1,97 @@
+# Proposta de .github/workflows/ci.yml para o Automation Foundry.
+#
+# O alvo do produto é Windows (supervisor, mutex nomeado, Job Object), então a verificação principal
+# roda em windows-latest. A integração com PostgreSQL roda em um job Linux separado porque runners
+# Windows não executam service containers.
+#
+# Este CI só lê o repositório: não usa segredos, não publica nada e não faz deploy.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Um push novo cancela a execução anterior da mesma branch ou PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Lint, tipos e testes (Windows, Python 3.12)
+    # Versão fixa, pelo mesmo motivo do job de PostgreSQL: o rótulo windows-latest muda de imagem
+    # sem uma alteração neste repositório.
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # Somente o extra "dev": os extras de IA (torch, kokoro, faster-whisper) não são necessários,
+      # porque os testes que dependem deles são opt-in e ficam pulados.
+      - name: Instalar dependências de desenvolvimento
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Mypy
+        run: mypy src
+
+      # O plugin pytest-github-actions-annotate-failures publica cada teste que falha como anotação
+      # da execução, legível sem login; -rfE lista falhas e erros no resumo do log.
+      - name: Pytest
+        run: pytest -q -rfE -p no:cacheprovider
+
+  postgresql:
+    name: Integração PostgreSQL (migrations e concorrência)
+    # Versão fixa: o rótulo ubuntu-latest migra para o Ubuntu 26 em 19/10/2026 e uma troca de
+    # sistema não deve alterar este job sem uma mudança no repositório.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          # Credencial descartável de um banco que existe só durante este job.
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci-throwaway
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRESQL_URL: postgresql+asyncpg://ci:ci-throwaway@127.0.0.1:5432/ci
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Instalar dependências de desenvolvimento
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Migrations até o head e execuções concorrentes
+        run: pytest tests/integration/test_postgresql.py -q -p no:cacheprovider

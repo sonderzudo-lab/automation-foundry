@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Automation Foundry</title>
+    <script src="/static/htmx.min.js" defer></script>
     <style>
       :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
       body { margin: 0; background: #0b0d10; color: #f2f4f7; }
@@ -32,6 +33,7 @@
       input[type="text"], textarea, select { box-sizing: border-box; width: 100%; background: #0b0d10; color: #f2f4f7; border: 1px solid #3b4552; border-radius: 8px; padding: .6rem; font: inherit; }
       textarea { min-height: 4rem; resize: vertical; }
       .confirm { display: flex; align-items: center; gap: .5rem; }
+      .notice { grid-column: 1 / -1; border-color: #7d6725; color: #f2cc60; }
       button { border: 1px solid #8e4b43; border-radius: 8px; background: #351916; color: #ffb4aa; padding: .6rem .9rem; font: inherit; font-weight: 650; cursor: pointer; }
       @media (max-width: 820px) { section { grid-column: 1 / -1; } header { align-items: start; flex-direction: column; } }
     </style>
@@ -43,10 +45,11 @@
           <h1>Automation Foundry</h1>
           <p>Estado persistido e controles operacionais do control plane.</p>
         </div>
-        <span class="local">● loopback local · <a href="/health">Saúde operacional</a></span>
+        <span class="local">● loopback local · <a href="/health">Saúde operacional</a> · <a href="/storage">Retenção de storage</a></span>
       </header>
 
       <div class="grid">
+        {% if notice %}<section class="notice" role="status">{{ notice }}</section>{% endif %}
         <section class="wide">
           <h2>Execução manual segura</h2>
           <p>Executa somente módulos registrados e mantém runs, steps e evidências no banco.</p>
@@ -163,24 +166,46 @@
             <tr>
               <td>{{ schedule.name }}</td>
               <td><code>{{ schedule.automation_slug }}</code></td>
-              <td><span class="badge {{ 'ok' if schedule.status == 'enabled' else 'warn' }}">{{ schedule.status }}</span></td>
+              <td><span class="badge {{ 'ok' if schedule.effective_status == 'enabled' else 'warn' }}">{{ schedule.effective_status }}</span>{% if schedule.status_note %}<br><small>{{ schedule.status_note }}</small>{% endif %}</td>
               <td><code>{{ schedule.cron_expression }}</code></td>
               <td>{{ schedule.timezone }}</td>
               <td>{{ schedule.next_run_at.isoformat() ~ 'Z' if schedule.next_run_at else '—' }}</td>
-              <td>{% if schedule.latest_scheduled_for %}<span class="badge">{{ schedule.latest_occurrence_status }}</span> · {{ schedule.latest_scheduled_for.isoformat() }}Z{% else %}—{% endif %}</td>
+              <td>{% if schedule.latest_scheduled_for %}<span class="badge">{{ schedule.latest_occurrence_status }}</span> · {{ schedule.latest_scheduled_for.isoformat() }}Z{% if schedule.latest_occurrence_note %}<br><small>{{ schedule.latest_occurrence_note }}</small>{% endif %}{% else %}—{% endif %}</td>
             </tr>
+            <tr><td colspan="7">
+              {% if schedule.status != 'enabled' and schedule.enable_block_reason %}
+              <div class="empty"><strong>Habilitação indisponível:</strong> {{ schedule.enable_block_reason }}.</div>
+              {% else %}
+              <form class="control" method="post" action="/schedules/{{ schedule.id }}/enabled">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="target" value="{{ 'disable' if schedule.status == 'enabled' else 'enable' }}">
+                <strong>Habilitação do schedule</strong>
+                <p>Controla apenas futuros disparos locais. Habilitar exige que o módulo esteja ativo e sem kill switch.</p>
+                <label for="schedule-actor-{{ schedule.id }}">Actor local</label>
+                <input id="schedule-actor-{{ schedule.id }}" type="text" name="actor" maxlength="200" required>
+                <label for="schedule-reason-{{ schedule.id }}">Motivo operacional</label>
+                <textarea id="schedule-reason-{{ schedule.id }}" name="reason" minlength="1" maxlength="500" required></textarea>
+                <label class="confirm"><input type="checkbox" name="confirmation" value="schedule-{{ 'disable' if schedule.status == 'enabled' else 'enable' }}" required> Confirmo {{ 'a suspensão dos próximos disparos' if schedule.status == 'enabled' else 'a habilitação dos próximos disparos locais' }}.</label>
+                <button type="submit">{{ 'Desabilitar' if schedule.status == 'enabled' else 'Habilitar' }} schedule</button>
+              </form>
+              {% endif %}
+            </td></tr>
           {% endfor %}
           </tbody></table>
           {% else %}<div class="empty">Nenhum schedule registrado.</div>{% endif %}
           <p>Payloads de disparo e motivos internos de ocorrências não são exibidos.</p>
         </section>
 
+        {% with connectors=snapshot.connectors, connectors_truncated=snapshot.connectors_truncated %}
+          {% include "data_observability_fragment.html" %}
+        {% endwith %}
+
         <section>
           <h2>Approvals pendentes</h2>
           {% if snapshot.pending_approvals %}
           <table><thead><tr><th>ID</th><th>Run</th><th>Ação</th><th>Solicitada UTC</th><th>Idade</th></tr></thead><tbody>
           {% for approval in snapshot.pending_approvals %}
-            <tr><td>#{{ approval.id }}</td><td><a href="/runs/{{ approval.run_id }}">#{{ approval.run_id }}</a> · <code>{{ approval.automation_slug }}</code></td><td>{{ approval.action }}</td><td>{{ approval.requested_at.isoformat() }}Z</td><td>{{ approval.pending_for_label }}</td></tr>
+            <tr><td>#{{ approval.id }}</td><td><a href="/runs/{{ approval.run_id }}">#{{ approval.run_id }}</a> · <code>{{ approval.automation_slug }}</code></td><td>{% if approval.action in ("review_content_script_a1", "review_content_narration_a2", "review_content_final_video_a7", "select_content_thumbnail_a8") %}<a href="/approvals/{{ approval.id }}/review">{{ approval.action }}</a>{% else %}{{ approval.action }}{% endif %}</td><td>{{ approval.requested_at.isoformat() }}Z</td><td>{{ approval.pending_for_label }}</td></tr>
           {% endfor %}
           </tbody></table>
           {% else %}<div class="empty">Nenhuma aprovação pendente.</div>{% endif %}

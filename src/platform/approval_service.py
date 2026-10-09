@@ -89,6 +89,29 @@ def _normalize_review_payload(review_payload: dict[str, str]) -> dict[str, str]:
     return normalized
 
 
+def _normalize_decision_payload(
+    decision_payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Accept a small, non-sensitive immutable selection made by an operator."""
+    if decision_payload is None:
+        return None
+    if not isinstance(decision_payload, dict) or not 1 <= len(decision_payload) <= 8:
+        raise ValueError("decision_payload must contain between 1 and 8 fields")
+    normalized: dict[str, Any] = {}
+    for key, value in decision_payload.items():
+        if not isinstance(key, str) or not _REVIEW_KEY.fullmatch(key):
+            raise ValueError("decision_payload contains an invalid field name")
+        if _SENSITIVE_REVIEW_KEY.search(key):
+            raise ValueError("decision_payload field name suggests protected data")
+        if isinstance(value, (bool, int)):
+            normalized[key] = value
+        elif isinstance(value, str) and 1 <= len(value.strip()) <= 256:
+            normalized[key] = value.strip()
+        else:
+            raise ValueError("decision_payload values must be bounded scalar values")
+    return normalized
+
+
 async def request_approval(
     session: AsyncSession,
     *,
@@ -172,6 +195,7 @@ async def decide_approval(
     decision: ApprovalStatus,
     actor: str,
     reason: str,
+    decision_payload: dict[str, Any] | None = None,
 ) -> ApprovalDecisionResult:
     """Persist one immutable human decision and transition its waiting run."""
     if approval.id is None:
@@ -180,9 +204,12 @@ async def decide_approval(
         raise ValueError("decision must be approved or rejected")
     actor = _require_text(actor, "actor")
     reason = _require_text(reason, "reason")
+    payload = _normalize_decision_payload(decision_payload)
 
     current = ApprovalStatus(approval.status)
     if current is decision:
+        if approval.decision_payload != payload:
+            raise IdempotencyConflictError("approval already has different decision payload")
         return ApprovalDecisionResult(approval, changed=False)
     if current is not ApprovalStatus.PENDING:
         raise IdempotencyConflictError(
@@ -214,6 +241,7 @@ async def decide_approval(
     approval.decided_at = _utcnow()
     approval.decided_by = actor
     approval.decision_reason = reason
+    approval.decision_payload = payload
     session.add(
         ApprovalEvent(
             approval_id=approval.id,
