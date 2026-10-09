@@ -25,6 +25,36 @@ loopback. Isso é um diagnóstico seguro, não uma corrupção de run. O comando
 `status` não expõe PIDs e mostra apenas o runtime que foi iniciado pelo
 supervisor.
 
+## Início automático no Windows
+
+O runtime pode iniciar sozinho no login do usuário por uma tarefa do Agendador de Tarefas
+chamada `AutomationFoundryRuntime`. Ela é por usuário, sem elevação, e só decide *quando* o
+supervisor inicia; o runtime continua preso a loopback e todo efeito externo mantém seu gate
+humano. O schedule semanal do brief só dispara se o runtime estiver ligado, então essa tarefa é
+o que o mantém funcionando depois de um reinício.
+
+```powershell
+powershell -File scripts\windows\runtime-autostart.ps1 install
+powershell -File scripts\windows\runtime-autostart.ps1 status
+powershell -File scripts\windows\runtime-autostart.ps1 uninstall
+```
+
+Comportamento:
+
+- A tarefa roda um minuto depois do login e espera até 10 minutos pelo engine do Docker
+  (PostgreSQL e Redis são containers). Se o Docker não ficar pronto, desiste e registra a causa.
+- Se o supervisor falhar ao iniciar, tenta de novo até 5 vezes com espera crescente.
+- Se o runtime já estiver ligado, não faz nada.
+- Um `automation-foundry-runtime stop` encerra o supervisor com código 0 e a tarefa **não** o
+  religa. Para voltar, faça login de novo ou rode `Start-ScheduledTask -TaskName AutomationFoundryRuntime`.
+- O registro fica em `storage/runtime/logs/autostart.log`; os logs de cada serviço continuam na
+  mesma pasta.
+
+Limites conhecidos: a tarefa depende do login do usuário (com a sessão encerrada, nada roda), uma
+janela pode piscar no início por causa do PowerShell oculto, e suspensão ou hibernação do
+computador impede o Beat de disparar o schedule naquele horário. A tolerância de 12 h do brief
+semanal cobre um computador que volte a ligar na própria segunda-feira.
+
 ## Beat não inicia depois de um encerramento sujo
 
 Se o Windows foi desligado ou o processo do Beat foi encerrado à força, o
