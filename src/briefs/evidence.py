@@ -32,7 +32,8 @@ from src.platform.models import (
 EVIDENCE_SCHEMA_VERSION = 1
 # Stored in the evidence so an older brief is always re-rendered the way it was written.
 # 2: the mean approval decision time is shown as days, hours and minutes.
-RENDERER_VERSION = 2
+# 3: ledger amounts are shown in positional notation with at least two decimals.
+RENDERER_VERSION = 3
 ALLOWED_WINDOW_DAYS = (1, 7, 14, 30)
 MAX_RUN_ROWS = 10_000
 MAX_LISTED_FAILURES = 10

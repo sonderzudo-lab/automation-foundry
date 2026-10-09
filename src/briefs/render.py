@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 from src.briefs.evidence import EVIDENCE_SCHEMA_VERSION
+from src.dashboard.formatting import format_exact_decimal
 
 _STATUS_ORDER = ("succeeded", "failed", "cancelled", "awaiting_approval", "running", "queued")
 
@@ -110,9 +111,10 @@ def _render(evidence: dict[str, Any]) -> str:
             "| Moeda | Custo | Receita | Valor atribuído | Receita líquida |",
             "|---|---|---|---|---|",
         ]
+        amount = _amount if int(evidence.get("renderer_version", 1)) >= 3 else str
         lines += [
-            f"| {item['currency']} | {item['cost']} | {item['revenue']} | "
-            f"{item['attributed_value']} | {item['net_revenue']} |"
+            f"| {item['currency']} | {amount(item['cost'])} | {amount(item['revenue'])} | "
+            f"{amount(item['attributed_value'])} | {amount(item['net_revenue'])} |"
             for item in evidence["ledger"]
         ]
         lines += [
@@ -144,6 +146,10 @@ def _render(evidence: dict[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _amount(value: str) -> str:
+    return format_exact_decimal(value)
 
 
 def _decision_time(value: str | None, evidence: dict[str, Any]) -> str:

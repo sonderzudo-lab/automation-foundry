@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.briefs import executor
-from src.briefs.evidence import build_window, collect_operations_evidence
+from src.briefs.evidence import RENDERER_VERSION, build_window, collect_operations_evidence
 from src.briefs.executor import (
     OperationsBriefRunNotRunnableError,
     execute_operations_brief_run,
@@ -522,7 +522,7 @@ async def test_decision_time_is_readable_in_current_briefs(
     evidence = await _empty_evidence(session)
     evidence["approvals"]["mean_decision_seconds"] = seconds  # type: ignore[index]
 
-    assert evidence["renderer_version"] == 2
+    assert evidence["renderer_version"] == RENDERER_VERSION
     assert f"tempo médio de decisão: {expected}." in render_operations_brief(evidence)
 
 
@@ -536,3 +536,30 @@ async def test_briefs_written_by_the_first_renderer_still_verify(session: AsyncS
     assert "tempo médio de decisão: 2035892.933 s." in markdown
     evidence["approvals"]["mean_decision_seconds"] = None  # type: ignore[index]
     assert "tempo médio de decisão: — s." in render_operations_brief(evidence)
+
+
+_LEDGER_ROW = {
+    "currency": "BRL",
+    "cost": "0.2500000000",
+    "revenue": "0",
+    "attributed_value": "0E-10",
+    "net_revenue": "-0.2500000000",
+}
+
+
+async def test_ledger_amounts_are_positional_in_current_briefs(session: AsyncSession) -> None:
+    evidence = await _empty_evidence(session)
+    evidence["ledger"] = [dict(_LEDGER_ROW)]
+
+    markdown = render_operations_brief(evidence)
+
+    assert "| BRL | 0.25 | 0.00 | 0.00 | -0.25 |" in markdown
+    assert "0E-10" not in markdown and "0.2500000000" not in markdown
+
+
+async def test_ledger_of_earlier_renderers_is_reproduced_exactly(session: AsyncSession) -> None:
+    evidence = await _empty_evidence(session)
+    evidence["ledger"] = [dict(_LEDGER_ROW, attributed_value="0")]
+    evidence["renderer_version"] = 2
+
+    assert "| BRL | 0.2500000000 | 0 | 0 | -0.2500000000 |" in render_operations_brief(evidence)
