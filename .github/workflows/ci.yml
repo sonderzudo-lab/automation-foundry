@@ -56,7 +56,9 @@ jobs:
 
   postgresql:
     name: Integração PostgreSQL (migrations e concorrência)
-    runs-on: ubuntu-latest
+    # Versão fixa: o rótulo ubuntu-latest migra para o Ubuntu 26 em 19/10/2026 e uma troca de
+    # sistema não deve alterar este job sem uma mudança no repositório.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
       postgres:
