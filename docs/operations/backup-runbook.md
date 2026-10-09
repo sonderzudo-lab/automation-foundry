@@ -28,12 +28,15 @@ Fonte: `src/operations/backup.py`. Cada bundle é uma pasta em `storage/backups/
 
 | Item | Valor |
 |---|---|
-| Bundles existentes | 2, ambos de 22/08/2026 (um SQLite, um PostgreSQL); nenhum recente |
+| Bundles existentes | 3: dois de 22/08/2026 (SQLite e PostgreSQL) e um de **09/10/2026** (`20261009T161603Z-350d488d`, PostgreSQL, 64 arquivos, 500 MB) |
 | Banco vivo | 11 MB, 10 runs, migration `20260811_0022` |
 | `storage/` | 522 MB, dos quais **464 MB são `storage/models`** (pesos de modelo) |
 | Disco `C:` | 88% usado, cerca de 115 GB livres |
-| `verify-backup` nos 2 bundles | `ok` |
+| `verify-backup` nos 3 bundles | `ok` |
 | Restauração do bundle PostgreSQL de agosto num PostgreSQL 17 descartável | sem erro; 31 tabelas, migration `20260811_0022`; container removido; banco vivo intocado |
+| Backup de 09/10: tempo e parada | 26,5 s para criar; runtime parado por cerca de 1 minuto no total |
+| Restauração do bundle de 09/10 num PostgreSQL 17 descartável | sem erro; `runs=10`, `approvals=15`, `artifacts=45`, `schedules=3` e migration `20260811_0022`, **idênticos ao banco vivo** |
+| Segredos no bundle de 09/10 | nenhuma chave com nome de segredo e nenhuma string de conexão com credenciais em `configuration.json` |
 
 ## 3. Restrições que moldam a rotina
 
@@ -144,7 +147,7 @@ própria e não toca o `automation-foundry-postgres`.
 
 ## 8. O que ainda não foi validado
 
-- Um **backup completo do estado atual** (precisa parar o runtime) e a sua verificação.
+- Um destino **fora do disco do sistema**: o bundle de 09/10 está em `storage/backups`, no mesmo `C:`.
 - `restore-backup` de ponta a ponta num ambiente novo, por desenho só possível numa recuperação real.
 - O script e a tarefa semanais, porque ainda não existem.
 - A cópia para um destino externo.
