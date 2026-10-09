@@ -115,7 +115,7 @@ from tests.support.local_media_rehearsal import (
 def _assert_review_link(home_html: str, approval_id: int, action: str) -> None:
     """The pending-approval alert names the action and links to its review page."""
     alert = re.search(
-        r'<div class="alert alert-info">(?:(?!<div class="alert ).)*?'
+        r'<div class="alert alert-brand">(?:(?!<div class="alert ).)*?'
         rf"<code>{re.escape(action)}</code>.*?"
         rf'href="/approvals/{approval_id}/review"',
         home_html,
@@ -814,12 +814,15 @@ async def test_connector_snapshot_and_htmx_fragment_are_latest_redacted_and_boun
         base_url="http://127.0.0.1",
     ) as client:
         home = await client.get("/")
+        data_page = await client.get("/data")
         fragment = await client.get("/data-observability/fragment")
 
     assert home.status_code == 200
     assert home.headers["cache-control"] == "no-store"
     assert '<script src="/static/htmx.min.js" defer></script>' in home.text
-    assert 'id="data-observability"' in home.text
+    assert data_page.status_code == 200
+    assert '<script src="/static/htmx.min.js" defer></script>' in data_page.text
+    assert 'id="data-observability"' in data_page.text
     assert fragment.status_code == 200
     assert fragment.headers["cache-control"] == "no-store"
     assert 'hx-get="/data-observability/fragment"' in fragment.text
@@ -984,7 +987,7 @@ async def test_dashboard_toggles_schedule_idempotently_with_audit_evidence(
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
     ) as client:
-        initial = await client.get("/")
+        initial = await client.get("/schedules")
         enabled = await client.post(
             f"/schedules/{schedule_id}/enabled",
             data=enable_payload,
@@ -993,7 +996,7 @@ async def test_dashboard_toggles_schedule_idempotently_with_audit_evidence(
             f"/schedules/{schedule_id}/enabled",
             data={**enable_payload, "reason": "duplicate must not replace evidence"},
         )
-        enabled_page = await client.get("/")
+        enabled_page = await client.get("/schedules")
         disabled = await client.post(
             f"/schedules/{schedule_id}/enabled",
             data={
@@ -1094,7 +1097,7 @@ async def test_dashboard_schedule_enable_respects_automation_safety_blocks(
         )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/?notice=schedule-change-blocked"
+    assert response.headers["location"] == "/schedules?notice=schedule-change-blocked"
     async with AsyncClient(
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
@@ -1152,7 +1155,7 @@ async def test_dashboard_schedule_enable_requires_registered_executor(
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
     ) as client:
-        page = await client.get("/")
+        page = await client.get("/schedules")
         response = await client.post(
             f"/schedules/{schedule_id}/enabled",
             data={
@@ -1168,7 +1171,7 @@ async def test_dashboard_schedule_enable_requires_registered_executor(
     assert "Habilitação indisponível" in page.text
     assert "executor local não registrado" in page.text
     assert response.status_code == 303
-    assert response.headers["location"] == "/?notice=schedule-change-blocked"
+    assert response.headers["location"] == "/schedules?notice=schedule-change-blocked"
     async with session_factory() as session:
         fetched = await session.get(Schedule, schedule_id)
         events = list(
@@ -1371,7 +1374,7 @@ async def test_dashboard_ledger_is_exactly_attributed_by_automation_and_currency
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
     ) as client:
-        response = await client.get("/")
+        response = await client.get("/reports")
 
     assert response.status_code == 200
     assert "Ledger por automação" in response.text
@@ -1436,7 +1439,7 @@ async def test_execution_metrics_use_bounded_completed_samples_only(
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
     ) as client:
-        response = await client.get("/")
+        response = await client.get("/automations")
 
     assert response.status_code == 200
     assert "Execução recente por automação" in response.text
@@ -1461,17 +1464,19 @@ async def test_dashboard_home_renders_redacted_state_and_safe_controls(
         base_url="http://127.0.0.1",
     ) as client:
         response = await client.get("/")
+        automations = await client.get("/automations")
+        reports = await client.get("/reports")
 
     assert response.status_code == 200
     assert "Automation Foundry" in response.text
     assert "Content Engine" in response.text
     assert "Worker unavailable" in response.text
     assert ">Idade<" in response.text
-    assert ">0.30<" in response.text
-    assert ">0.70<" in response.text
+    assert ">0.30<" in reports.text
+    assert ">0.70<" in reports.text
     assert f'href="/runs/{run_id}"' in response.text
-    assert "/kill-switch" in response.text
-    assert "Ativar kill switch" in response.text
+    assert "/kill-switch" in automations.text
+    assert "Ativar kill switch" in automations.text
     for private_value in (
         "private-owner",
         "private-run-key",
@@ -1492,14 +1497,15 @@ async def test_dashboard_home_renders_redacted_state_and_safe_controls(
         "private-metric-source",
         "metric-dimension-secret",
     ):
-        assert private_value not in response.text
+        for page in (response, automations, reports):
+            assert private_value not in page.text
 
     application_routes = [
         route for route in application.routes if isinstance(route, APIRoute)
     ]
-    assert len(application_routes) == 22
+    assert len(application_routes) == 29
     route_methods = [route.methods for route in application_routes]
-    assert route_methods.count({"GET"}) == 14
+    assert route_methods.count({"GET"}) == 21
     assert route_methods.count({"POST"}) == 8
 
 
@@ -1769,7 +1775,7 @@ async def test_dashboard_shows_experiment_and_attributes_manual_run(
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
     ) as client:
-        dashboard = await client.get("/")
+        dashboard = await client.get("/reports")
         response = await client.post(
             "/automations/platform-smoke/runs",
             data={
@@ -1886,10 +1892,10 @@ async def test_dashboard_kill_switch_is_confirmed_and_audited(
                 "reason": "pause module for maintenance",
             },
         )
-        updated = await client.get("/")
+        updated = await client.get("/automations")
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/"
+    assert response.headers["location"] == "/automations"
     assert "Desativar kill switch" in updated.text
     async with session_factory() as session:
         automation = await session.get(Automation, automation_id)
@@ -1947,7 +1953,7 @@ async def test_dashboard_disables_automation_idempotently_and_blocks_new_runs(
             f"/automations/{automation_id}/enabled",
             data={**disable_payload, "reason": "duplicate must not replace evidence"},
         )
-        updated = await client.get("/")
+        updated = await client.get("/automations")
         blocked_start = await client.post(
             "/automations/platform-smoke/runs",
             data={
@@ -2621,7 +2627,7 @@ async def test_dashboard_does_not_offer_manual_start_while_kill_switch_is_active
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
     ) as client:
-        before = await client.get("/")
+        before = await client.get("/automations")
         blocked = await client.post(
             f"/automations/{automation_id}/kill-switch",
             data={
@@ -2632,7 +2638,7 @@ async def test_dashboard_does_not_offer_manual_start_while_kill_switch_is_active
                 "reason": "stop new dashboard intake",
             },
         )
-        after = await client.get("/")
+        after = await client.get("/automations")
 
     assert blocked.status_code == 303
     assert "Disparo manual disponível" in before.text
@@ -3261,12 +3267,13 @@ async def test_dashboard_home_handles_empty_database(
         base_url="http://127.0.0.1",
     ) as client:
         response = await client.get("/")
+        reports = await client.get("/reports")
 
     assert response.status_code == 200
     assert "Nenhuma automação registrada" in response.text
     assert "Nenhuma run registrada" in response.text
     assert "Nenhum schedule registrado" in response.text
-    assert "Nenhuma observação financeira atribuída a uma automação" in response.text
+    assert "Nenhuma observação financeira atribuída a uma automação" in reports.text
     assert "Nenhuma automação registrada para calcular indicadores" in response.text
 
 

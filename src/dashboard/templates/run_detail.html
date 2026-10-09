@@ -5,7 +5,7 @@
 {% block title %}Run #{{ run.id }} · Automation Foundry{% endblock %}
 
 {% block breadcrumb %}
-<li><a href="/#runs">Runs</a></li>
+<li><a href="/runs">Runs</a></li>
 <li><span aria-current="page">Run #{{ run.id }}</span></li>
 {% endblock %}
 
@@ -32,7 +32,7 @@
   <header class="page-header">
     <div>
       <div class="title-row"><h1>Run #{{ run.id }}</h1></div>
-      <p><a href="/#auto-{{ run.automation_slug }}">{{ run.automation_name }}</a> · <code>{{ run.automation_slug }}</code></p>
+      <p><a href="/automations#auto-{{ run.automation_slug }}">{{ run.automation_name }}</a> · <code>{{ run.automation_slug }}</code></p>
     </div>
     <div class="page-actions">
       {% if run.can_request_cancellation %}

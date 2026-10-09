@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% import "_sections.html" as sec %}
+{% set active_page = "schedules" %}
+
+{% set enabled_count = snapshot.schedules|selectattr("effective_status", "equalto", "enabled")|list|length %}
+
+{% block title %}Schedules · Automation Foundry{% endblock %}
+{% block breadcrumb %}<li><span aria-current="page">Schedules</span></li>{% endblock %}
+
+{% block content %}
+  {% if notice %}
+  <div class="alert alert-warning" role="status">
+    <span class="alert-icon">{{ ui.icon("triangle-alert") }}</span>
+    <div class="alert-body"><p class="alert-title">{{ notice }}</p></div>
+  </div>
+  {% endif %}
+
+  {{ sec.page_head("Operação", "Schedules", "Disparos locais agendados pelo Beat. Habilitar exige módulo ativo e sem kill switch; payloads e motivos internos não são exibidos.") }}
+
+  <section class="grid grid-kpi" aria-label="Resumo dos schedules">
+    <article class="card kpi">
+      <div class="card-header"><h3 class="card-title">Registrados</h3></div>
+      <div class="card-content"><p class="metric">{{ snapshot.schedules|length }}</p></div>
+    </article>
+    <article class="card kpi">
+      <div class="card-header"><h3 class="card-title">Habilitados</h3></div>
+      <div class="card-content"><p class="metric">{{ enabled_count }}</p></div>
+      <div class="card-footer plain"><span class="kpi-foot"><strong>{{ snapshot.schedules|length - enabled_count }} desabilitados ou bloqueados</strong></span></div>
+    </article>
+  </section>
+
+  <section class="card" aria-labelledby="h-schedules">
+    <div class="card-header"><h2 class="card-title" id="h-schedules" style="font-size:1rem">Agendamentos</h2><p class="card-description">Ordenados pela próxima execução.</p></div>
+    <div class="card-content flush">
+      {% if snapshot.schedules %}
+      {{ sec.schedule_list(snapshot.schedules) }}
+      {% else %}
+      {{ ui.empty("calendar-clock", "Nenhum schedule registrado", "Agendamentos aparecem aqui com a próxima execução.") }}
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}
+
+{% block dialogs %}
+  {% include "_dialogs_schedule.html" %}
+{% endblock %}

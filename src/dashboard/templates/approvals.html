@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% import "_sections.html" as sec %}
+{% set active_page = "approvals" %}
+{% set review_actions = ("review_content_script_a1", "review_content_narration_a2", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}
+{% set decision_labels = {"approved": ("circle-check", "Aprovada"), "rejected": ("circle-x", "Rejeitada"), "cancelled": ("ban", "Cancelada")} %}
+
+{% block title %}Approvals · Automation Foundry{% endblock %}
+{% block breadcrumb %}<li><span aria-current="page">Approvals</span></li>{% endblock %}
+
+{% block content %}
+  {{ sec.page_head("Operação", "Approvals", "Decisões humanas antes de qualquer efeito externo. Cada decisão é imutável e fica registrada.") }}
+
+  <section class="attention{{ ' is-clear' if not snapshot.pending_approvals }}" aria-labelledby="h-pendentes">
+    <div class="attention-head">
+      <h2 id="h-pendentes">{{ ui.icon("shield-check") }}Pendentes</h2>
+      {% if snapshot.pending_approvals %}<span class="badge badge-warning">{{ snapshot.pending_approvals|length }}</span>{% endif %}
+    </div>
+    {% if snapshot.pending_approvals %}
+    <div class="attention-body alert-list">
+      {% for approval in snapshot.pending_approvals %}{{ sec.approval_alert(approval, review_actions) }}{% endfor %}
+    </div>
+    {% else %}
+    <div class="attention-body">{{ ui.empty("circle-check", "Nenhuma approval pendente", "Quando um módulo pedir uma decisão humana, ela aparece aqui.", good=true) }}</div>
+    {% endif %}
+  </section>
+
+  <section class="card" aria-labelledby="h-historico">
+    <div class="card-header"><h2 class="card-title" id="h-historico" style="font-size:1rem">Decisões recentes</h2><p class="card-description">As {{ history|length }} últimas approvals decididas ou canceladas.</p></div>
+    <div class="card-content flush">
+      {% if history %}
+      <div class="table-wrap">
+        <table class="table">
+          <caption class="sr-only">Decisões recentes</caption>
+          <thead><tr><th scope="col">Approval</th><th scope="col">Ação</th><th scope="col">Automação</th><th scope="col">Resultado</th><th scope="col">Decidida (UTC)</th></tr></thead>
+          <tbody>
+            {% for item in history %}
+            {% set label = decision_labels.get(item.status, ("circle", item.status)) %}
+            <tr>
+              <td>
+                {% if item.action in review_actions %}<a href="/approvals/{{ item.id }}/review"><strong>#{{ item.id }}</strong></a>{% else %}<strong>#{{ item.id }}</strong>{% endif %}
+                <small>run <a href="/runs/{{ item.run_id }}">#{{ item.run_id }}</a></small>
+              </td>
+              <td><code>{{ item.action }}</code></td>
+              <td class="nowrap"><code>{{ item.automation_slug }}</code></td>
+              <td>{{ ui.badge(item.status, label[0], label[1]) }}</td>
+              <td class="nowrap">{% if item.decided_at %}<time datetime="{{ item.decided_at.isoformat() }}Z">{{ item.decided_at|utc_label }}</time><small>{{ item.decided_at|age_label }}</small>{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      {{ ui.empty("shield-check", "Nenhuma decisão registrada", "O histórico começa na primeira approval decidida.") }}
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

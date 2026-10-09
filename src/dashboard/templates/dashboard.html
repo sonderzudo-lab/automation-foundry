@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_macros.html" as ui %}
+{% import "_sections.html" as sec %}
 {% set active_page = "home" %}
 {% set review_actions = ("review_content_script_a1", "review_content_narration_a2", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}
 
@@ -20,16 +21,6 @@
 
 {% block title %}Visão geral · Automation Foundry{% endblock %}
 
-{% block topbar_status %}
-  <span class="hide-sm">
-  {% if attention_count %}
-    {{ ui.badge("warning", "triangle-alert", attention_count ~ (" item pede atenção" if attention_count == 1 else " itens pedem atenção")) }}
-  {% else %}
-    {{ ui.badge("success", "circle-check", "Tudo em ordem") }}
-  {% endif %}
-  </span>
-{% endblock %}
-
 {% block content %}
         {% if notice %}
         <div class="alert alert-warning" role="status">
@@ -38,12 +29,7 @@
         </div>
         {% endif %}
 
-        <header class="page-header">
-          <div>
-            <h1>Visão geral</h1>
-            <p>Estado persistido e controles operacionais do control plane.</p>
-          </div>
-          <div class="page-actions">
+        {% call sec.page_head("Operação", "Visão geral", "Estado persistido e controles operacionais do control plane.") %}
             <details class="menu">
               <summary class="btn">{{ ui.icon("play") }}Executar{{ ui.icon("chevron-down") }}</summary>
               <div class="menu-content">
@@ -62,8 +48,7 @@
                 {% endfor %}
               </div>
             </details>
-          </div>
-        </header>
+        {% endcall %}
 
         {# ============ PRECISA DE VOCÊ ============ #}
         <section class="attention{{ ' is-clear' if not attention_count }}" id="precisa-de-voce" aria-labelledby="h-atencao">
@@ -73,27 +58,14 @@
           </div>
           {% if attention_count %}
           <div class="attention-body alert-list">
-            {% for approval in pending %}
-            <div class="alert alert-info">
-              <span class="alert-icon">{{ ui.icon("shield-check") }}</span>
-              <div class="alert-body">
-                <p class="alert-title">Approval pendente · <code>{{ approval.action }}</code></p>
-                <p class="alert-description">Run <a href="/runs/{{ approval.run_id }}">#{{ approval.run_id }}</a> · <code>{{ approval.automation_slug }}</code> · solicitada <time datetime="{{ approval.requested_at.isoformat() }}Z">{{ approval.requested_at|utc_label }}</time> · <span class="meta-label">Idade</span> <strong>há {{ approval.pending_for_label }}</strong>.</p>
-              </div>
-              {% if approval.action in review_actions %}
-              <a class="btn btn-sm alert-action" href="/approvals/{{ approval.id }}/review">{{ ui.icon("eye") }}Revisar</a>
-              {% endif %}
-            </div>
-            {% endfor %}
-            {% for alert in alerts %}
-            <div class="alert {{ ui.severity_tone(alert.severity) }}">
-              <span class="alert-icon">{{ ui.icon("octagon-x" if alert.severity in ("error", "critical") else "triangle-alert") }}</span>
-              <div class="alert-body">
-                <p class="alert-title">{{ alert.title }}</p>
-                <p class="alert-description">{{ ui.severity_badge(alert.severity) }} {{ ui.badge("neutral", "info", alert.status) }} · <span class="tabular">{{ alert.occurrence_count }}</span> ocorrências · última <time datetime="{{ alert.last_seen_at.isoformat() }}Z">{{ alert.last_seen_at|utc_label }}</time> ({{ alert.last_seen_at|age_label }})</p>
-              </div>
-            </div>
-            {% endfor %}
+            {% for approval in pending[:5] %}{{ sec.approval_alert(approval, review_actions) }}{% endfor %}
+            {% for alert in alerts[:3] %}{{ sec.alert_row(alert) }}{% endfor %}
+            {% if pending|length > 5 or alerts|length > 3 %}
+            <p class="attention-more">
+              {% if pending|length > 5 %}<a href="/approvals">Ver as {{ pending|length }} approvals pendentes {{ ui.icon("arrow-right") }}</a>{% endif %}
+              {% if alerts|length > 3 %}<a href="/alerts">Ver os {{ alerts|length }} alertas ativos {{ ui.icon("arrow-right") }}</a>{% endif %}
+            </p>
+            {% endif %}
           </div>
           {% else %}
           <div class="attention-body">
@@ -104,11 +76,11 @@
 
         {# ============ INDICADORES ============ #}
         <section class="grid grid-kpi" aria-label="Indicadores">
-          <article class="card kpi">
+          <a class="card kpi" href="/runs">
             <div class="card-header"><h3 class="card-title">Runs recentes</h3></div>
             <div class="card-content"><p class="metric">{{ snapshot.recent_runs|length }}</p></div>
             <div class="card-footer plain"><span class="kpi-foot"><strong>{{ runs_succeeded }} concluídas · {{ runs_failed }} falhas</strong><span>{{ runs_cancelled }} canceladas · {{ runs_waiting }} aguardando</span></span></div>
-          </article>
+          </a>
           <article class="card kpi">
             <div class="card-header"><h3 class="card-title">Taxa de sucesso</h3></div>
             <div class="card-content">
@@ -122,14 +94,14 @@
             </div>
             <div class="card-footer plain"><span class="kpi-foot"><strong>{{ rate.ok }} de {{ rate.total }} concluídas</strong><span>Canceladas e em andamento ficam fora</span></span></div>
           </article>
-          <a class="card kpi" href="#precisa-de-voce">
+          <a class="card kpi" href="/approvals">
             <div class="card-header"><h3 class="card-title">Aprovações pendentes</h3></div>
             <div class="card-content"><p class="metric">{{ pending|length }}</p></div>
             <div class="card-footer plain"><span class="kpi-foot">
               {% if pending %}<strong>Mais antiga há {{ (pending|sort(attribute="pending_for_seconds", reverse=true)|first).pending_for_label }}</strong>{% else %}<strong>Nada aguardando</strong>{% endif %}
               <span>Exigem decisão humana</span></span></div>
           </a>
-          <a class="card kpi" href="#precisa-de-voce">
+          <a class="card kpi" href="/alerts">
             <div class="card-header"><h3 class="card-title">Alertas ativos</h3></div>
             <div class="card-content"><p class="metric">{{ alerts|length }}</p></div>
             <div class="card-footer plain"><span class="kpi-foot">
@@ -137,7 +109,7 @@
               <strong>{{ alerts|length - serious }} warning/info · {{ serious }} graves</strong>
               <span>{% if alerts %}{{ (alerts|first).title }}{% else %}Nenhum alerta ativo{% endif %}</span></span></div>
           </a>
-          <a class="card kpi" href="#ledger">
+          <a class="card kpi" href="/reports">
             <div class="card-header"><h3 class="card-title">Custo observado</h3></div>
             <div class="card-content">
               {% if snapshot.ledger_totals|length == 1 %}
@@ -155,132 +127,63 @@
           </a>
         </section>
 
-        {# ============ RUNS + LATERAL ============ #}
+        {# ============ ATIVIDADE RECENTE + LATERAL ============ #}
         <div class="split">
-          <div class="grid">
-            <section class="card" id="runs" aria-labelledby="h-runs">
-              <div class="card-header"><h2 class="card-title" id="h-runs" style="font-size:1rem">Runs recentes</h2><p class="card-description">Horários em UTC, com idade relativa.</p></div>
-              <div class="card-content flush">
-                {% if snapshot.recent_runs %}
-                <div class="table-wrap">
-                  <table class="table">
-                    <caption class="sr-only">Runs recentes</caption>
-                    <thead><tr><th scope="col">Run · trigger</th><th scope="col">Automação</th><th scope="col">Status</th><th scope="col">Enfileirada (UTC)</th></tr></thead>
-                    <tbody>
-                      {% for run in snapshot.recent_runs %}
-                      <tr>
-                        <td><a href="/runs/{{ run.id }}"><strong>#{{ run.id }}</strong></a><small>{{ run.trigger }}</small></td>
-                        <td class="nowrap"><code>{{ run.automation_slug }}</code></td>
-                        <td>{{ ui.run_badge(run.status) }}</td>
-                        <td class="nowrap"><time datetime="{{ run.queued_at.isoformat() }}Z">{{ run.queued_at|utc_label }}</time><small>{{ run.queued_at|age_label }}</small></td>
-                      </tr>
-                      {% endfor %}
-                    </tbody>
-                  </table>
-                </div>
-                {% else %}
-                {{ ui.empty("layers", "Nenhuma run registrada", "Dispare um módulo em “Executar” para criar a primeira run.") }}
-                {% endif %}
-              </div>
-            </section>
+          <section class="card" id="runs" aria-labelledby="h-runs">
+            <div class="card-header row">
+              <div><h2 class="card-title" id="h-runs" style="font-size:1rem">Atividade recente</h2><p class="card-description">Últimas runs. Horários em UTC, com idade relativa.</p></div>
+              <a class="btn btn-ghost btn-sm" href="/runs">Ver todas {{ ui.icon("arrow-right") }}</a>
+            </div>
+            <div class="card-content flush">
+              {% if snapshot.recent_runs %}
+              {{ sec.runs_table(snapshot.recent_runs[:5], "Últimas runs") }}
+              {% else %}
+              {{ ui.empty("layers", "Nenhuma run registrada", "Dispare um módulo em “Executar” para criar a primeira run.") }}
+              {% endif %}
+            </div>
+          </section>
 
-            {% with connectors=snapshot.connectors, connectors_truncated=snapshot.connectors_truncated %}
-              {% include "data_observability_fragment.html" %}
-            {% endwith %}
-          </div>
-
-          <div class="grid">
-            <section class="card" id="schedules" aria-labelledby="h-sched">
-              <div class="card-header"><h2 class="card-title" id="h-sched">Schedules</h2><p class="card-description">Payloads de disparo e motivos internos não são exibidos.</p></div>
-              <div class="card-content flush">
-                {% if snapshot.schedules %}
-                <ul class="list">
-                  {% for schedule in snapshot.schedules %}
-                  <li>
-                    <span class="alert-icon" style="flex:none">{{ ui.icon("calendar-clock") }}</span>
-                    <div class="grow">
-                      <strong>{{ schedule.name }}</strong>
-                      <span class="cell-sub"><code>{{ schedule.cron_expression }}</code> · {{ schedule.timezone }} · <code>{{ schedule.automation_slug }}</code></span>
-                      <span class="cell-sub">Próxima: {% if schedule.next_run_at %}<time datetime="{{ schedule.next_run_at.isoformat() }}Z">{{ schedule.next_run_at|utc_label }}</time> · {{ schedule.next_run_at|age_label }}{% else %}—{% endif %}</span>
-                      {% if schedule.latest_scheduled_for %}
-                      <span class="cell-sub">Última ocorrência: {{ ui.badge("neutral", "clock", schedule.latest_occurrence_status) }} <time datetime="{{ schedule.latest_scheduled_for.isoformat() }}Z">{{ schedule.latest_scheduled_for|utc_label }}</time>{% if schedule.latest_occurrence_note %} · {{ schedule.latest_occurrence_note }}{% endif %}</span>
-                      {% endif %}
-                      {% if schedule.status_note %}<span class="cell-sub">{{ schedule.status_note }}</span>{% endif %}
-                    </div>
-                    <div class="chips" style="flex-direction:column;align-items:flex-end">
-                      {% if schedule.effective_status == "enabled" %}{{ ui.badge("success", "circle-check", "Habilitado") }}
-                      {% elif schedule.effective_status == "disabled" %}{{ ui.badge("neutral", "power", "Desabilitado") }}
-                      {% else %}{{ ui.badge("warning", "triangle-alert", schedule.effective_status) }}{% endif %}
-                      <a class="btn btn-ghost btn-sm" href="#agendamento-{{ schedule.id }}">Gerenciar</a>
-                    </div>
-                  </li>
-                  {% endfor %}
-                </ul>
-                {% else %}
-                {{ ui.empty("calendar-clock", "Nenhum schedule registrado", "Agendamentos aparecem aqui com a próxima execução.") }}
-                {% endif %}
-              </div>
-            </section>
-          </div>
+          <section class="card" id="schedules" aria-labelledby="h-sched">
+            <div class="card-header row">
+              <div><h2 class="card-title" id="h-sched" style="font-size:1rem">Próximos schedules</h2><p class="card-description">Payloads e motivos internos não são exibidos.</p></div>
+              <a class="btn btn-ghost btn-sm" href="/schedules">Gerenciar {{ ui.icon("arrow-right") }}</a>
+            </div>
+            <div class="card-content flush">
+              {% if snapshot.schedules %}
+              {{ sec.schedule_list(snapshot.schedules[:3], manage=false) }}
+              {% else %}
+              {{ ui.empty("calendar-clock", "Nenhum schedule registrado", "Agendamentos aparecem aqui com a próxima execução.") }}
+              {% endif %}
+            </div>
+          </section>
         </div>
 
-        {# ============ AUTOMAÇÕES ============ #}
+        {# ============ AUTOMAÇÕES (resumo) ============ #}
         <section class="section" id="automacoes" aria-labelledby="h-auto">
           <div class="section-head">
-            <div><h2 id="h-auto">Automações</h2><p>Execução recente por automação: a janela considera apenas resultados <code>succeeded</code> e <code>failed</code>; runs em andamento e canceladas ficam fora do denominador.</p></div>
+            <div><h2 id="h-auto">Automações</h2><p>Janela recente por automação: só resultados <code>succeeded</code> e <code>failed</code> entram no denominador.</p></div>
+            <a class="btn btn-ghost btn-sm" href="/automations">Gerir automações {{ ui.icon("arrow-right") }}</a>
           </div>
           {% if snapshot.automations %}
-          <div class="grid grid-cards">
-            {% for automation in snapshot.automations %}
-            {% set executor = executors|selectattr("slug", "equalto", automation.slug)|first %}
-            {% set summary = snapshot.execution_summaries|selectattr("automation_slug", "equalto", automation.slug)|first %}
-            {% set last_run = snapshot.recent_runs|selectattr("automation_slug", "equalto", automation.slug)|first %}
-            <article class="card automation{{ ' is-killed' if automation.kill_switch_active }}" id="auto-{{ automation.slug }}" aria-labelledby="auto-title-{{ automation.slug }}">
-              <div class="card-header">
-                <div class="automation-title">
-                  <span class="alert-icon">{{ ui.icon("bot") }}</span>
-                  <div><h3 id="auto-title-{{ automation.slug }}">{{ automation.name }}</h3><code>{{ automation.slug }}</code></div>
+          <div class="card">
+            <ul class="list">
+              {% for automation in snapshot.automations %}
+              {% set summary = snapshot.execution_summaries|selectattr("automation_slug", "equalto", automation.slug)|first %}
+              {% set last_run = snapshot.recent_runs|selectattr("automation_slug", "equalto", automation.slug)|first %}
+              <li>
+                <span class="alert-icon" style="flex:none">{{ ui.icon("bot") }}</span>
+                <div class="grow">
+                  <strong><a href="/automations#auto-{{ automation.slug }}">{{ automation.name }}</a></strong>
+                  <span class="cell-sub"><code>{{ automation.slug }}</code> · {% if last_run %}última run <a href="/runs/{{ last_run.id }}">#{{ last_run.id }}</a> {{ last_run.queued_at|age_label }}{% else %}nenhuma run{% endif %}</span>
                 </div>
-                <details class="menu">
-                  <summary class="btn btn-ghost btn-icon btn-sm" aria-label="Mais ações de {{ automation.name }}">{{ ui.icon("ellipsis") }}</summary>
-                  <div class="menu-content">
-                    <a class="menu-item" href="#runs">{{ ui.icon("layers") }}Ver runs</a>
-                    <a class="menu-item" href="#schedules">{{ ui.icon("calendar-clock") }}Ver schedules</a>
-                    <div class="menu-sep"></div>
-                    <a class="menu-item danger" href="#gerenciar-{{ automation.slug }}">{{ ui.icon("triangle-alert") }}Gerenciar módulo…</a>
-                  </div>
-                </details>
-              </div>
-              <div class="card-content" style="display:grid;gap:1rem;align-content:start">
                 <div class="chips">
+                  {% if summary and summary.success_rate_percent is not none %}<span class="badge badge-secondary">{{ summary.success_rate_percent }}% de sucesso</span>{% endif %}
                   {% if automation.enabled %}{{ ui.badge("success", "circle-check", "Ativa") }}{% else %}{{ ui.badge("disabled", "power", "Desabilitada") }}{% endif %}
-                  {% if automation.kill_switch_active %}{{ ui.badge("danger", "octagon-x", "Kill switch ativo") }}{% else %}{{ ui.badge("neutral", "octagon-x", "Kill switch livre") }}{% endif %}
-                  {% if executor %}<span class="badge badge-secondary">Fila <code class="mono" style="background:none;padding:0">{{ executor.queue.value }}</code></span>{% endif %}
+                  {% if automation.kill_switch_active %}{{ ui.badge("danger", "octagon-x", "Kill switch ativo") }}{% endif %}
                 </div>
-                <div class="stat-row">
-                  <div class="stat"><span>Taxa de sucesso</span><strong>{% if summary and summary.success_rate_percent is not none %}{{ summary.success_rate_percent }}%{% else %}—{% endif %}</strong>{% if summary %}<span>{{ summary.succeeded_count }} de {{ summary.sample_size }} (máx. {{ summary.sample_limit }})</span>{% else %}<span>sem amostra</span>{% endif %}</div>
-                  <div class="stat"><span>Duração média</span><strong>{% if summary and summary.average_duration_seconds is not none %}{{ summary.average_duration_seconds|duration_label }}{% else %}—{% endif %}</strong>{% if summary %}<span>{{ summary.duration_sample_size }} válidas</span>{% endif %}</div>
-                  <div class="stat"><span>Última run</span><strong>{% if last_run %}<a href="/runs/{{ last_run.id }}">#{{ last_run.id }}</a> · {{ last_run.queued_at|age_label }}{% else %}Nenhuma run{% endif %}</strong></div>
-                </div>
-              </div>
-              <div class="card-footer">
-                {% if executor and executor.supports_manual_start %}
-                  {% if automation.enabled and not automation.kill_switch_active %}
-                  <span>Disparo manual disponível</span>
-                  <a class="btn btn-sm" href="#executar-{{ automation.slug }}">{{ ui.icon("play") }}Executar</a>
-                  {% elif automation.enabled %}
-                  <span>Kill switch ativo; novos disparos de {{ executor.name }} permanecem bloqueados.</span>
-                  <button class="btn btn-sm" type="button" disabled>{{ ui.icon("play") }}Executar</button>
-                  {% else %}
-                  <span>{{ executor.name }} está administrativamente desabilitada; novos disparos permanecem bloqueados.</span>
-                  <button class="btn btn-sm" type="button" disabled>{{ ui.icon("play") }}Executar</button>
-                  {% endif %}
-                {% else %}
-                  <span>Sem disparo manual</span>
-                {% endif %}
-              </div>
-            </article>
-            {% endfor %}
+              </li>
+              {% endfor %}
+            </ul>
           </div>
           {% else %}
           <div class="card"><div class="card-content">
@@ -288,212 +191,8 @@
           </div></div>
           {% endif %}
         </section>
-
-        {# ============ FINANCEIRO E EXPERIMENTOS ============ #}
-        <div class="grid grid-2">
-          <section class="card" id="ledger" aria-labelledby="h-ledger">
-            <div class="card-header"><h2 class="card-title" id="h-ledger" style="font-size:1rem">Ledger</h2><p class="card-description">Cada moeda permanece separada; sem conversão cambial, pagamento ou promessa.</p></div>
-            <div class="card-content flush" style="padding-top:.75rem">
-              {% if snapshot.ledger_totals %}
-              <div class="table-wrap">
-                <table class="table">
-                  <caption class="sr-only">Ledger por moeda</caption>
-                  <thead><tr><th scope="col">Moeda</th><th scope="col" class="num">Custo</th><th scope="col" class="num">Receita</th><th scope="col" class="num">Receita líquida observada</th><th scope="col" class="num">Valor atribuído</th></tr></thead>
-                  <tbody>
-                    {% for total in snapshot.ledger_totals %}
-                    <tr><th scope="row"><code>{{ total.currency }}</code></th><td class="num">{{ total.cost|exact_decimal }}</td><td class="num">{{ total.revenue|exact_decimal }}</td><td class="num">{{ total.net_revenue|exact_decimal }}</td><td class="num">{{ total.attributed_value|exact_decimal }}</td></tr>
-                    {% endfor %}
-                  </tbody>
-                </table>
-              </div>
-              {% else %}
-              {{ ui.empty("wallet", "Nenhuma observação financeira registrada") }}
-              {% endif %}
-              <details class="disclosure neutral" style="margin:.75rem 1.25rem 1rem">
-                <summary>Por automação<span class="chev">{{ ui.icon("chevron-right") }}</span></summary>
-                {% if snapshot.automation_ledger_totals %}
-                <div class="table-wrap">
-                  <table class="table">
-                    <caption class="sr-only">Ledger por automação</caption>
-                    <thead><tr><th scope="col">Automação</th><th scope="col">Moeda</th><th scope="col" class="num">Custo</th><th scope="col" class="num">Receita</th><th scope="col" class="num">Receita líquida observada</th><th scope="col" class="num">Valor atribuído</th></tr></thead>
-                    <tbody>
-                      {% for total in snapshot.automation_ledger_totals %}
-                      <tr><td><code>{{ total.automation_slug }}</code></td><td><code>{{ total.currency }}</code></td><td class="num">{{ total.cost|exact_decimal }}</td><td class="num">{{ total.revenue|exact_decimal }}</td><td class="num">{{ total.net_revenue|exact_decimal }}</td><td class="num">{{ total.attributed_value|exact_decimal }}</td></tr>
-                      {% endfor %}
-                    </tbody>
-                  </table>
-                </div>
-                {% else %}
-                <p class="muted text-sm" style="padding:.75rem">Nenhuma observação financeira atribuída a uma automação.</p>
-                {% endif %}
-              </details>
-            </div>
-          </section>
-
-          <section class="card" aria-labelledby="h-exp">
-            <div class="card-header"><h2 class="card-title" id="h-exp" style="font-size:1rem">Experimentos</h2><p class="card-description">Comparações entre variantes de uma automação.</p></div>
-            <div class="card-content{{ ' flush' if snapshot.experiments }}"{% if snapshot.experiments %} style="padding-top:.75rem"{% endif %}>
-              {% if snapshot.experiments %}
-              <div class="table-wrap">
-                <table class="table">
-                  <caption class="sr-only">Experimentos</caption>
-                  <thead><tr><th scope="col">ID</th><th scope="col">Automação</th><th scope="col">Experimento</th><th scope="col">Status</th><th scope="col">Variantes</th><th scope="col">Métrica primária</th></tr></thead>
-                  <tbody>
-                    {% for experiment in snapshot.experiments %}
-                    <tr><td>#{{ experiment.id }}</td><td><code>{{ experiment.automation_slug }}</code></td><td>{{ experiment.name }}<small><code>{{ experiment.key }}</code></small></td><td>{{ ui.badge("running" if experiment.status == "running" else "neutral", "flask", experiment.status) }}</td><td class="nowrap">{{ experiment.control_variant }} → {{ experiment.candidate_variant }}</td><td>{{ experiment.primary_metric }} ({{ experiment.primary_metric_unit }})</td></tr>
-                    {% endfor %}
-                  </tbody>
-                </table>
-              </div>
-              {% else %}
-              {{ ui.empty("flask", "Nenhum experimento registrado", "Quando houver um experimento em andamento, ele aparece aqui e como opção ao executar um módulo.") }}
-              {% endif %}
-            </div>
-          </section>
-        </div>
 {% endblock %}
 
 {% block dialogs %}
-  {# ===== Executar módulo: um diálogo por executor com disparo manual ===== #}
-  {% for executor in executors if executor.supports_manual_start %}
-    {% set registered = snapshot.automations|selectattr("slug", "equalto", executor.slug)|first %}
-    {% if not (registered and not registered.enabled) %}
-    <div class="dialog-backdrop" id="executar-{{ executor.slug }}">
-      <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
-      <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="executar-{{ executor.slug }}-title" tabindex="-1">
-        <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar">{{ ui.icon("x") }}</a>
-        <header class="dialog-header"><h2 id="executar-{{ executor.slug }}-title">Executar · {{ executor.name }}</h2><p>Roda localmente; runs, steps e evidências ficam registrados no banco.</p></header>
-        <form class="form-stack" method="post" action="/automations/{{ executor.slug }}/runs">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <div class="field">
-            <label for="idempotency-key-{{ executor.slug }}">Chave de idempotência</label>
-            <input class="input mono" id="idempotency-key-{{ executor.slug }}" type="text" name="idempotency_key" maxlength="255" required>
-            <span class="hint">Repetir a mesma chave não cria uma segunda run.</span>
-          </div>
-          {% for field in executor.manual_input_fields %}
-          <div class="field">
-            <label for="manual-{{ executor.slug }}-{{ field.name }}">{{ field.label }}</label>
-            {% if field.control == "select" %}
-            <select class="select" id="manual-{{ executor.slug }}-{{ field.name }}" name="{{ field.name }}" {% if field.required %}required{% endif %}>
-              {% for value, label in field.options %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
-            </select>
-            {% elif field.control == "textarea" %}
-            <textarea class="textarea" id="manual-{{ executor.slug }}-{{ field.name }}" name="{{ field.name }}" maxlength="{{ field.max_length }}" {% if field.required %}required{% endif %}></textarea>
-            {% else %}
-            <input class="input" id="manual-{{ executor.slug }}-{{ field.name }}" type="text" name="{{ field.name }}" maxlength="{{ field.max_length }}" {% if field.required %}required{% endif %}>
-            {% endif %}
-          </div>
-          {% endfor %}
-          <div class="field">
-            <label for="experiment-{{ executor.slug }}">Experimento ativo <span class="muted">(opcional)</span></label>
-            <select class="select" id="experiment-{{ executor.slug }}" name="experiment_id">
-              <option value="">Sem experimento</option>
-              {% for experiment in snapshot.experiments if experiment.automation_slug == executor.slug and experiment.status == "running" %}
-              <option value="{{ experiment.id }}">{{ experiment.name }} · {{ experiment.control_variant }} vs {{ experiment.candidate_variant }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="start-example-run" required> Confirmo a execução local sem publicação, mensagem ou gasto externo.</label>
-          <div class="dialog-footer">
-            <a class="btn btn-outline" href="#">Cancelar</a>
-            <button class="btn" type="submit">{{ ui.icon("play") }}Executar módulo</button>
-          </div>
-        </form>
-      </section>
-    </div>
-    {% endif %}
-  {% endfor %}
-
-  {# ===== Gerenciar módulo: habilitação administrativa e kill switch, na zona de perigo ===== #}
-  {% for automation in snapshot.automations %}
-  <div class="dialog-backdrop" id="gerenciar-{{ automation.slug }}">
-    <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
-    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="gerenciar-{{ automation.slug }}-title" tabindex="-1">
-      <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar">{{ ui.icon("x") }}</a>
-      <header class="dialog-header"><h2 id="gerenciar-{{ automation.slug }}-title">Gerenciar · {{ automation.name }}</h2><p><code>{{ automation.slug }}</code> · controles administrativos</p></header>
-
-      {% if not automation.enabled %}
-      <div class="form-stack">
-        <h3>Habilitação administrativa</h3>
-        <p class="muted text-sm">Este módulo está desabilitado: novos disparos permanecem bloqueados.</p>
-        <form class="form-stack" method="post" action="/automations/{{ automation.id }}/enabled">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <input type="hidden" name="target" value="enable">
-          <div class="field"><label for="enabled-actor-{{ automation.id }}">Actor local</label><input class="input" id="enabled-actor-{{ automation.id }}" type="text" name="actor" maxlength="200" required></div>
-          <div class="field"><label for="enabled-reason-{{ automation.id }}">Motivo administrativo</label><textarea class="textarea" id="enabled-reason-{{ automation.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
-          <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="automation-enable" required> Confirmo a habilitação de novos disparos.</label>
-          <div><button class="btn" type="submit">{{ ui.icon("power") }}Habilitar módulo</button></div>
-        </form>
-      </div>
-      {% endif %}
-
-      <div class="danger-zone">
-        <h3>{{ ui.icon("triangle-alert") }}Zona de perigo</h3>
-        <p>Ações administrativas ficam registradas com actor e motivo. Cada uma exige confirmação.</p>
-
-        {% if automation.enabled %}
-        <details class="disclosure">
-          <summary>{{ ui.icon("power") }}Desabilitar módulo<span class="chev">{{ ui.icon("chevron-right") }}</span></summary>
-          <div class="form-stack">
-            <p>Controla a admissão de novas runs; não interrompe trabalho que já esteja em execução.</p>
-            <form class="form-stack" method="post" action="/automations/{{ automation.id }}/enabled">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <input type="hidden" name="target" value="disable">
-              <div class="field"><label for="enabled-actor-{{ automation.id }}">Actor local</label><input class="input" id="enabled-actor-{{ automation.id }}" type="text" name="actor" maxlength="200" required></div>
-              <div class="field"><label for="enabled-reason-{{ automation.id }}">Motivo administrativo</label><textarea class="textarea" id="enabled-reason-{{ automation.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
-              <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="automation-disable" required> Confirmo a desabilitação de novos disparos.</label>
-              <div><button class="btn btn-destructive" type="submit">{{ ui.icon("power") }}Desabilitar módulo</button></div>
-            </form>
-          </div>
-        </details>
-        {% endif %}
-
-        <details class="disclosure">
-          <summary>{{ ui.icon("octagon-x") }}{{ "Desativar" if automation.kill_switch_active else "Ativar" }} kill switch<span class="chev">{{ ui.icon("chevron-right") }}</span></summary>
-          <div class="form-stack">
-            <p>Bloqueia o módulo imediatamente, inclusive schedules futuros, até ser liberado.</p>
-            <form class="form-stack" method="post" action="/automations/{{ automation.id }}/kill-switch">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <input type="hidden" name="target" value="{{ 'disable' if automation.kill_switch_active else 'enable' }}">
-              <div class="field"><label for="actor-{{ automation.id }}">Actor local</label><input class="input" id="actor-{{ automation.id }}" type="text" name="actor" maxlength="200" required></div>
-              <div class="field"><label for="reason-{{ automation.id }}">Motivo operacional</label><textarea class="textarea" id="reason-{{ automation.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
-              <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="kill-switch-{{ 'disable' if automation.kill_switch_active else 'enable' }}" required> Confirmo {{ 'a liberação' if automation.kill_switch_active else 'o bloqueio' }} deste módulo.</label>
-              <div><button class="btn {{ 'btn-outline' if automation.kill_switch_active else 'btn-destructive' }}" type="submit">{{ ui.icon("octagon-x") }}{{ "Desativar" if automation.kill_switch_active else "Ativar" }} kill switch</button></div>
-            </form>
-          </div>
-        </details>
-      </div>
-    </section>
-  </div>
-  {% endfor %}
-
-  {# ===== Gerenciar schedule: habilitar ou desabilitar futuros disparos locais ===== #}
-  {% for schedule in snapshot.schedules %}
-  <div class="dialog-backdrop" id="agendamento-{{ schedule.id }}">
-    <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
-    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="agendamento-{{ schedule.id }}-title" tabindex="-1">
-      <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar">{{ ui.icon("x") }}</a>
-      <header class="dialog-header"><h2 id="agendamento-{{ schedule.id }}-title">Schedule · {{ schedule.name }}</h2><p><code>{{ schedule.cron_expression }}</code> · {{ schedule.timezone }}</p></header>
-      {% if schedule.status != "enabled" and schedule.enable_block_reason %}
-      <div class="alert alert-warning">
-        <span class="alert-icon">{{ ui.icon("triangle-alert") }}</span>
-        <div class="alert-body"><p class="alert-title">Habilitação indisponível</p><p class="alert-description">{{ schedule.enable_block_reason }}.</p></div>
-      </div>
-      {% else %}
-      <form class="form-stack" method="post" action="/schedules/{{ schedule.id }}/enabled">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="target" value="{{ 'disable' if schedule.status == 'enabled' else 'enable' }}">
-        <p class="muted text-sm">Controla apenas futuros disparos locais. Habilitar exige que o módulo esteja ativo e sem kill switch.</p>
-        <div class="field"><label for="schedule-actor-{{ schedule.id }}">Actor local</label><input class="input" id="schedule-actor-{{ schedule.id }}" type="text" name="actor" maxlength="200" required></div>
-        <div class="field"><label for="schedule-reason-{{ schedule.id }}">Motivo operacional</label><textarea class="textarea" id="schedule-reason-{{ schedule.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
-        <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="schedule-{{ 'disable' if schedule.status == 'enabled' else 'enable' }}" required> Confirmo {{ 'a suspensão dos próximos disparos' if schedule.status == 'enabled' else 'a habilitação dos próximos disparos locais' }}.</label>
-        <div class="dialog-footer">
-          <a class="btn btn-outline" href="#">Cancelar</a>
-          <button class="btn {{ 'btn-destructive' if schedule.status == 'enabled' }}" type="submit">{{ "Desabilitar" if schedule.status == "enabled" else "Habilitar" }} schedule</button>
-        </div>
-      </form>
-      {% endif %}
-    </section>
-  </div>
-  {% endfor %}
+  {% include "_dialogs_run.html" %}
 {% endblock %}

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% import "_sections.html" as sec %}
+{% set active_page = "alerts" %}
+
+{% block title %}Alertas · Automation Foundry{% endblock %}
+{% block breadcrumb %}<li><span aria-current="page">Alertas</span></li>{% endblock %}
+
+{% block content %}
+  {{ sec.page_head("Operação", "Alertas", "Ocorrências deduplicadas por automação. Resumos e fontes internas não são exibidos.") }}
+
+  <section class="attention{{ ' is-clear' if not snapshot.active_alerts }}" aria-labelledby="h-ativos">
+    <div class="attention-head">
+      <h2 id="h-ativos">{{ ui.icon("bell") }}Ativos</h2>
+      {% if snapshot.active_alerts %}<span class="badge badge-warning">{{ snapshot.active_alerts|length }}</span>{% endif %}
+    </div>
+    {% if snapshot.active_alerts %}
+    <div class="attention-body alert-list">
+      {% for alert in snapshot.active_alerts %}{{ sec.alert_row(alert) }}{% endfor %}
+    </div>
+    {% else %}
+    <div class="attention-body">{{ ui.empty("circle-check", "Nenhum alerta ativo", "Alertas abertos ou reconhecidos aparecem aqui.", good=true) }}</div>
+    {% endif %}
+  </section>
+
+  <section class="card" aria-labelledby="h-resolvidos">
+    <div class="card-header"><h2 class="card-title" id="h-resolvidos" style="font-size:1rem">Resolvidos recentemente</h2><p class="card-description">Os {{ resolved|length }} últimos alertas encerrados.</p></div>
+    <div class="card-content flush">
+      {% if resolved %}
+      <div class="table-wrap">
+        <table class="table">
+          <caption class="sr-only">Alertas resolvidos</caption>
+          <thead><tr><th scope="col">Alerta</th><th scope="col">Automação</th><th scope="col">Severidade</th><th scope="col" class="num">Ocorrências</th><th scope="col">Resolvido (UTC)</th></tr></thead>
+          <tbody>
+            {% for item in resolved %}
+            <tr>
+              <td>{{ item.title }}</td>
+              <td class="nowrap"><code>{{ item.automation_slug }}</code></td>
+              <td>{{ ui.severity_badge(item.severity) }}</td>
+              <td class="num">{{ item.occurrence_count }}</td>
+              <td class="nowrap">{% if item.resolved_at %}<time datetime="{{ item.resolved_at.isoformat() }}Z">{{ item.resolved_at|utc_label }}</time><small>{{ item.resolved_at|age_label }}</small>{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      {{ ui.empty("bell", "Nenhum alerta resolvido", "O histórico começa no primeiro alerta encerrado.") }}
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

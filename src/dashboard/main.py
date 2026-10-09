@@ -40,7 +40,17 @@ from src.dashboard.formatting import (
     format_relative_label,
     format_utc_label,
 )
+from src.dashboard.listings import (
+    NavAutomation,
+    NavSummary,
+    load_approval_history,
+    load_nav_summary,
+    load_resolved_alerts,
+    load_run_list,
+    valid_run_status,
+)
 from src.dashboard.service import (
+    DashboardSnapshot,
     load_connector_summaries,
     load_dashboard_snapshot,
     load_run_detail,
@@ -131,6 +141,18 @@ templates.env.filters["byte_size"] = format_byte_size
 HealthCollector = Callable[[AsyncSession], Awaitable[HealthReport]]
 RetentionCollector = Callable[[AsyncSession], Awaitable[RetentionInventory]]
 DispatchPublisher = Callable[[int, str, QueueClass], None]
+
+
+def _nav_from_snapshot(snapshot: DashboardSnapshot) -> NavSummary:
+    """Reuse the counters of an already loaded snapshot instead of asking again."""
+    return NavSummary(
+        pending_approvals=len(snapshot.pending_approvals),
+        active_alerts=len(snapshot.active_alerts),
+        automations=tuple(
+            NavAutomation(slug=automation.slug, name=automation.name)
+            for automation in snapshot.automations
+        ),
+    )
 
 
 def _csrf_token_matches(submitted: str, expected: str) -> bool:
@@ -237,10 +259,131 @@ def create_app(
             name="dashboard.html",
             context={
                 "snapshot": snapshot,
+                "nav": _nav_from_snapshot(snapshot),
                 "csrf_token": control_token,
                 "executors": list_automation_executors(),
                 "notice": _DASHBOARD_NOTICES.get(request.query_params.get("notice", "")),
             },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/runs", response_class=HTMLResponse)
+    async def runs_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+        status: str | None = None,
+        automation: str | None = None,
+        page: int = 1,
+    ) -> HTMLResponse:
+        if not valid_run_status(status) or page < 1 or page > 100_000:
+            raise HTTPException(status_code=400, detail="invalid run filter")
+        listing = await load_run_list(
+            session,
+            status=status or None,
+            automation_slug=automation if automation and len(automation) <= 100 else None,
+            page=page,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="runs.html",
+            context={"listing": listing, "nav": await load_nav_summary(session)},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/approvals", response_class=HTMLResponse)
+    async def approvals_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="approvals.html",
+            context={
+                "snapshot": snapshot,
+                "nav": _nav_from_snapshot(snapshot),
+                "history": await load_approval_history(session),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/alerts", response_class=HTMLResponse)
+    async def alerts_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="alerts.html",
+            context={
+                "snapshot": snapshot,
+                "nav": _nav_from_snapshot(snapshot),
+                "resolved": await load_resolved_alerts(session),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/schedules", response_class=HTMLResponse)
+    async def schedules_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="schedules.html",
+            context={
+                "snapshot": snapshot,
+                "nav": _nav_from_snapshot(snapshot),
+                "csrf_token": control_token,
+                "notice": _DASHBOARD_NOTICES.get(request.query_params.get("notice", "")),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/automations", response_class=HTMLResponse)
+    async def automations_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="automations.html",
+            context={
+                "snapshot": snapshot,
+                "nav": _nav_from_snapshot(snapshot),
+                "csrf_token": control_token,
+                "executors": list_automation_executors(),
+                "notice": _DASHBOARD_NOTICES.get(request.query_params.get("notice", "")),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/reports", response_class=HTMLResponse)
+    async def reports_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="reports.html",
+            context={"snapshot": snapshot, "nav": _nav_from_snapshot(snapshot)},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/data", response_class=HTMLResponse)
+    async def data_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="data.html",
+            context={"snapshot": snapshot, "nav": _nav_from_snapshot(snapshot)},
             headers={"Cache-Control": "no-store"},
         )
 
@@ -282,6 +425,7 @@ def create_app(
             name="run_detail.html",
             context={
                 "run": detail,
+                "nav": await load_nav_summary(session),
                 "csrf_token": control_token,
                 "caption_alignment": alignment,
                 "caption_alignment_unavailable": alignment_unavailable,
@@ -324,6 +468,7 @@ def create_app(
             request=request,
             name="content_local_export.html",
             context={
+                "nav": await load_nav_summary(session),
                 "run_id": package.run_id,
                 "manifest_sha256": package.manifest_sha256,
                 "video": {
@@ -452,6 +597,7 @@ def create_app(
             name=template,
             context={
                 "review": review,
+                "nav": await load_nav_summary(session),
                 "csrf_token": control_token,
                 "approval_status": approval.status,
             },
@@ -586,7 +732,7 @@ def create_app(
         return templates.TemplateResponse(
             request=request,
             name="health.html",
-            context={"report": report},
+            context={"report": report, "nav": await load_nav_summary(session)},
             headers={"Cache-Control": "no-store"},
         )
 
@@ -608,6 +754,7 @@ def create_app(
             request=request,
             name="storage.html",
             context={
+                "nav": await load_nav_summary(session),
                 "inventory": inventory,
                 "error": error,
                 "retention_policies": declared_retention_policies(),
@@ -820,7 +967,7 @@ def create_app(
         except Exception:
             await session.rollback()
             raise
-        return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url="/automations", status_code=303)
 
     @application.post("/automations/{automation_id}/enabled", response_class=HTMLResponse)
     async def change_automation_enabled(
@@ -857,7 +1004,7 @@ def create_app(
         except Exception:
             await session.rollback()
             raise
-        return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url="/automations", status_code=303)
 
     @application.post("/schedules/{schedule_id}/enabled", response_class=HTMLResponse)
     async def change_schedule_enabled(
@@ -884,7 +1031,7 @@ def create_app(
                 get_automation_executor(automation.slug)
             except AutomationExecutorNotFoundError:
                 return RedirectResponse(
-                    url="/?notice=schedule-change-blocked",
+                    url="/schedules?notice=schedule-change-blocked",
                     status_code=303,
                 )
         try:
@@ -899,7 +1046,7 @@ def create_app(
         except ScheduleControlError:
             await session.rollback()
             return RedirectResponse(
-                url="/?notice=schedule-change-blocked",
+                url="/schedules?notice=schedule-change-blocked",
                 status_code=303,
             )
         except ValueError as exc:
@@ -908,7 +1055,7 @@ def create_app(
         except Exception:
             await session.rollback()
             raise
-        return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url="/schedules", status_code=303)
 
     @application.post("/approvals/{approval_id}/approve", response_class=HTMLResponse)
     async def approve_approval(
