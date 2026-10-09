@@ -49,8 +49,10 @@ jobs:
       - name: Mypy
         run: mypy src
 
+      # O plugin pytest-github-actions-annotate-failures publica cada teste que falha como anotação
+      # da execução, legível sem login; -rfE lista falhas e erros no resumo do log.
       - name: Pytest
-        run: pytest -q -p no:cacheprovider
+        run: pytest -q -rfE -p no:cacheprovider
 
   postgresql:
     name: Integração PostgreSQL (migrations e concorrência)
