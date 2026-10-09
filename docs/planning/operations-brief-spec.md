@@ -20,7 +20,7 @@ localmente; rejeitar a cancela. Nada é enviado, publicado ou gasto.
   tempo de revisão menor que o baseline manual.
 - **Baseline manual:** *pendente.* O proprietário ainda não informou quanto tempo leva hoje.
   A avaliação não pode concluir sem esse número.
-- **Fora da primeira fatia:** schedule. O roadmap exige avaliar o experimento antes de automatizar.
+- **Schedule:** o roadmap pede avaliar o experimento antes de automatizar, mas o proprietário decidiu em 2026-10-09 habilitar o brief semanal antes dessa avaliação. A decisão está registrada abaixo, e o gate humano de cada brief permanece.
 
 ## Contrato
 
@@ -30,7 +30,7 @@ localmente; rejeitar a cancela. Nada é enviado, publicado ou gasto.
 | Código | `src/briefs/` (evidência, renderização, executor). Sem tabelas novas: usa o kernel. |
 | Entrada | `window_days` ∈ {1, 7, 14, 30} e `window_end` (data UTC, fixada no parse do formulário). Tipada com Pydantic. |
 | Saída | run `succeeded` com `output_payload` apontando step, artifacts e approval. |
-| Trigger | manual pelo dashboard. Sem schedule nesta fatia. |
+| Trigger | manual pelo dashboard e schedule semanal `Brief semanal`: `0 8 * * 1` em `America/Sao_Paulo` (segunda 11:00 UTC), tolerância a disparo atrasado de 12 h, sem sobreposição. Cada ocorrência recebe `window_days=7` e `window_end` igual ao dia UTC anterior ao disparo (função pura `resolve_operations_brief_schedule_input`, declarada no executor). Entrada inválida pula a ocorrência com `INVALID_SCHEDULE_INPUT`. |
 | Steps | 1. `build-operations-brief`, fila `io`: leitura do banco e escrita local. |
 | Idempotência | chave do operador; step `{chave}:build-operations-brief`; a mesma chave com outra janela conflita. |
 | Retry / timeout | no máximo 2 tentativas, backoff do wrapper, timeout limitado. Erros: `BRIEF_EVIDENCE_UNAVAILABLE` (retryable), `BRIEF_STORAGE_WRITE_FAILED` (retryable). |
