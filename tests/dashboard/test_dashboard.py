@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -4137,3 +4138,22 @@ async def test_dashboard_a8_rejects_arbitrary_id_and_tampered_candidate(
     assert run.output_payload is None
     assert persisted is not None and persisted.status == ApprovalStatus.PENDING.value
     assert persisted.decision_payload is None
+
+
+async def test_javascript_media_type_does_not_depend_on_the_operating_system(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The Windows registry reports application/javascript on some machines, such as the CI runner.
+    monkeypatch.setattr(mimetypes, "types_map", {**mimetypes.types_map, ".js": "application/javascript"})
+    monkeypatch.setattr(mimetypes, "_db", None, raising=False)
+    mimetypes.add_type("application/javascript", ".js")
+    application = create_app()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        asset = await client.get("/static/htmx.min.js")
+
+    assert asset.status_code == 200
+    assert asset.headers["content-type"].startswith("text/javascript")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import mimetypes
 import secrets
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -126,6 +127,16 @@ def _publish_dispatch_message(
     publish_dispatch_message(dispatch_id, delivery_id, queue)
 
 
+def _pin_static_media_types() -> None:
+    """Serve scripts as text/javascript regardless of the operating system registry.
+
+    The static file handler asks the platform for the type of each file. Windows answers
+    from its registry, which reports text/javascript on some machines and
+    application/javascript on others, so the same dashboard served different headers.
+    """
+    mimetypes.add_type("text/javascript", ".js")
+
+
 def create_app(
     *,
     csrf_token: str | None = None,
@@ -134,6 +145,7 @@ def create_app(
     dispatch_publisher: DispatchPublisher = _publish_dispatch_message,
 ) -> FastAPI:
     """Create the loopback dashboard with a process-local CSRF token."""
+    _pin_static_media_types()
     control_token = csrf_token or secrets.token_urlsafe(32)
     if not control_token.strip():
         raise ValueError("csrf token must not be empty")
