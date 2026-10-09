@@ -1,0 +1,57 @@
+{# Componentes reutilizáveis. Uso: {% import "_macros.html" as ui %} #}
+
+{% macro icon(name, cls="") -%}
+<svg class="icon{{ ' ' ~ cls if cls }}" aria-hidden="true"><use href="#i-{{ name }}"/></svg>
+{%- endmacro %}
+
+{# Estado = ícone + texto + cor. `kind` escolhe a classe .badge-<kind> do styles.css. #}
+{% macro badge(kind, icon_name, text) -%}
+<span class="badge badge-{{ kind }}">{{ icon(icon_name) }}{{ text }}</span>
+{%- endmacro %}
+
+{% macro run_badge(status) -%}
+{%- set known = {
+  "queued": ("clock", "Na fila"),
+  "running": ("loader", "Executando"),
+  "awaiting_approval": ("clock", "Aguardando aprovação"),
+  "succeeded": ("circle-check", "Concluída"),
+  "failed": ("circle-x", "Falhou"),
+  "cancelled": ("ban", "Cancelada"),
+} -%}
+{%- set entry = known.get(status) -%}
+{{ badge(status if entry else "neutral", entry[0] if entry else "circle", entry[1] if entry else status) }}
+{%- endmacro %}
+
+{% macro severity_badge(severity) -%}
+{%- set known = {
+  "info": ("info", "Info"),
+  "warning": ("triangle-alert", "Warning"),
+  "error": ("circle-x", "Error"),
+  "critical": ("octagon-x", "Crítico"),
+} -%}
+{%- set entry = known.get(severity) -%}
+{{ badge(severity if entry else "neutral", entry[0] if entry else "circle", entry[1] if entry else severity) }}
+{%- endmacro %}
+
+{# Classe de .alert conforme a severidade (error/critical → destrutivo). #}
+{% macro severity_tone(severity) -%}
+{{ "alert-destructive" if severity in ("error", "critical") else "alert-warning" if severity == "warning" else "alert-info" }}
+{%- endmacro %}
+
+{% macro hash_chip(value, label="SHA-256") -%}
+<span class="hash tooltip" tabindex="0"><code>{{ value[:8] }}…{{ value[-6:] }}</code><span role="tooltip">{{ value }}</span></span>
+<button class="copy-btn" type="button" data-copy="{{ value }}" aria-label="Copiar {{ label }}">{{ icon("copy") }}</button>
+{%- endmacro %}
+
+{% macro empty(icon_name, title, text="", good=false) -%}
+<div class="empty{{ ' is-good' if good }}">
+  <span class="empty-icon">{{ icon(icon_name) }}</span>
+  <h3>{{ title }}</h3>
+  {% if text %}<p>{{ text }}</p>{% endif %}
+</div>
+{%- endmacro %}
+
+{# Duração legível com o valor exato persistido no title (nunca perdemos precisão). #}
+{% macro seconds(value) -%}
+{%- if value is none -%}—{%- else -%}<abbr title="{{ value }} s">{{ value|duration_label }}</abbr>{%- endif -%}
+{%- endmacro %}
