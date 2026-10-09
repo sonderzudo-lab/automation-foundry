@@ -1,6 +1,6 @@
 # Componentes do painel — mapa para os templates Jinja
 
-Arquivos: `styles.css` (tokens + componentes), `theme.js` (opcional: tema, copiar hash, Esc fecha diálogo), `visao-geral.html` (tela 1), `detalhe-run.html` (tela 2: run #10 aguardando approval, com polling), `detalhe-run-falha.html` (run falha, com tentativas e Retentar run) e `detalhe-run-conteudo.html` (run concluída com Export local, Resultado do conteúdo e Alinhamento da legenda). Tela 3: `revisao-brief.html`, `revisao-roteiro.html`, `revisao-roteiro-decidida.html` (somente leitura), `revisao-narracao.html`, `revisao-video.html` e `revisao-thumbnail.html`. Tela 4: `saude.html` (degradado) e `saude-falha.html` (falha, degradado e ignorado juntos). Tela 5: `storage.html`. Tela 6: `export-local.html`.
+Folha de estilo e script: os mockups usam diretamente `src/dashboard/static/styles.css` (tokens + componentes) e `src/dashboard/static/theme.js` (opcional: tema, copiar hash, Esc fecha diálogo); não há cópia local, então qualquer ajuste de CSS aparece nos mockups e no painel ao mesmo tempo. Páginas: `visao-geral.html` (tela 1), `detalhe-run.html` (tela 2: run #10 aguardando approval, com polling), `detalhe-run-falha.html` (run falha, com tentativas e Retentar run) e `detalhe-run-conteudo.html` (run concluída com Export local, Resultado do conteúdo e Alinhamento da legenda). Tela 3: `revisao-brief.html`, `revisao-roteiro.html`, `revisao-roteiro-decidida.html` (somente leitura), `revisao-narracao.html`, `revisao-video.html` e `revisao-thumbnail.html`. Tela 4: `saude.html` (degradado) e `saude-falha.html` (falha, degradado e ignorado juntos). Tela 5: `storage.html`. Tela 6: `export-local.html`.
 Tudo funciona sem JavaScript. Estado de uma entidade = **ícone + texto + cor** (`badge-<estado>` + ícone do sprite).
 
 ## Shell
@@ -136,7 +136,7 @@ Regras: tela estritamente somente leitura (sem formulários, sem `csrf_token`); 
 | `.btn[download]` | Download de vídeo (`/local-export/video`), thumbnail (`/local-export/thumbnail`) e manifesto (`/local-export/manifest.json`). São `GET`; a tela não tem formulários. |
 
 ## Como migrar para os templates Jinja
-1. Copie `styles.css` e `theme.js` para `src/dashboard/static/` e referencie com `/static/…` (o HTMX já está lá). Nenhum recurso externo é usado.
+1. (Feito) `styles.css` e `theme.js` já vivem em `src/dashboard/static/` e são servidos em `/static/…` junto com o HTMX. Nenhum recurso externo é usado.
 2. Extraia o shell (`<aside class="sidebar">`, `.topbar`, sprite de ícones) para um `base.html` e o sprite para `_icons.html`; as telas viram `{% extends %}`.
 3. O sprite SVG é único por página (`<symbol id="i-…">`); use `<svg class="icon"><use href="#i-nome"/></svg>`. Os mockups geram o sprite completo em todas as páginas; em produção inclua só uma vez no `base.html`.
 4. Cada comentário `<!-- DINÂMICO … -->` marca o dado ou o loop Jinja; `<!-- ÁREA AUTO-ATUALIZÁVEL -->` marca os dois fragmentos HTMX (`#data-observability`, `#run-live-status`).
@@ -149,3 +149,13 @@ Regras: tela estritamente somente leitura (sem formulários, sem `csrf_token`); 
 
 ## Observação sobre os dados de exemplo
 As runs #11 (falha) e #5 (passos, artefatos, indicadores) têm detalhes ilustrativos; nomes de step do Content Engine (`generate-script-a1`…) e códigos de falha (`ollama_unavailable`) são exemplos. A run #10 aparece como **Aguardando aprovação** (e não "concluída") porque existe uma approval pendente para ela; os demais valores seguem a lista fornecida. Horários/durações não informados (ex.: duração do #5) são ilustrativos.
+
+## Como visualizar os mockups
+Abra qualquer `.html` desta pasta direto no navegador (`file://`), ou sirva a **raiz do repositório** para que o caminho relativo até `src/dashboard/static/` resolva:
+
+```bash
+python -m http.server 8765 --bind 127.0.0.1
+# depois abra http://127.0.0.1:8765/design/dashboard/visao-geral.html
+```
+
+Servir apenas `design/dashboard/` não funciona: o CSS fica fora dessa pasta.
