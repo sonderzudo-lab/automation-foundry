@@ -10,8 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.core.database import Base
+from src.platform import schedule_dispatcher
+from src.platform.control_service import set_automation_kill_switch
 from src.platform.models import (
+    AlertEvent,
     Automation,
+    PlatformAlert,
     QueueClass,
     Run,
     RunDispatch,
@@ -19,6 +23,7 @@ from src.platform.models import (
     ScheduleOccurrence,
 )
 from src.platform.run_service import get_or_create_automation
+from src.platform.schedule_alerts import record_skipped_occurrence_alert
 from src.platform.schedule_dispatcher import dispatch_due_schedules
 from src.platform.schedule_service import get_or_create_schedule, set_schedule_enabled
 
@@ -263,3 +268,129 @@ async def test_weekly_brief_with_invalid_payload_is_skipped_with_evidence(
     assert occurrence is not None
     assert occurrence.status == "skipped" and occurrence.reason_code == "INVALID_SCHEDULE_INPUT"
     assert await session.scalar(select(Run)) is None
+
+
+async def _alerts(session: AsyncSession) -> list[PlatformAlert]:
+    return list((await session.scalars(select(PlatformAlert))).all())
+
+
+async def _tick(session: AsyncSession, at: datetime) -> None:
+    await dispatch_due_schedules(session, publish=lambda *_args: None, now=at)
+
+
+async def test_misfire_opens_one_deduplicated_alert_per_schedule(session: AsyncSession) -> None:
+    await _enabled_schedule(session, grace=5)
+
+    await _tick(session, datetime(2026, 8, 10, 12, 0, 6, tzinfo=UTC))
+    await _tick(session, datetime(2026, 8, 10, 12, 1, 6, tzinfo=UTC))
+
+    [alert] = await _alerts(session)
+    assert alert.status == "open" and alert.severity == "warning"
+    assert alert.occurrence_count == 2
+    assert alert.source == "schedule-dispatcher"
+    assert "every-minute" in alert.title
+    assert "MISFIRE_GRACE_EXCEEDED" in alert.summary
+    assert "2026-08-10T12:01:00Z" in alert.summary
+    assert "source" not in alert.summary  # no payload or private field is echoed
+
+
+async def test_a_normally_prepared_occurrence_resolves_the_alert(session: AsyncSession) -> None:
+    schedule = (await _enabled_schedule(session, grace=5))[1]
+    await _tick(session, datetime(2026, 8, 10, 12, 0, 6, tzinfo=UTC))
+    schedule.misfire_grace_seconds = 300
+    await session.commit()
+
+    await _tick(session, datetime(2026, 8, 10, 12, 1, tzinfo=UTC))
+
+    [alert] = await _alerts(session)
+    assert alert.status == "resolved"
+    assert alert.resolved_by == "schedule-dispatcher"
+    assert "2026-08-10T12:01:00Z" in (alert.resolution_reason or "")
+
+
+async def test_a_later_skip_reopens_the_same_alert(session: AsyncSession) -> None:
+    schedule = (await _enabled_schedule(session, grace=5))[1]
+    await _tick(session, datetime(2026, 8, 10, 12, 0, 6, tzinfo=UTC))
+    schedule.misfire_grace_seconds = 300
+    await session.commit()
+    await _tick(session, datetime(2026, 8, 10, 12, 1, tzinfo=UTC))
+    await _tick(session, datetime(2026, 8, 10, 12, 2, tzinfo=UTC))
+
+    [alert] = await _alerts(session)
+    events = [
+        event.event_type
+        for event in (await session.scalars(select(AlertEvent).order_by(AlertEvent.id))).all()
+    ]
+    assert alert.status == "open" and alert.occurrence_count == 2
+    assert "OVERLAP_BLOCKED" in alert.summary
+    assert events == ["opened", "resolved", "reopened"]
+
+
+async def test_operator_pause_is_informational_and_faults_are_errors(
+    session: AsyncSession,
+) -> None:
+    automation, _schedule = await _enabled_schedule(session, grace=300)
+    await set_automation_kill_switch(
+        session, automation=automation, active=True, actor="operator", reason="manutencao"
+    )
+    await session.commit()
+
+    await _tick(session, datetime(2026, 8, 10, 12, 0, 5, tzinfo=UTC))
+
+    [alert] = await _alerts(session)
+    assert alert.severity == "info" and "kill switch" in alert.summary
+
+    await _tick(session, datetime(2026, 8, 10, 12, 1, 5, tzinfo=UTC))
+    assert (await _alerts(session))[0].severity == "info"
+
+
+async def test_invalid_input_and_unknown_reasons_are_errors(session: AsyncSession) -> None:
+    await _weekly_brief_schedule(session, input_payload={"window_days": 3})
+
+    await _tick(session, datetime(2026, 10, 12, 11, 0, 10, tzinfo=UTC))
+
+    [alert] = await _alerts(session)
+    assert alert.severity == "error" and "INVALID_SCHEDULE_INPUT" in alert.summary
+
+
+async def test_recording_the_same_occurrence_twice_is_idempotent(session: AsyncSession) -> None:
+    automation, schedule = await _enabled_schedule(session)
+    arguments = {
+        "schedule": schedule,
+        "automation": automation,
+        "scheduled_for": datetime(2026, 8, 10, 12, 0),
+        "reason_code": "SOMETHING_NEW",
+        "occurrence_key": f"schedule:{schedule.id}:2026-08-10T12:00:00",
+        "now": datetime(2026, 8, 10, 12, 5, tzinfo=UTC),
+    }
+
+    await record_skipped_occurrence_alert(session, **arguments)
+    await record_skipped_occurrence_alert(session, **arguments)
+
+    [alert] = await _alerts(session)
+    assert alert.occurrence_count == 1
+    assert alert.severity == "error" and "motivo desconhecido" in alert.summary
+
+
+async def test_a_failing_alert_never_blocks_the_tick(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _automation, schedule = await _enabled_schedule(session, grace=5)
+
+    async def broken(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("alert storage unavailable")
+
+    monkeypatch.setattr(schedule_dispatcher, "record_skipped_occurrence_alert", broken)
+    result = await dispatch_due_schedules(
+        session,
+        publish=lambda *_args: pytest.fail("misfire must not publish"),
+        now=datetime(2026, 8, 10, 12, 0, 6, tzinfo=UTC),
+    )
+
+    occurrence = await session.scalar(select(ScheduleOccurrence))
+    await session.refresh(schedule)
+    assert result.skipped == 1
+    assert occurrence is not None and occurrence.reason_code == "MISFIRE_GRACE_EXCEEDED"
+    assert schedule.next_run_at == datetime(2026, 8, 10, 12, 1)
+    assert await _alerts(session) == []

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,7 +29,13 @@ from src.platform.models import (
     ScheduleOccurrenceStatus,
     ScheduleStatus,
 )
+from src.platform.schedule_alerts import (
+    record_skipped_occurrence_alert,
+    resolve_skipped_occurrence_alert,
+)
 from src.platform.schedule_service import calculate_next_run_at
+
+logger = structlog.get_logger(__name__)
 
 _ACTIVE_RUN_STATUSES = (
     RunStatus.QUEUED.value,
@@ -92,6 +99,7 @@ async def dispatch_due_schedules(
         automation = await session.get(Automation, schedule.automation_id)
         if automation is None:
             raise ValueError("schedule automation does not exist")
+        occurrence_key = f"schedule:{schedule.id}:{scheduled_for.isoformat()}"
 
         reason = await _skip_reason(
             session,
@@ -103,7 +111,7 @@ async def dispatch_due_schedules(
         dispatch_id: int | None = None
         run_id: int | None = None
         if reason is None:
-            key = f"schedule:{schedule.id}:{scheduled_for.isoformat()}"
+            key = occurrence_key
             try:
                 run_input = _occurrence_input(
                     automation.slug,
@@ -143,6 +151,15 @@ async def dispatch_due_schedules(
                 created_at=now_naive,
             )
         )
+        await _sync_schedule_alert(
+            session,
+            schedule=schedule,
+            automation=automation,
+            scheduled_for=scheduled_for,
+            reason=reason,
+            occurrence_key=occurrence_key,
+            now=current,
+        )
         schedule.next_run_at = calculate_next_run_at(
             schedule.cron_expression,
             schedule.timezone,
@@ -164,6 +181,46 @@ async def dispatch_due_schedules(
         published=published,
         publish_failed=publish_failed,
     )
+
+
+async def _sync_schedule_alert(
+    session: AsyncSession,
+    *,
+    schedule: Schedule,
+    automation: Automation,
+    scheduled_for: datetime,
+    reason: str | None,
+    occurrence_key: str,
+    now: datetime,
+) -> None:
+    """Open or resolve the schedule alert without ever blocking the tick."""
+    try:
+        async with session.begin_nested():
+            if reason is None:
+                await resolve_skipped_occurrence_alert(
+                    session,
+                    schedule=schedule,
+                    automation=automation,
+                    scheduled_for=scheduled_for,
+                    now=now,
+                )
+            else:
+                await record_skipped_occurrence_alert(
+                    session,
+                    schedule=schedule,
+                    automation=automation,
+                    scheduled_for=scheduled_for,
+                    reason_code=reason,
+                    occurrence_key=occurrence_key,
+                    now=now,
+                )
+    except Exception:
+        # An alert is evidence about a job; it must never stop the job from being scheduled.
+        logger.exception(
+            "schedule_alert_failed",
+            schedule_id=schedule.id,
+            reason_code=reason,
+        )
 
 
 def _occurrence_input(
