@@ -28,6 +28,8 @@ $TaskName = 'AutomationFoundryRuntime'
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Runtime = Join-Path $RepositoryRoot '.venv\Scripts\automation-foundry-runtime.exe'
 $LogFile = Join-Path $RepositoryRoot 'storage\runtime\logs\autostart.log'
+$BackupLock = Join-Path $RepositoryRoot 'storage\runtime\backup.lock'
+$BackupWaitSeconds = 1800
 $DockerWaitSeconds = 600
 $MaxStartAttempts = 5
 
@@ -36,6 +38,17 @@ function Write-Log([string]$Message) {
     if (-not (Test-Path $directory)) { New-Item -ItemType Directory -Path $directory | Out-Null }
     $line = '{0} {1}' -f (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'), $Message
     Add-Content -Path $LogFile -Value $line
+}
+
+function Wait-ForBackup([int]$Seconds) {
+    # The backup stops the runtime on purpose; starting it again mid-backup would corrupt it.
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ((Test-Path $BackupLock) -and ((Get-Date) -lt $deadline)) {
+        $age = ((Get-Date) - (Get-Item $BackupLock).LastWriteTime).TotalMinutes
+        if ($age -gt 120) { Write-Log 'stale backup lock ignored'; return }
+        Write-Log 'backup in progress; waiting before starting the runtime'
+        Start-Sleep -Seconds 20
+    }
 }
 
 function Wait-ForDocker([int]$Seconds) {
@@ -59,6 +72,7 @@ function Invoke-Run {
         Write-Log 'runtime already running; nothing to do'
         exit 0
     }
+    Wait-ForBackup $BackupWaitSeconds
     if (-not (Wait-ForDocker $DockerWaitSeconds)) {
         Write-Log "docker engine not ready after $DockerWaitSeconds s; giving up"
         exit 1

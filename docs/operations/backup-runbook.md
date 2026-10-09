@@ -1,8 +1,9 @@
-# Runbook de backup e restauração — proposta
+# Runbook de backup e restauração
 
-**Status:** proposta de 2026-10-09. Nada aqui está instalado ou agendado. Os comandos de backup,
-verificação e restauração já existem e são da aplicação; o que é proposto é a rotina em volta deles
-e quatro decisões do proprietário (seção 7).
+**Status:** a rotina semanal de backup está implementada e instalada desde 2026-10-09; a restauração
+continua sendo um procedimento manual e deliberado. As quatro decisões do proprietário (seção 7)
+seguem em aberto e a rotina usa os padrões mais seguros: destino local, nada é apagado e os pesos de
+modelo continuam nos bundles.
 
 ## 1. O que o backup cobre
 
@@ -28,7 +29,7 @@ Fonte: `src/operations/backup.py`. Cada bundle é uma pasta em `storage/backups/
 
 | Item | Valor |
 |---|---|
-| Bundles existentes | 3: dois de 22/08/2026 (SQLite e PostgreSQL) e um de **09/10/2026** (`20261009T161603Z-350d488d`, PostgreSQL, 64 arquivos, 500 MB) |
+| Bundles existentes | 4: dois de 22/08/2026 (SQLite e PostgreSQL) e dois de **09/10/2026** (`20261009T161603Z-350d488d`, feito à mão, e `20261009T162433Z-a17da219`, feito pela tarefa; PostgreSQL, 64 arquivos, cerca de 480 MB cada) |
 | Banco vivo | 11 MB, 10 runs, migration `20260811_0022` |
 | `storage/` | 522 MB, dos quais **464 MB são `storage/models`** (pesos de modelo) |
 | Disco `C:` | 88% usado, cerca de 115 GB livres |
@@ -85,11 +86,40 @@ Procedimento manual (a base de qualquer automação):
    ```
 6. **Registrar** a data e o ID do bundle em um lugar seu.
 
-Automação proposta (não implementada): um script `scripts/windows/runtime-backup.ps1` e uma tarefa
-semanal `AutomationFoundryBackup` com `StartWhenAvailable`. O script faria a pré-checagem, pararia o
-runtime, criaria e verificaria o bundle e **sempre** religaria o runtime em um bloco `finally`. Em
-caso de falha, abriria um alerta local com `automation-foundry record-alert`, para o problema
-aparecer no dashboard. Ele nunca apagaria bundles.
+### Automação implementada
+
+`scripts/windows/runtime-backup.ps1` e a tarefa `AutomationFoundryBackup` (por usuário, sem
+elevação, domingo 22:00 no horário local, `StartWhenAvailable`, limite de 2 h):
+
+```powershell
+powershell -File scripts\windows\runtime-backup.ps1 install
+powershell -File scripts\windows\runtime-backup.ps1 install -Destination E:\af-backups
+powershell -File scripts\windows\runtime-backup.ps1 status
+powershell -File scripts\windows\runtime-backup.ps1 uninstall
+Start-ScheduledTask -TaskName AutomationFoundryBackup
+```
+
+O que a tarefa faz, na ordem:
+
+1. Confere que o destino existe e tem ao menos 5 GB livres e que o Docker responde.
+2. Se o runtime estava ligado, espera que não haja run `running` ou `queued` (até 6 verificações,
+   uma a cada 5 min); se continuarem ativas, **pula o backup** em vez de interromper trabalho.
+3. Cria `storage/runtime/backup.lock` (a tarefa de autostart espera por ele, para não religar o
+   runtime no meio do backup), para o runtime e espera a parada.
+4. Cria o bundle e o verifica de forma independente com `verify-backup`.
+5. Sempre remove a trava e, **somente se foi ela quem parou o runtime**, o religa pela tarefa de
+   autostart. Se você já tinha parado o runtime, ele continua parado.
+6. Em falha, abre o alerta `Backup semanal falhou` (erro, automação `platform-health`); no próximo
+   backup bem-sucedido o alerta é resolvido sozinho.
+
+O registro fica em `storage/runtime/logs/backup.log`. A tarefa **nunca apaga bundles**. Se o PC
+estiver desligado no domingo, ela roda na próxima oportunidade; a tolerância de 12 h do brief
+semanal cobre uma parada de 1 minuto na segunda-feira.
+
+Validação (2026-10-09): caminho de falha com destino inexistente (aborta antes de tocar no runtime,
+sai com código 1 e abre o alerta); caminho de sucesso pela própria tarefa em 46 s (runtime parado e
+religado, bundle de 477 MB verificado, alerta resolvido, trava removida, schedule do brief intacto).
+O disparo no horário real, no domingo, ainda não foi observado.
 
 ## 5. Procedimento de restauração (recuperação real)
 
@@ -149,5 +179,6 @@ própria e não toca o `automation-foundry-postgres`.
 
 - Um destino **fora do disco do sistema**: o bundle de 09/10 está em `storage/backups`, no mesmo `C:`.
 - `restore-backup` de ponta a ponta num ambiente novo, por desenho só possível numa recuperação real.
-- O script e a tarefa semanais, porque ainda não existem.
+- O primeiro disparo no horário agendado (domingo 11/10, 22:00) e o comportamento da tarefa de
+  autostart se o PC ligar durante um backup atrasado.
 - A cópia para um destino externo.
