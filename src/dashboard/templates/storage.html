@@ -1,132 +1,159 @@
-<!doctype html>
-<html lang="pt-BR">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Retenção de storage · Automation Foundry</title>
-    <style>
-      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
-      body { margin: 0; background: #0b0d10; color: #f2f4f7; }
-      main { width: min(1000px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
-      header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin-bottom: 1.5rem; }
-      h1 { margin: 0; letter-spacing: -.03em; }
-      h2 { margin: 2rem 0 .8rem; font-size: 1rem; color: #c7d0da; letter-spacing: -.01em; }
-      p { color: #9ba6b4; }
-      a { color: #8ab4f8; text-decoration: none; }
-      table { width: 100%; border-collapse: collapse; background: #13171c; border: 1px solid #262d36; border-radius: 14px; overflow: hidden; }
-      th, td { text-align: left; border-bottom: 1px solid #252c34; padding: .8rem; vertical-align: top; }
-      th { color: #8995a3; }
-      td.numeric, th.numeric { text-align: right; font-variant-numeric: tabular-nums; }
-      tr:last-child td { border-bottom: 0; }
-      .badge { display: inline-block; border: 1px solid #3b4552; border-radius: 999px; padding: .15rem .5rem; font-size: .75rem; }
-      .retained { color: #7ee787; }
-      .retention_hold { color: #f2cc60; }
-      .expired { color: #f2cc60; }
-      .orphan { color: #f2cc60; }
-      .missing { color: #ff7b72; }
-      .unsafe { color: #ff7b72; }
-      .notice { border: 1px solid #262d36; background: #13171c; border-radius: 14px; padding: 1rem; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <header>
-        <div>
-          <h1>Retenção de storage</h1>
-          <p>Inventário somente leitura em dry-run. Caminhos de arquivo não são exibidos aqui; use a CLI local.</p>
-        </div>
-        <a href="/">← Dashboard</a>
-      </header>
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% set active_page = "storage" %}
 
-      {% if error %}
-        <p class="notice">{{ error }}</p>
-      {% elif not inventory.storage_root_present %}
-        <p class="notice">A raiz de storage configurada ainda não existe. Nada foi criado, alterado ou apagado.</p>
-      {% else %}
-        <p class="notice">
-          Dry-run em {{ inventory.generated_at.isoformat() }}Z ·
-          arquivos {{ inventory.scanned_file_count }} ·
-          bytes {{ inventory.scanned_bytes }} ·
-          excluídos da varredura {{ inventory.excluded_file_count }} ({{ inventory.excluded_bytes }} bytes) ·
-          <strong>apagados {{ inventory.deleted_file_count }}</strong>.
-          Nenhuma exclusão material está implementada.
-        </p>
+{% block title %}Retenção de storage · Automation Foundry{% endblock %}
+{% block breadcrumb %}<li><span aria-current="page">Storage e retenção</span></li>{% endblock %}
 
-        <h2>Classes de retenção</h2>
-        <table>
-          <thead><tr><th>Classe</th><th class="numeric">Arquivos</th><th class="numeric">Bytes</th></tr></thead>
-          <tbody>
-          {% for entry in inventory.classes %}
-            <tr>
-              <td><span class="badge {{ entry.classification.value }}">{{ entry.classification.value }}</span></td>
-              <td class="numeric">{{ entry.file_count }}</td>
-              <td class="numeric">{{ entry.total_bytes }}</td>
-            </tr>
+{% block content %}
+  {# classe -> (rótulo, ícone, tom, definição) #}
+  {% set classes_meta = {
+    "retained": ("Retida", "circle-check", "success", "Dentro do prazo de retenção e consistente com o registro."),
+    "retention_hold": ("Em retenção", "lock", "info", "Prazo vencido, mas não tratada como expirada: run aberta, approval pendente, evidência divergente ou caminho compartilhado por mais de um registro."),
+    "expired": ("Expirada", "hourglass", "warning", "Prazo vencido e elegível a um plano de expurgo. Nenhuma exclusão material está implementada."),
+    "orphan": ("Órfã", "help-circle", "warning", "Arquivo no storage sem registro correspondente no banco."),
+    "missing": ("Ausente", "file-x", "danger", "Registro no banco cujo arquivo não existe mais no storage."),
+    "unsafe": ("Insegura", "shield-alert", "danger", "Caminho inseguro ou fora da raiz de storage; nunca é seguido."),
+    "purged": ("Expurgada", "trash", "neutral", "Já expurgada; o registro permanece como histórico."),
+  } %}
+
+  <header class="page-header">
+    <div>
+      <div class="title-row"><h1>Retenção de storage</h1>{{ ui.badge("secondary", "lock", "Somente leitura · dry-run") }}</div>
+      <p>Inventário somente leitura em dry-run. Caminhos de arquivo não são exibidos aqui; use a CLI local.</p>
+    </div>
+  </header>
+
+  {% if error %}
+  <div class="alert alert-destructive" role="alert">
+    <span class="alert-icon">{{ ui.icon("circle-x") }}</span>
+    <div class="alert-body"><p class="alert-title">Inventário indisponível</p><p class="alert-description">{{ error }}</p></div>
+  </div>
+  {% elif not inventory.storage_root_present %}
+  <div class="alert alert-info" role="status">
+    <span class="alert-icon">{{ ui.icon("info") }}</span>
+    <div class="alert-body"><p class="alert-title">A raiz de storage configurada ainda não existe.</p><p class="alert-description">Nada foi criado, alterado ou apagado.</p></div>
+  </div>
+  {% else %}
+  {% set classes = {} %}
+  {% for entry in inventory.classes %}{% set _ = classes.update({entry.classification.value: entry}) %}{% endfor %}
+  {% set missing = classes.get("missing") %}
+  {% set unsafe = classes.get("unsafe") %}
+
+  {% if (missing and missing.file_count) or (unsafe and unsafe.file_count) %}
+  <div class="alert alert-destructive" role="alert">
+    <span class="alert-icon">{{ ui.icon("file-x") }}</span>
+    <div class="alert-body">
+      <p class="alert-title">{% if missing and missing.file_count %}{{ missing.file_count }} {{ "registro" if missing.file_count == 1 else "registros" }} sem arquivo no storage{% endif %}{% if missing and missing.file_count and unsafe and unsafe.file_count %} · {% endif %}{% if unsafe and unsafe.file_count %}{{ unsafe.file_count }} {{ "item inseguro" if unsafe.file_count == 1 else "itens inseguros" }}{% endif %}</p>
+      <p class="alert-description">Nada foi apagado por esta tela; investigue pela CLI local antes de qualquer limpeza.</p>
+    </div>
+  </div>
+  {% endif %}
+
+  <section class="card" aria-labelledby="h-dry">
+    <div class="card-header row">
+      <div><h2 class="card-title" id="h-dry" style="font-size:1rem">Última varredura</h2><p class="card-description">Reconciliação entre o banco e os arquivos do storage.</p></div>
+      {{ ui.badge("success", "circle-check", "apagados " ~ inventory.deleted_file_count) }}
+    </div>
+    <div class="card-content" style="display:grid;gap:1.25rem">
+      <dl class="facts">
+        <div class="fact"><dt>Gerada em</dt><dd><time datetime="{{ inventory.generated_at.isoformat() }}Z">{{ inventory.generated_at|utc_label }}</time><small>{{ inventory.generated_at|age_label }}</small></dd></div>
+        <div class="fact"><dt>Arquivos varridos</dt><dd>{{ inventory.scanned_file_count }}<small><abbr title="{{ inventory.scanned_bytes }} bytes">{{ inventory.scanned_bytes|byte_size }}</abbr></small></dd></div>
+        <div class="fact"><dt>Excluídos da varredura</dt><dd>{{ inventory.excluded_file_count }}<small><abbr title="{{ inventory.excluded_bytes }} bytes">{{ inventory.excluded_bytes|byte_size }}</abbr> · não entram no inventário</small></dd></div>
+        <div class="fact"><dt>Apagados</dt><dd>{{ inventory.deleted_file_count }}<small>Nenhuma exclusão material está implementada.</small></dd></div>
+      </dl>
+      {% set total_bytes = namespace(value=0) %}
+      {% for entry in inventory.classes if entry.classification.value in ("retained", "retention_hold", "expired", "orphan") %}{% set total_bytes.value = total_bytes.value + entry.total_bytes %}{% endfor %}
+      {% if total_bytes.value %}
+      <div>
+        <div class="stack" role="img" aria-label="Distribuição por bytes entre as classes com arquivo no storage">
+          {% for entry in inventory.classes if entry.classification.value in ("retained", "retention_hold", "expired", "orphan") and entry.total_bytes %}
+          <i class="seg-{{ entry.classification.value }}" style="width:{{ (entry.total_bytes * 100 / total_bytes.value)|round(1) }}%" title="{{ classes_meta[entry.classification.value][0] }} {{ entry.total_bytes|byte_size }}"></i>
           {% endfor %}
-          </tbody>
-        </table>
+        </div>
+        <div class="legend">
+          {% for entry in inventory.classes if entry.classification.value in ("retained", "retention_hold", "expired", "orphan") and entry.total_bytes %}
+          <span class="legend-item"><i class="seg-{{ entry.classification.value }}"></i>{{ classes_meta[entry.classification.value][0] }} {{ entry.total_bytes|byte_size }}</span>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </section>
 
-        <h2>Por automação</h2>
-        {% if inventory.automations %}
-        <table>
-          <thead>
-            <tr>
-              <th>Automação</th>
-              <th class="numeric">Arquivos</th>
-              <th class="numeric">Bytes</th>
-              <th class="numeric">Expirados</th>
-              <th class="numeric">Bytes expirados</th>
-              <th class="numeric">Retidos</th>
-              <th class="numeric">Ausentes</th>
-            </tr>
-          </thead>
+  <section class="section" aria-labelledby="h-classes">
+    <div class="section-head"><div><h2 id="h-classes">Classes de retenção</h2><p>Cada arquivo ou registro cai em exatamente uma classe.</p></div></div>
+    <div class="grid grid-class">
+      {% for entry in inventory.classes %}
+      {% set code = entry.classification.value %}
+      {% set meta = classes_meta.get(code, (code, "circle", "neutral", "")) %}
+      <article class="card class-card {{ 'is-' ~ meta[2] if entry.file_count else 'is-zero' }}" aria-labelledby="c-{{ code }}">
+        <div class="card-header">
+          <div class="automation-title"><span class="alert-icon">{{ ui.icon(meta[1]) }}</span><div><h3 id="c-{{ code }}">{{ meta[0] }}</h3><code>{{ code }}</code></div></div>
+        </div>
+        <div class="card-content">
+          <p class="metric">{{ entry.file_count }}<small> {{ "registros" if code in ("missing", "purged") else "arquivos" }}</small></p>
+          <p class="text-sm"><abbr title="{{ entry.total_bytes }} bytes">{{ entry.total_bytes|byte_size }}</abbr></p>
+        </div>
+        <div class="card-footer plain"><span class="note">{{ meta[3] }}</span></div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="h-auto">
+    <div class="card-header"><h2 class="card-title" id="h-auto" style="font-size:1rem">Por automação</h2><p class="card-description">Somente artefatos registrados no banco.</p></div>
+    <div class="card-content flush" style="padding-top:.75rem">
+      {% if inventory.automations %}
+      <div class="table-wrap">
+        <table class="table">
+          <caption class="sr-only">Armazenamento por automação</caption>
+          <thead><tr><th scope="col">Automação</th><th scope="col" class="num">Arquivos</th><th scope="col" class="num">Tamanho</th><th scope="col" class="num">Expirados</th><th scope="col" class="num">Tamanho expirado</th><th scope="col" class="num">Em retenção</th><th scope="col" class="num">Ausentes</th></tr></thead>
           <tbody>
-          {% for automation in inventory.automations %}
+            {% for automation in inventory.automations %}
             <tr>
               <td><code>{{ automation.automation_slug }}</code></td>
-              <td class="numeric">{{ automation.file_count }}</td>
-              <td class="numeric">{{ automation.total_bytes }}</td>
-              <td class="numeric">{{ automation.expired_file_count }}</td>
-              <td class="numeric">{{ automation.expired_bytes }}</td>
-              <td class="numeric">{{ automation.hold_file_count }}</td>
-              <td class="numeric">{{ automation.missing_file_count }}</td>
+              <td class="num">{{ automation.file_count }}</td>
+              <td class="num"><abbr title="{{ automation.total_bytes }} bytes">{{ automation.total_bytes|byte_size }}</abbr></td>
+              <td class="num">{{ automation.expired_file_count }}</td>
+              <td class="num"><abbr title="{{ automation.expired_bytes }} bytes">{{ automation.expired_bytes|byte_size }}</abbr></td>
+              <td class="num">{{ automation.hold_file_count }}</td>
+              <td class="num">{{ automation.missing_file_count }}</td>
             </tr>
-          {% endfor %}
+            {% endfor %}
           </tbody>
         </table>
-        {% else %}
-        <p>Nenhum artifact registrado.</p>
-        {% endif %}
-
-        <p>
-          <code>retention_hold</code> reúne artefatos com retenção vencida que não podem ser
-          tratados como expirados: run aberta, approval pendente, evidência divergente ou caminho
-          compartilhado por mais de um registro.
-        </p>
+      </div>
+      {% else %}
+      {{ ui.empty("folder", "Nenhum artifact registrado") }}
       {% endif %}
+    </div>
+  </section>
+  {% endif %}
 
-      <h2>Política declarativa por tipo de artifact</h2>
-      <table>
-        <thead>
-          <tr><th>Tipo</th><th class="numeric">Retenção</th><th>Produtor</th><th>Justificativa</th></tr>
-        </thead>
-        <tbody>
-        {% for policy in retention_policies %}
-          <tr>
-            <td><code>{{ policy.artifact_type }}</code></td>
-            <td class="numeric">{{ "indefinida" if policy.indefinite else policy.retention_days ~ " dias" }}</td>
-            <td><code>{{ policy.producer }}</code></td>
-            <td>{{ policy.rationale }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-      <p>
-        A política vale para registros novos: cada artifact grava o próprio prazo no momento do
-        registro, então alterar a tabela nunca antecipa o vencimento de algo já registrado. Um tipo
-        não declarado resolve para retenção indefinida, nunca expira e por isso nunca entra em um
-        plano de expurgo por omissão.
-      </p>
-    </main>
-  </body>
-</html>
+  <section class="card" aria-labelledby="h-pol">
+    <div class="card-header"><h2 class="card-title" id="h-pol" style="font-size:1rem">Política declarativa por tipo de artifact</h2><p class="card-description">Define o prazo gravado em cada novo registro.</p></div>
+    <div class="card-content flush" style="padding-top:.75rem">
+      <div class="table-wrap">
+        <table class="table">
+          <caption class="sr-only">Política de retenção</caption>
+          <thead><tr><th scope="col">Tipo</th><th scope="col">Retenção</th><th scope="col">Produtor</th><th scope="col">Justificativa</th></tr></thead>
+          <tbody>
+            {% for policy in retention_policies %}
+            <tr>
+              <td><code>{{ policy.artifact_type }}</code></td>
+              <td class="nowrap">{{ ui.badge("secondary", "clock", "indefinida" if policy.indefinite else policy.retention_days ~ " dias") }}</td>
+              <td><code>{{ policy.producer }}</code></td>
+              <td style="min-width:20rem">{{ policy.rationale }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="alert alert-info" style="margin:1rem 1.25rem 1rem">
+        <span class="alert-icon">{{ ui.icon("info") }}</span>
+        <div class="alert-body"><p class="alert-description">A política vale para <strong>registros novos</strong>: cada artifact grava o próprio prazo no momento do registro, então alterar a tabela nunca antecipa o vencimento de algo já registrado. Um tipo não declarado resolve para <strong>retenção indefinida</strong>, nunca expira e por isso nunca entra em um plano de expurgo por omissão.</p></div>
+      </div>
+    </div>
+  </section>
+{% endblock %}

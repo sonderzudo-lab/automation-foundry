@@ -1,97 +1,44 @@
-<!doctype html>
-<html lang="pt-BR">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Revisão A8 #{{ review.approval_id }} · Automation Foundry</title>
-    <style>
-      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
-      body { margin: 0; background: #0b0d10; color: #f2f4f7; }
-      main { width: min(1100px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
-      header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin-bottom: 1.5rem; }
-      h1, h2 { margin: 0; letter-spacing: -.03em; }
-      h2 { margin-bottom: .7rem; color: #b7c0cc; font-size: 1rem; text-transform: uppercase; letter-spacing: .08em; }
-      p { color: #c7d0da; line-height: 1.6; }
-      a { color: #8ab4f8; text-decoration: none; }
-      code { color: #d2a8ff; overflow-wrap: anywhere; }
-      section { margin-bottom: 1rem; padding: 1.2rem; border: 1px solid #262d36; border-radius: 14px; background: #13171c; }
-      .candidates { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
-      .candidate { display: block; border: 1px solid #3b4552; border-radius: 12px; padding: .8rem; cursor: pointer; }
-      .candidate:has(input:checked) { border-color: #7ee787; box-shadow: 0 0 0 2px #2d6a3f; }
-      .candidate img { display: block; width: 100%; max-height: 440px; object-fit: contain; border-radius: 8px; background: #000; }
-      .candidate input { margin: .8rem .4rem 0 0; }
-      .meta { font-size: .82rem; color: #9ba6b4; overflow-wrap: anywhere; }
-      input[type="text"], textarea { box-sizing: border-box; width: 100%; background: #0b0d10; color: #f2f4f7; border: 1px solid #3b4552; border-radius: 8px; padding: .7rem; font: inherit; margin: .3rem 0 .8rem; }
-      textarea { min-height: 5rem; resize: vertical; }
-      .confirm { display: block; margin: .9rem 0; color: #c7d0da; }
-      button { border: 1px solid #39794c; border-radius: 8px; background: #17351f; color: #9ff0b5; padding: .7rem 1rem; font: inherit; font-weight: 650; cursor: pointer; }
-      .notice { color: #f2cc60; }
-      @media (max-width: 700px) { header { align-items: start; flex-direction: column; } }
-    </style>
-  </head>
-  <body>
-    <main>
-      <header>
-        <div>
-          <div>Approval #{{ review.approval_id }} · {{ review.candidates|length }} candidatos</div>
-          <h1>Escolha da thumbnail A8</h1>
-        </div>
-        <a href="/runs/{{ review.run_id }}">Voltar à run</a>
-      </header>
-
-      <section>
-        <h2>Conjunto congelado</h2>
-        <p class="notice">Cada PNG abaixo pertence à mesma run, foi produzido pela A3 e teve tamanho e SHA-256 reconferidos. Escolha exatamente um. Aprovar registra apenas a escolha local com <code>published=false</code>; nenhum upload, envio ou gasto existe.</p>
-        <p>SHA-256 do conjunto: <code>{{ review.candidate_set_sha256 }}</code></p>
-        <p>SHA-256 do vídeo A7: <code>{{ review.final_video_sha256 }}</code></p>
-      </section>
-
-      {% if approval_status == "pending" %}
-      <form method="post" action="/approvals/{{ review.approval_id }}/approve">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <section>
-          <h2>Candidatos A3</h2>
-          <div class="candidates">
-          {% for candidate in review.candidates %}
-            <label class="candidate">
-              <img src="/approvals/{{ review.approval_id }}/thumbnails/{{ candidate.artifact_id }}" alt="Candidato de thumbnail #{{ candidate.artifact_id }}">
-              <input type="radio" name="thumbnail_artifact_id" value="{{ candidate.artifact_id }}" required>
-              Selecionar artifact #{{ candidate.artifact_id }}
-              <div class="meta">{{ candidate.size_bytes }} bytes<br><code>{{ candidate.sha256 }}</code></div>
-            </label>
-          {% endfor %}
-          </div>
-        </section>
-
-        <section>
-          <h2>Decisão humana</h2>
-          <label for="actor">Actor local</label>
-          <input id="actor" type="text" name="actor" maxlength="200" autocomplete="username" required>
-          <label for="reason">Motivo da escolha</label>
-          <textarea id="reason" name="reason" minlength="1" maxlength="500" required></textarea>
-          <label class="confirm"><input type="checkbox" name="confirmation" value="approve-approval" required> Confirmo a escolha de exatamente uma thumbnail deste conjunto verificado.</label>
-          <button type="submit">Aprovar thumbnail selecionada</button>
-        </section>
-      </form>
-      <section>
-        <h2>Rejeitar todos os candidatos</h2>
-        <p>Use esta opção se nenhuma imagem representar adequadamente o vídeo. A rejeição cancela a run.</p>
-        <form method="post" action="/approvals/{{ review.approval_id }}/reject">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <label for="reject-actor">Actor local</label>
-          <input id="reject-actor" type="text" name="actor" maxlength="200" autocomplete="username" required>
-          <label for="reject-reason">Motivo da rejeição</label>
-          <textarea id="reject-reason" name="reason" minlength="1" maxlength="500" required></textarea>
-          <label class="confirm"><input type="checkbox" name="confirmation" value="reject-approval" required> Confirmo que nenhum candidato deve ser aceito e que a run será cancelada.</label>
-          <button type="submit">Rejeitar approval A8</button>
-        </form>
-      </section>
-      {% else %}
-      <section>
-        <h2>Decisão registrada</h2>
-        <p>Esta approval já está <strong>{{ approval_status }}</strong>. Os candidatos permanecem disponíveis somente para consulta local.</p>
-      </section>
-      {% endif %}
-    </main>
-  </body>
-</html>
+{% extends "review_base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}Revisão A8 #{{ review.approval_id }} · Automation Foundry{% endblock %}
+{% block review_title %}Escolha da thumbnail A8{% endblock %}
+{% block review_kicker %}{{ review.candidates|length }} candidatos · run #{{ review.run_id }}{% endblock %}
+{% block review_verify %}Cada PNG abaixo pertence à mesma run, foi produzido pela A3 e teve tamanho e SHA-256 reconferidos. Escolha exatamente um. Aprovar registra apenas a escolha local com <code>published=false</code>; nenhum upload, envio ou gasto existe.{% endblock %}
+{% block review_hashes %}
+<span>Conjunto: {{ ui.hash_chip(review.candidate_set_sha256, "SHA-256 do conjunto") }}</span>
+<span>Vídeo A7: {{ ui.hash_chip(review.final_video_sha256, "SHA-256 do vídeo A7") }}</span>
+{% endblock %}
+{% block review_body %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Candidatos A3</h2><p class="card-description">{% if approval_status == "pending" %}Clique em um cartão para selecioná-lo. Exatamente um.{% else %}Os candidatos permanecem disponíveis somente para consulta local.{% endif %}</p></div>
+  <div class="card-content">
+    <div class="thumb-grid" role="{{ 'radiogroup' if approval_status == 'pending' else 'list' }}" aria-label="Candidatos de thumbnail">
+      {% for candidate in review.candidates %}
+      <label class="card card-select thumb">
+        <img class="thumb-art" src="/approvals/{{ review.approval_id }}/thumbnails/{{ candidate.artifact_id }}" alt="Candidato de thumbnail #{{ candidate.artifact_id }}">
+        {% if approval_status == "pending" %}
+        {# O radio usa form="form-approve" para enviar a escolha junto com o formulário do painel à direita. #}
+        <input type="radio" name="thumbnail_artifact_id" value="{{ candidate.artifact_id }}" form="form-approve" required aria-label="Selecionar artifact #{{ candidate.artifact_id }}">
+        <span class="check">{{ ui.icon("circle-check") }}</span>
+        {% endif %}
+        <span class="thumb-body"><strong>Artefato #{{ candidate.artifact_id }}</strong><span class="muted">Selecionar artifact #{{ candidate.artifact_id }} · <abbr title="{{ candidate.size_bytes }} bytes">{{ candidate.size_bytes|byte_size }}</abbr></span>
+          <span class="hash-wrap">{{ ui.hash_chip(candidate.sha256, "SHA-256 do candidato #" ~ candidate.artifact_id) }}</span></span>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block review_decision %}
+  {% with effect="Aprovar registra apenas a escolha local com published=false; nenhum upload, envio ou gasto existe.",
+          approve_label="Aprovar thumbnail selecionada",
+          reject_label="Rejeitar approval A8",
+          approve_reason_label="Motivo da escolha",
+          approve_confirm="Confirmo a escolha de exatamente uma thumbnail deste conjunto verificado.",
+          reject_confirm="Confirmo que nenhum candidato deve ser aceito e que a run será cancelada.",
+          reject_heading="Rejeitar todos os candidatos",
+          reject_note="Use esta opção se nenhuma imagem representar adequadamente o vídeo. A rejeição cancela a run.",
+          pick_hint="Escolha exatamente uma thumbnail à esquerda; ela é enviada junto com este formulário." %}
+  {% include "approval_decision_controls.html" %}
+  {% endwith %}
+{% endblock %}

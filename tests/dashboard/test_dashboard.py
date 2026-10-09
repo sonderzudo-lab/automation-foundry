@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import re
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -58,6 +59,7 @@ from src.platform.dispatch_service import (
     execute_claimed_dispatch,
     publish_registered_dispatch,
 )
+from src.platform.executor_registry import list_automation_executors
 from src.platform.experiment_service import (
     get_or_create_experiment,
     transition_experiment,
@@ -108,6 +110,18 @@ from tests.support.local_media_rehearsal import (
     write_synthetic_narration_wav,
     write_synthetic_visual_import,
 )
+
+
+def _assert_review_link(home_html: str, approval_id: int, action: str) -> None:
+    """The pending-approval alert names the action and links to its review page."""
+    alert = re.search(
+        r'<div class="alert alert-info">(?:(?!<div class="alert ).)*?'
+        rf"<code>{re.escape(action)}</code>.*?"
+        rf'href="/approvals/{approval_id}/review"',
+        home_html,
+        re.DOTALL,
+    )
+    assert alert is not None, f"no review link for {action} #{approval_id}"
 
 
 @pytest.fixture
@@ -814,7 +828,11 @@ async def test_connector_snapshot_and_htmx_fragment_are_latest_redacted_and_boun
     assert "youtube-analytics" in fragment.text
     assert "0.8200" in fragment.text
     assert "2026-08-11T12:55:00Z" in fragment.text
-    assert '<span class="badge danger">stale</span>' in fragment.text
+    # A freshness vencida precisa de ícone, texto e cor de perigo juntos, nunca só cor.
+    assert re.search(
+        r'class="badge badge-danger"><svg[^>]*><use[^>]*/></svg>stale',
+        fragment.text,
+    )
     assert "<html" not in fragment.text
     for private_value in (
         "private-youtube-observation",
@@ -2843,6 +2861,11 @@ async def test_dashboard_approval_can_be_safely_reviewed_and_approved(
     assert detail.status_code == 200
     assert "Video #42" in detail.text
     assert "Aprovar approval" in detail.text
+    # Sem página de revisão dedicada, a decisão acontece num diálogo da própria run.
+    assert f'id="decidir-{approval_id}"' in detail.text
+    assert f'action="/approvals/{approval_id}/approve"' in detail.text
+    assert f'action="/approvals/{approval_id}/reject"' in detail.text
+    assert f'href="/approvals/{approval_id}/review"' not in detail.text
     assert response.status_code == 303
     async with session_factory() as session:
         run = await session.get(Run, run_id)
@@ -2916,12 +2939,13 @@ async def test_dashboard_reviews_and_approves_complete_a1_script(
         )
 
     assert home.status_code == 200
-    assert (
-        f'href="/approvals/{result.approval_id}/review">'
-        "review_content_script_a1</a>"
-    ) in home.text
+    _assert_review_link(home.text, result.approval_id, "review_content_script_a1")
     assert detail.status_code == 200
     assert "Abrir roteiro completo e verificado" in detail.text
+    # Com página de revisão, ela é o único lugar de decidir: sem formulário inline.
+    assert f'href="/approvals/{result.approval_id}/review"' in detail.text
+    assert f'action="/approvals/{result.approval_id}/approve"' not in detail.text
+    assert f'action="/approvals/{result.approval_id}/reject"' not in detail.text
     assert review.status_code == 200
     assert review.headers["cache-control"] == "no-store"
     assert "Roteiro completo para revisão humana." in review.text
@@ -3254,10 +3278,7 @@ async def test_dashboard_reviews_and_approves_the_final_video_gate(
         )
 
     assert home.status_code == 200
-    assert (
-        f'href="/approvals/{final_approval_id}/review">'
-        "review_content_final_video_a7</a>"
-    ) in home.text
+    _assert_review_link(home.text, final_approval_id, "review_content_final_video_a7")
     assert detail.status_code == 200
     assert FINAL_REVIEW_APPROVAL_ACTION in detail.text
     assert "Nenhum upload" in detail.text
@@ -3474,10 +3495,7 @@ async def test_dashboard_narration_review_streams_only_verified_audio(
         )
 
     assert home.status_code == 200
-    assert (
-        f'href="/approvals/{narration_approval_id}/review">'
-        f"{NARRATION_REVIEW_APPROVAL_ACTION}</a>"
-    ) in home.text
+    _assert_review_link(home.text, narration_approval_id, NARRATION_REVIEW_APPROVAL_ACTION)
     assert review.status_code == 200
     assert review.headers["cache-control"] == "no-store"
     assert audio_sha256 in review.text
@@ -3890,10 +3908,7 @@ async def test_dashboard_a8_serves_verified_pngs_and_persists_exact_selection(
         )
 
     assert home.status_code == 200
-    assert (
-        f'href="/approvals/{approval_id}/review">'
-        "select_content_thumbnail_a8</a>"
-    ) in home.text
+    _assert_review_link(home.text, approval_id, "select_content_thumbnail_a8")
     assert detail.status_code == 200
     assert "Escolher uma thumbnail entre os PNGs A3 verificados" in detail.text
     assert "A aprovação A8 exige uma escolha" in detail.text
@@ -4186,9 +4201,7 @@ async def test_dashboard_reviews_and_approves_the_operations_brief(
         tampered = await client.get(f"/approvals/{result.approval_id}/review")
 
     assert home.status_code == 200
-    assert (
-        f'href="/approvals/{result.approval_id}/review">review_operations_brief</a>'
-    ) in home.text
+    _assert_review_link(home.text, result.approval_id, "review_operations_brief")
     assert "Abrir o brief completo e verificado" in detail.text
     assert review.status_code == 200
     assert review.headers["cache-control"] == "no-store"
@@ -4217,3 +4230,71 @@ async def test_javascript_media_type_does_not_depend_on_the_operating_system(
 
     assert asset.status_code == 200
     assert asset.headers["content-type"].startswith("text/javascript")
+
+
+async def _fetch_home(session_factory: async_sessionmaker[AsyncSession]) -> str:
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.get("/")
+    assert response.status_code == 200
+    return response.text
+
+
+async def test_dashboard_home_puts_pending_decisions_and_alerts_first(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _seed_dashboard(session_factory)
+
+    html = await _fetch_home(session_factory)
+
+    attention = html.index('id="precisa-de-voce"')
+    assert attention < html.index('id="runs"') < html.index('id="automacoes"')
+    assert "Approval pendente" in html
+    assert "Worker unavailable" in html
+    assert "Nada precisa de você agora" not in html
+    assert "Tudo em ordem" not in html
+    assert re.search(r"\d+ itens? pedem? atenção", html)
+
+
+async def test_dashboard_home_shows_a_good_empty_state_when_nothing_needs_attention(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    html = await _fetch_home(session_factory)
+
+    assert "Nada precisa de você agora" in html
+    assert "Nenhuma aprovação pendente e nenhum alerta ativo." in html
+    assert "Tudo em ordem" in html
+    assert "pedem atenção" not in html
+
+
+async def test_dashboard_home_has_unique_ids_and_a_dialog_per_manual_executor(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _seed_dashboard(session_factory)
+
+    html = await _fetch_home(session_factory)
+
+    ids = re.findall(r'\sid="([^"]+)"', html)
+    duplicated = sorted({value for value in ids if ids.count(value) > 1})
+    assert duplicated == []
+    manual_slugs = [
+        executor.slug
+        for executor in list_automation_executors()
+        if executor.supports_manual_start
+    ]
+    assert manual_slugs
+    for slug in manual_slugs:
+        assert f'id="executar-{slug}"' in html
+        assert f'action="/automations/{slug}/runs"' in html
+    # Cada ação de escrita continua sendo um POST com token CSRF e confirmação.
+    assert html.count('name="csrf_token"') == html.count("<form ")
+    assert html.count('name="confirmation"') == html.count("<form ")

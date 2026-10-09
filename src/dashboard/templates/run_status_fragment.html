@@ -1,34 +1,123 @@
-<div
+{% import "_macros.html" as ui %}
+{#
+  Fragmento auto-atualizável da run: a página o inclui e o HTMX o substitui (outerHTML) a cada 2 s
+  somente enquanto a run não terminou. Reutiliza a mesma projeção redigida da página completa.
+#}
+{% set review_actions = ("review_content_script_a1", "review_content_narration_a2", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}
+{% set pending_approvals = run.approvals|selectattr("status", "equalto", "pending")|list %}
+<section
   id="run-live-status"
-  class="live-fragment"
+  class="card"
+  aria-labelledby="h-exec"
   {% if not run.is_terminal %}
   hx-get="/runs/{{ run.id }}/fragment"
   hx-trigger="every 2s"
   hx-swap="outerHTML"
+  aria-live="polite"
   {% endif %}
 >
-  <section class="wide">
-    <h2>Execução</h2>
-    <div class="facts">
-      <div class="fact"><span>Status</span><strong class="badge">{{ run.status }}</strong></div>
-      <div class="fact"><span>Trigger</span>{{ run.trigger }}</div>
-      <div class="fact"><span>Duração</span>{{ run.duration_seconds if run.duration_seconds is not none else "—" }}{% if run.duration_seconds is not none %} s{% endif %}</div>
-      <div class="fact"><span>Enfileirada UTC</span>{{ run.queued_at.isoformat() }}Z</div>
-    </div>
-    {% if run.retry_of_run_id %}<p class="note">Retry da <a href="/runs/{{ run.retry_of_run_id }}">run #{{ run.retry_of_run_id }}</a>.</p>{% endif %}
-    {% if run.experiment_id %}<p class="note">Experimento #{{ run.experiment_id }} · {{ run.experiment_name }} · <code>{{ run.experiment_key }}</code>.</p>{% endif %}
-    {% if run.failure %}<p class="danger note">Falha: <code>{{ run.failure.code }}</code>{% if run.failure.exception_type %} · {{ run.failure.exception_type }}{% endif %}</p>{% endif %}
-    {% if run.cancellation_requested_at %}<p class="danger note">Cancelamento solicitado em {{ run.cancellation_requested_at.isoformat() }}Z. O motivo permanece redigido.</p>{% endif %}
-  </section>
+  <div class="card-header row">
+    <div><h2 class="card-title" id="h-exec" style="font-size:1rem">Execução</h2><p class="card-description">Estado persistido da run e dos seus steps.</p></div>
+    {% if not run.is_terminal %}
+    <span class="live"><span class="dot dot-live" aria-hidden="true"></span>Ao vivo · atualiza a cada 2 s</span>
+    {% else %}
+    <span class="badge badge-secondary">{{ ui.icon("circle-check") }}Finalizada</span>
+    {% endif %}
+  </div>
 
-  <section class="wide">
-    <h2>Steps e tentativas</h2>
-    {% if run.steps %}
-    <table><thead><tr><th>Ordem</th><th>Step</th><th>Tentativa</th><th>Fila</th><th>Status</th><th>Duração</th><th>Falha redigida</th></tr></thead><tbody>
-    {% for step in run.steps %}
-      <tr><td>{{ step.ordinal }}</td><td>{{ step.name }}</td><td>{{ step.attempt }}</td><td><code>{{ step.queue }}</code></td><td><span class="badge">{{ step.status }}</span></td><td>{{ step.duration_seconds if step.duration_seconds is not none else "—" }}{% if step.duration_seconds is not none %} s{% endif %}</td><td>{% if step.failure %}<code>{{ step.failure.code }}</code>{% if step.failure.exception_type %} · {{ step.failure.exception_type }}{% endif %}{% else %}—{% endif %}</td></tr>
-    {% endfor %}
-    </tbody></table>
-    {% else %}<div class="empty">Nenhum step registrado.</div>{% endif %}
-  </section>
-</div>
+  <div class="card-content" style="display:grid;gap:1.25rem">
+    <dl class="facts">
+      <div class="fact"><dt>Status</dt><dd>{{ ui.run_badge(run.status) }}</dd></div>
+      <div class="fact"><dt>Trigger</dt><dd>{{ run.trigger }}</dd></div>
+      <div class="fact"><dt>Duração</dt><dd>{{ ui.seconds(run.duration_seconds) }}</dd></div>
+      <div class="fact"><dt>Enfileirada</dt><dd><time datetime="{{ run.queued_at.isoformat() }}Z">{{ run.queued_at|utc_label }}</time><small>{{ run.queued_at|age_label }}</small></dd></div>
+    </dl>
+
+    {% if run.retry_of_run_id or run.experiment_id or run.failure or run.cancellation_requested_at or (pending_approvals and run.status == "awaiting_approval") %}
+    <div class="alert-list">
+      {% if run.failure %}
+      <div class="alert alert-destructive">
+        <span class="alert-icon">{{ ui.icon("circle-x") }}</span>
+        <div class="alert-body">
+          <p class="alert-title">Falha: <code>{{ run.failure.code }}</code>{% if run.failure.exception_type %} · {{ run.failure.exception_type }}{% endif %}</p>
+          <p class="alert-description">A execução anterior permanece imutável; uma nova tentativa cria outra run ligada a esta. Mensagens brutas, caminhos e payloads não são exibidos.</p>
+        </div>
+      </div>
+      {% endif %}
+      {% if run.cancellation_requested_at %}
+      <div class="alert alert-warning">
+        <span class="alert-icon">{{ ui.icon("ban") }}</span>
+        <div class="alert-body"><p class="alert-title">Cancelamento solicitado em <time datetime="{{ run.cancellation_requested_at.isoformat() }}Z">{{ run.cancellation_requested_at.isoformat() }}Z</time>.</p><p class="alert-description">O motivo permanece redigido.</p></div>
+      </div>
+      {% endif %}
+      {% if run.retry_of_run_id %}
+      <div class="alert alert-info">
+        <span class="alert-icon">{{ ui.icon("rotate-cw") }}</span>
+        <div class="alert-body"><p class="alert-title">Retry da <a href="/runs/{{ run.retry_of_run_id }}">run #{{ run.retry_of_run_id }}</a>.</p></div>
+      </div>
+      {% endif %}
+      {% if run.experiment_id %}
+      <div class="alert alert-info">
+        <span class="alert-icon">{{ ui.icon("flask") }}</span>
+        <div class="alert-body"><p class="alert-title">Experimento #{{ run.experiment_id }} · {{ run.experiment_name }} · <code>{{ run.experiment_key }}</code>.</p></div>
+      </div>
+      {% endif %}
+      {% if run.status == "awaiting_approval" %}
+      {% for approval in pending_approvals %}
+      <div class="alert alert-info">
+        <span class="alert-icon">{{ ui.icon("shield-check") }}</span>
+        <div class="alert-body">
+          <p class="alert-title">Aguardando a sua decisão · <code>{{ approval.action }}</code></p>
+          <p class="alert-description">A run só continua depois que a approval #{{ approval.id }} for aprovada ou rejeitada. Solicitada <time datetime="{{ approval.requested_at.isoformat() }}Z">{{ approval.requested_at|utc_label }}</time> ({{ approval.requested_at|age_label }}).</p>
+        </div>
+        {% if approval.action in review_actions %}
+        <a class="btn btn-sm alert-action" href="/approvals/{{ approval.id }}/review">{{ ui.icon("eye") }}Revisar</a>
+        {% else %}
+        <a class="btn btn-sm alert-action" href="#decidir-{{ approval.id }}">{{ ui.icon("shield-check") }}Decidir</a>
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <div>
+      <h3 style="margin-bottom:.75rem">Steps e tentativas</h3>
+      {% if run.steps %}
+      <ol class="timeline" aria-label="Steps da run">
+        {% for ordinal, grouped in run.steps|groupby("ordinal") %}
+        {% set attempts = grouped|sort(attribute="attempt") %}
+        {% set last = attempts|last %}
+        {% set tone = {"succeeded": "is-success", "failed": "is-danger", "awaiting_approval": "is-warning", "running": "is-info", "queued": "is-info", "cancelled": "is-neutral"}.get(last.status, "is-neutral") %}
+        {% set icon_name = {"succeeded": "circle-check", "failed": "circle-x", "awaiting_approval": "clock", "running": "loader", "queued": "clock", "cancelled": "ban"}.get(last.status, "circle") %}
+        {% set timed = attempts|selectattr("duration_seconds", "ne", none)|map(attribute="duration_seconds")|list %}
+        <li>
+          <span class="timeline-dot {{ tone }}">{{ ui.icon(icon_name) }}</span>
+          <div class="timeline-item">
+            <div class="timeline-head"><strong>{{ ordinal }}. <code>{{ last.name }}</code></strong>{{ ui.run_badge(last.status) }}</div>
+            <div class="timeline-meta">
+              <span>Fila <code>{{ last.queue }}</code></span>
+              <span>{{ attempts|length }} {{ "tentativa" if attempts|length == 1 else "tentativas" }}</span>
+              <span>Duração {{ ui.seconds(timed|sum) if timed else "—" }}</span>
+            </div>
+            {% if attempts|length > 1 or last.failure %}
+            <ul class="attempts" aria-label="Tentativas do step {{ last.name }}">
+              {% for step in attempts %}
+              <li class="{{ 'is-failed' if step.status == 'failed' }}">
+                <strong>Tentativa {{ step.attempt }}</strong>{{ ui.run_badge(step.status) }}
+                <span class="grow">{% if step.failure %}<code>{{ step.failure.code }}</code>{% if step.failure.exception_type %} · {{ step.failure.exception_type }}{% endif %}{% else %}<span class="muted">sem falha registrada</span>{% endif %}</span>
+                <span class="tabular muted">{{ ui.seconds(step.duration_seconds) }}</span>
+              </li>
+              {% endfor %}
+            </ul>
+            {% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      {{ ui.empty("layers", "Nenhum step registrado") }}
+      {% endif %}
+    </div>
+  </div>
+</section>
