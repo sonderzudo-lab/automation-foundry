@@ -55,6 +55,21 @@ janela pode piscar no início por causa do PowerShell oculto, e suspensão ou hi
 computador impede o Beat de disparar o schedule naquele horário. A tolerância de 12 h do brief
 semanal cobre um computador que volte a ligar na própria segunda-feira.
 
+## Alerta de ocorrência de schedule não executada
+
+Quando o Beat encontra uma ocorrência que não pode executar, ele a registra como `skipped` e abre um alerta `Schedule '<nome>' não executou uma ocorrência` no painel de alertas ativos. O resumo traz a hora prevista e o motivo:
+
+| Motivo | Severidade | O que significa e o que fazer |
+|---|---|---|
+| `MISFIRE_GRACE_EXCEEDED` | warning | O horário passou da tolerância, em geral porque o runtime estava parado. A ocorrência não é recuperada; gere o conteúdo manualmente se ainda precisar dele. |
+| `OVERLAP_BLOCKED` | warning | Uma run anterior do mesmo schedule ainda está aberta ou aguardando approval. Decida a approval pendente. |
+| `KILL_SWITCH_ACTIVE`, `AUTOMATION_DISABLED` | info | Pausa feita pelo operador. Reverta se não foi intencional. |
+| `EXECUTOR_NOT_REGISTERED`, `INVALID_SCHEDULE_INPUT` | error | Falha de configuração do schedule ou do módulo; exige correção. |
+
+Há um único alerta por schedule. A próxima ocorrência preparada normalmente o resolve sozinho, e uma nova ocorrência pulada o reabre. Para encerrar um alerta antes disso: `automation-foundry set-alert --alert-id <id> --resolve --actor <quem> --reason <motivo>`.
+
+Limite: o alerta só é criado quando o tick roda. Se o runtime não voltar, nenhum alerta surge; confira a saúde do Beat em `/health` e o `Próxima UTC` do schedule vencido na home.
+
 ## Beat não inicia depois de um encerramento sujo
 
 Se o Windows foi desligado ou o processo do Beat foi encerrado à força, o
