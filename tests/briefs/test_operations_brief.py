@@ -22,6 +22,7 @@ from src.briefs.executor import (
     load_operations_brief_review,
     parse_operations_brief_form,
     prepare_operations_brief_run,
+    resolve_operations_brief_schedule_input,
 )
 from src.briefs.render import OperationsBriefRenderError, render_operations_brief
 from src.core.database import Base
@@ -563,3 +564,25 @@ async def test_ledger_of_earlier_renderers_is_reproduced_exactly(session: AsyncS
     evidence["renderer_version"] = 2
 
     assert "| BRL | 0.2500000000 | 0 | 0 | -0.2500000000 |" in render_operations_brief(evidence)
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_days"),
+    [({}, 7), ({"window_days": 14}, 14), ({"window_days": 1}, 1)],
+)
+def test_weekly_schedule_window_ends_the_day_before_the_occurrence(
+    payload: dict[str, object],
+    expected_days: int,
+) -> None:
+    monday = datetime(2026, 10, 12, 11, 0, 0)
+
+    resolved = resolve_operations_brief_schedule_input(payload, monday)
+
+    assert resolved == {"window_days": expected_days, "window_end": "2026-10-11"}
+    assert resolve_operations_brief_schedule_input(payload, monday) == resolved
+
+
+@pytest.mark.parametrize("payload", [{"window_days": 3}, {"window_end": "2026-01-01"}, {"x": 1}])
+def test_weekly_schedule_rejects_unsupported_input(payload: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        resolve_operations_brief_schedule_input(payload, datetime(2026, 10, 12, 11, 0, 0))

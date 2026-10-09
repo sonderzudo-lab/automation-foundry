@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,7 @@ from src.briefs.executor import (
     load_operations_brief_review,
     parse_operations_brief_form,
     prepare_operations_brief_run,
+    resolve_operations_brief_schedule_input,
 )
 from src.pipeline.a1_executor import (
     execute_content_script_run,
@@ -40,6 +42,7 @@ class AutomationRunResult(Protocol):
 Executor = Callable[..., Awaitable[AutomationRunResult]]
 Preparer = Callable[..., Awaitable[RunCreationResult]]
 ManualInputParser = Callable[[dict[str, str]], dict[str, object]]
+ScheduledInputResolver = Callable[[dict[str, object], datetime], dict[str, object]]
 
 
 class ApprovalFinalizer(Protocol):
@@ -92,6 +95,10 @@ class AutomationExecutor:
     execute: Executor
     finalize_approval: ApprovalFinalizer | None = None
     load_approval_review: ApprovalReviewLoader | None = None
+    # Derives the run input of one schedule occurrence from the schedule's stored
+    # payload and the occurrence time. It must be a pure function of its arguments so
+    # a replayed tick reproduces exactly the input already persisted.
+    resolve_scheduled_input: ScheduledInputResolver | None = None
 
 
 _EXECUTORS = {
@@ -166,6 +173,7 @@ _EXECUTORS = {
         execute=execute_operations_brief_run,
         finalize_approval=finalize_operations_brief_approval,
         load_approval_review=load_operations_brief_review,
+        resolve_scheduled_input=resolve_operations_brief_schedule_input,
     ),
 }
 

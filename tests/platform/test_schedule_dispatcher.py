@@ -180,3 +180,86 @@ async def test_misfire_and_overlap_are_skipped_with_evidence(
         None,
         "OVERLAP_BLOCKED",
     ]
+
+
+async def _weekly_brief_schedule(
+    session: AsyncSession,
+    *,
+    input_payload: dict[str, object],
+) -> Schedule:
+    automation = (
+        await get_or_create_automation(
+            session,
+            slug="operations-brief",
+            name="Operations Brief",
+            owner="local-operator",
+        )
+    ).automation
+    before = datetime(2026, 10, 12, 10, 30, tzinfo=UTC)
+    schedule = (
+        await get_or_create_schedule(
+            session,
+            automation=automation,
+            name="weekly-operations-brief",
+            cron_expression="0 8 * * 1",
+            timezone_name="America/Sao_Paulo",
+            actor="operator",
+            reason="weekly brief",
+            input_payload=input_payload,
+            misfire_grace_seconds=43_200,
+            now=before,
+        )
+    ).schedule
+    await set_schedule_enabled(
+        session,
+        schedule=schedule,
+        enabled=True,
+        actor="operator",
+        reason="enable weekly brief",
+        now=before,
+    )
+    await session.commit()
+    return schedule
+
+
+async def test_weekly_brief_occurrence_gets_the_week_before_it(session: AsyncSession) -> None:
+    schedule = await _weekly_brief_schedule(session, input_payload={})
+    assert schedule.next_run_at == datetime(2026, 10, 12, 11, 0)
+
+    deliveries: list[int] = []
+    first = await dispatch_due_schedules(
+        session,
+        publish=lambda dispatch_id, *_args: deliveries.append(dispatch_id),
+        now=datetime(2026, 10, 12, 11, 0, 10, tzinfo=UTC),
+    )
+    replay = await dispatch_due_schedules(
+        session,
+        publish=lambda *_args: pytest.fail("replay must not publish"),
+        now=datetime(2026, 10, 12, 11, 0, 40, tzinfo=UTC),
+    )
+
+    run = await session.scalar(select(Run))
+    await session.refresh(schedule)
+    assert (first.prepared, first.skipped, first.published) == (1, 0, 1)
+    assert replay.due_seen == 0 and len(deliveries) == 1
+    assert run is not None and run.trigger == "schedule"
+    assert run.input_payload == {"window_days": 7, "window_end": "2026-10-11"}
+    assert schedule.next_run_at == datetime(2026, 10, 19, 11, 0)
+
+
+async def test_weekly_brief_with_invalid_payload_is_skipped_with_evidence(
+    session: AsyncSession,
+) -> None:
+    await _weekly_brief_schedule(session, input_payload={"window_days": 3})
+
+    result = await dispatch_due_schedules(
+        session,
+        publish=lambda *_args: pytest.fail("an invalid occurrence must not publish"),
+        now=datetime(2026, 10, 12, 11, 0, 10, tzinfo=UTC),
+    )
+
+    occurrence = await session.scalar(select(ScheduleOccurrence))
+    assert (result.prepared, result.skipped) == (0, 1)
+    assert occurrence is not None
+    assert occurrence.status == "skipped" and occurrence.reason_code == "INVALID_SCHEDULE_INPUT"
+    assert await session.scalar(select(Run)) is None

@@ -7,7 +7,7 @@ import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -146,6 +146,25 @@ def parse_operations_brief_form(
         window_end=today or datetime.now(UTC).date(),
     )
     return parsed.model_dump(mode="json")
+
+
+def resolve_operations_brief_schedule_input(
+    payload: dict[str, object],
+    scheduled_for: datetime,
+) -> dict[str, object]:
+    """Derive the weekly window from the occurrence: the 7 UTC days before it.
+
+    A pure function of the schedule payload and the occurrence time, so a replayed
+    tick reproduces the exact input already persisted. The window ends the day before
+    the occurrence, which excludes the partial day on which the brief is produced.
+    """
+    if set(payload) - {"window_days"}:
+        raise ValueError("unsupported operations brief schedule input field")
+    resolved = OperationsBriefInput(
+        window_days=int(payload.get("window_days", 7)),  # type: ignore[call-overload]
+        window_end=scheduled_for.date() - timedelta(days=1),
+    )
+    return resolved.model_dump(mode="json")
 
 
 async def prepare_operations_brief_run(

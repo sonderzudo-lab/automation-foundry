@@ -14,7 +14,10 @@ from src.platform.dispatch_service import (
     prepare_registered_dispatch,
     publish_prepared_dispatch,
 )
-from src.platform.executor_registry import AutomationExecutorNotFoundError
+from src.platform.executor_registry import (
+    AutomationExecutorNotFoundError,
+    get_automation_executor,
+)
 from src.platform.models import (
     Automation,
     DispatchStatus,
@@ -102,15 +105,22 @@ async def dispatch_due_schedules(
         if reason is None:
             key = f"schedule:{schedule.id}:{scheduled_for.isoformat()}"
             try:
+                run_input = _occurrence_input(
+                    automation.slug,
+                    schedule.input_payload,
+                    scheduled_for,
+                )
                 dispatch = await prepare_registered_dispatch(
                     session,
                     slug=automation.slug,
                     idempotency_key=key,
                     trigger="schedule",
-                    input_payload=schedule.input_payload,
+                    input_payload=run_input,
                 )
             except AutomationExecutorNotFoundError:
                 reason = "EXECUTOR_NOT_REGISTERED"
+            except ValueError:
+                reason = "INVALID_SCHEDULE_INPUT"
             else:
                 dispatch_id = dispatch.dispatch_id
                 run_id = dispatch.run_id
@@ -154,6 +164,18 @@ async def dispatch_due_schedules(
         published=published,
         publish_failed=publish_failed,
     )
+
+
+def _occurrence_input(
+    slug: str,
+    payload: dict[str, object] | None,
+    scheduled_for: datetime,
+) -> dict[str, object] | None:
+    """Let the executor derive the run input from the occurrence time, if it declares so."""
+    resolver = get_automation_executor(slug).resolve_scheduled_input
+    if resolver is None:
+        return payload
+    return resolver(dict(payload or {}), scheduled_for)
 
 
 async def _skip_reason(
