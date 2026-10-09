@@ -6,12 +6,17 @@ import hmac
 import ipaddress
 import mimetypes
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -23,9 +28,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.briefs.executor import OperationsBriefReview
 from src.core.database import get_session
+from src.dashboard.errors import describe_error, safe_back_url, wants_html
 from src.dashboard.formatting import (
     format_byte_size,
     format_duration_seconds,
@@ -183,6 +190,41 @@ def create_app(
         if not _is_loopback_host(request.url.hostname):
             return PlainTextResponse("invalid host", status_code=400)
         return await call_next(request)
+
+    def _error_page(
+        request: Request,
+        status_code: int,
+        detail: object,
+        headers: Mapping[str, str] | None = None,
+    ) -> Response:
+        back_url = safe_back_url(
+            request.headers.get("referer"),
+            host=request.url.netloc,
+            current_path=request.url.path,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="error.html",
+            context={"error": describe_error(status_code, detail, back_url=back_url)},
+            status_code=status_code,
+            headers={**(headers or {}), "Cache-Control": "no-store"},
+        )
+
+    async def _http_exception(request: Request, exc: Exception) -> Response:
+        assert isinstance(exc, StarletteHTTPException)
+        if not wants_html(request.headers.get("accept")):
+            return await http_exception_handler(request, exc)
+        return _error_page(request, exc.status_code, exc.detail, exc.headers)
+
+    async def _validation_exception(request: Request, exc: Exception) -> Response:
+        assert isinstance(exc, RequestValidationError)
+        if not wants_html(request.headers.get("accept")):
+            return await request_validation_exception_handler(request, exc)
+        # Validation errors echo submitted values; the page shows a static message only.
+        return _error_page(request, 422, None)
+
+    application.add_exception_handler(StarletteHTTPException, _http_exception)
+    application.add_exception_handler(RequestValidationError, _validation_exception)
 
     @application.get("/", response_class=HTMLResponse)
     async def dashboard_home(
