@@ -530,8 +530,9 @@ a.kpi { color: inherit; } a.kpi:hover { text-decoration: none; border-color: col
 @media (max-width: 56rem) {
   /* Mobile: sidebar vira gaveta; o mesmo checkbox abre/fecha */
   .app, .nav-toggle:checked ~ .app { grid-template-columns: minmax(0, 1fr); }
-  .sidebar { position: fixed; z-index: 50; width: min(18rem, 85vw); transform: translateX(-100%); transition: transform 0.2s ease; box-shadow: var(--shadow-md); }
-  .nav-toggle:checked ~ .app .sidebar { transform: none; }
+  /* visibility tira os links da ordem de Tab enquanto a gaveta está fora da tela; o atraso deixa a animação de saída terminar */
+  .sidebar { position: fixed; z-index: 50; width: min(18rem, 85vw); transform: translateX(-100%); visibility: hidden; transition: transform 0.2s ease, visibility 0s linear 0.2s; box-shadow: var(--shadow-md); }
+  .nav-toggle:checked ~ .app .sidebar { transform: none; visibility: visible; transition: transform 0.2s ease, visibility 0s; }
   /* a gaveta nunca fica "só ícones" no mobile */
   .nav-toggle:checked ~ .app .workspace-text,
   .nav-toggle:checked ~ .app .nav-label,
