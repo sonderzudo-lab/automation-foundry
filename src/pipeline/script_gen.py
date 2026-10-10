@@ -4,8 +4,11 @@ A1 — Geração de roteiro (ARQUITETURA.md Seção A1).
 Pipeline de 4 etapas encadeadas via Ollama (cliente OpenAI-compatível):
   1. Ângulo editorial específico
   2. Outline estruturado
-  3. Roteiro completo seção por seção
-  4. Hook dos primeiros 15–30 segundos
+  3. Hook — a abertura que será narrada
+  4. Restante do roteiro, que continua a partir do hook
+
+O roteiro final é montado no código como hook + restante, de modo que o hook
+revisado no gate A1 é exatamente a abertura que chega ao TTS.
 
 Cada etapa usa retry exponencial em caso de timeout, falha de conexão
 ou resposta vazia do Ollama.
@@ -49,7 +52,7 @@ class ScriptResult(BaseModel):
     angle: str        # Ângulo editorial específico e diferenciado
     outline: str      # Estrutura/outline do vídeo
     full_script: str  # Roteiro completo com formatação do modelo (para revisão humana)
-    hook: str         # Abertura dos primeiros 15–30 segundos
+    hook: str         # Abertura narrada: o início de full_script, já sem formatação
     narration: str    # Texto puro para TTS: sem emojis, markdown, stage directions
 
 
@@ -443,7 +446,13 @@ def _prompts_outline(
     return system, user
 
 
-def _prompts_full_script(
+_HOOK_LENGTH: dict[str, str] = {
+    "short": "uma ou duas frases curtas, com no máximo 25 palavras",
+    "long": "os primeiros 15–30 segundos de fala, entre 40 e 80 palavras",
+}
+
+
+def _prompts_hook(
     topic: str,
     angle: str,
     outline: str,
@@ -452,7 +461,7 @@ def _prompts_full_script(
     recent_openings: list[str] | None,
 ) -> tuple[str, str]:
     """
-    Etapa 3: roteiro completo, seção por seção.
+    Etapa 3: hook — a abertura que será narrada antes do restante do roteiro.
 
     Se recent_openings for fornecido, o system prompt instrui o modelo a
     NÃO repetir nenhuma dessas aberturas (variação anti-template).
@@ -469,38 +478,60 @@ def _prompts_full_script(
 
     system = (
         f"{_system_base(persona, fmt)}\n\n"
-        "Sua tarefa: escrever o ROTEIRO COMPLETO, seção por seção, seguindo o outline. "
-        "Inclua falas naturais, transições e linguagem coloquial PT-BR. "
-        "Escreva APENAS o texto falado — sem didascálias de câmera ou stage directions."
+        "Sua tarefa: escrever o HOOK — a abertura falada do vídeo, que prende a atenção "
+        "do espectador imediatamente, cria curiosidade e deixa claro por que vale "
+        f"assistir até o fim. Tamanho: {_HOOK_LENGTH[fmt]}.\n"
+        "Este texto será narrado exatamente como você escrever: responda APENAS com o "
+        "texto falado, sem emojis, rótulos, aspas em volta ou comentários extras."
         f"{openings_block}"
     )
     user = (
         f"Tema: {topic}\n"
         f"Ângulo editorial: {angle}\n"
         f"Outline:\n{outline}\n\n"
-        "Escreva o roteiro completo."
+        "Escreva o hook."
     )
     return system, user
 
 
-def _prompts_hook(
-    full_script: str,
+def _prompts_full_script(
+    topic: str,
+    angle: str,
+    outline: str,
+    hook: str,
     persona: str,
     fmt: Literal["short", "long"],
 ) -> tuple[str, str]:
-    """Etapa 4: hook — os primeiros 15–30 segundos do vídeo."""
+    """Etapa 4: restante do roteiro, que continua a partir do hook já escrito."""
     system = (
         f"{_system_base(persona, fmt)}\n\n"
-        "Sua tarefa: extrair/refinar o HOOK do roteiro — os primeiros 15–30 segundos "
-        "de fala que prendem a atenção do espectador imediatamente. "
-        "O hook deve criar curiosidade e deixar claro por que vale assistir o vídeo inteiro.\n"
-        "Responda APENAS com o texto do hook, sem comentários extras."
+        "Sua tarefa: escrever o RESTANTE DO ROTEIRO, seção por seção, seguindo o outline. "
+        "A abertura do vídeo já está escrita e será narrada antes do seu texto: "
+        "continue a partir dela, sem repeti-la nem reescrevê-la. "
+        "Inclua falas naturais, transições e linguagem coloquial PT-BR. "
+        "Escreva APENAS o texto falado — sem didascálias de câmera ou stage directions."
     )
     user = (
-        f"Roteiro completo:\n{full_script}\n\n"
-        "Extraia ou refine o hook (abertura de 15–30 segundos)."
+        f"Tema: {topic}\n"
+        f"Ângulo editorial: {angle}\n"
+        f"Outline:\n{outline}\n"
+        f"Abertura já escrita:\n{hook}\n\n"
+        "Escreva o restante do roteiro."
     )
     return system, user
+
+
+def _drop_repeated_opening(body: str, hook: str) -> str:
+    """Remove o hook quando o modelo o repete no início do restante do roteiro."""
+    words = hook.split()
+    if not words:
+        return body
+    repeated = re.match(
+        r"[\s\"“”*_]*" + r"\s+".join(re.escape(word) for word in words) + r"[\s\"“”*_]*",
+        body,
+        re.IGNORECASE,
+    )
+    return body[repeated.end():] if repeated else body
 
 
 # ── Função principal ──────────────────────────────────────────────────────────
@@ -539,11 +570,16 @@ def generate_script(
     sys2, usr2 = _prompts_outline(topic, angle, persona, fmt)
     outline = _call_llm(client, system=sys2, user=usr2, step="outline")
 
-    sys3, usr3 = _prompts_full_script(topic, angle, outline, persona, fmt, recent_openings)
-    full_script = _call_llm(client, system=sys3, user=usr3, step="full_script")
+    sys3, usr3 = _prompts_hook(topic, angle, outline, persona, fmt, recent_openings)
+    # O hook passa pela mesma limpeza da narração: o texto revisado é o texto falado.
+    hook = _extract_narration(_call_llm(client, system=sys3, user=usr3, step="hook"))
 
-    sys4, usr4 = _prompts_hook(full_script, persona, fmt)
-    hook = _call_llm(client, system=sys4, user=usr4, step="hook")
+    sys4, usr4 = _prompts_full_script(topic, angle, outline, hook, persona, fmt)
+    body = _drop_repeated_opening(
+        _call_llm(client, system=sys4, user=usr4, step="full_script"),
+        hook,
+    )
+    full_script = f"{hook}\n\n{body}"
 
     # Limpeza programática: mais rápida, determinística e sem custo de GPU extra
     # vs. uma 5ª chamada LLM (que adicionaria ~30s e poderia introduzir novos artefatos).

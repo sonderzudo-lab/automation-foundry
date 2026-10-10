@@ -73,7 +73,7 @@ def _timeout_error() -> APITimeoutError:
 
 def test_exactly_four_llm_calls() -> None:
     """Verifica que generate_script faz exatamente 4 chamadas ao LLM."""
-    client = _client_with("ângulo X", "outline Y", "roteiro Z", "hook W")
+    client = _client_with("ângulo X", "outline Y", "hook W", "roteiro Z")
 
     generate_script(
         topic="IA no trabalho",
@@ -87,7 +87,7 @@ def test_exactly_four_llm_calls() -> None:
 
 def test_script_result_fields_match_llm_responses() -> None:
     """ScriptResult deve ter cada campo preenchido com a resposta da etapa correspondente."""
-    client = _client_with("Ângulo A", "Outline B", "Roteiro C", "Hook D")
+    client = _client_with("Ângulo A", "Outline B", "Hook D", "Roteiro C")
 
     result = generate_script(
         topic="Python em 2026",
@@ -99,16 +99,58 @@ def test_script_result_fields_match_llm_responses() -> None:
     assert isinstance(result, ScriptResult)
     assert result.angle == "Ângulo A"
     assert result.outline == "Outline B"
-    assert result.full_script == "Roteiro C"
     assert result.hook == "Hook D"
+    assert result.full_script == "Hook D\n\nRoteiro C"
+    assert result.narration == "Hook D\n\nRoteiro C"
 
 
-def test_recent_openings_appear_in_full_script_system_prompt() -> None:
+def test_hook_is_the_spoken_opening_of_the_script() -> None:
+    """O hook revisado no gate A1 é, já limpo, o início do roteiro e da narração."""
+    client = _client_with(
+        "ângulo",
+        "outline",
+        "🧠 **Você dorme errado.**",
+        "E o motivo não é o que você imagina.",
+    )
+
+    result = generate_script(
+        topic="Sono",
+        persona="Divulgador científico",
+        fmt="long",
+        client=client,
+    )
+
+    assert result.hook == "Você dorme errado."
+    assert result.full_script.startswith("Você dorme errado.\n\n")
+    assert result.narration == "Você dorme errado.\n\nE o motivo não é o que você imagina."
+
+
+def test_hook_repeated_by_the_model_is_narrated_only_once() -> None:
+    """Se a etapa 4 repetir a abertura, ela é removida do restante do roteiro."""
+    client = _client_with(
+        "ângulo",
+        "outline",
+        "Você dorme errado.",
+        "“Você  dorme errado.”\n\nE o motivo não é o que você imagina.",
+    )
+
+    result = generate_script(
+        topic="Sono",
+        persona="Divulgador científico",
+        fmt="long",
+        client=client,
+    )
+
+    assert result.narration.count("dorme errado") == 1
+    assert result.narration.endswith("E o motivo não é o que você imagina.")
+
+
+def test_recent_openings_appear_in_hook_system_prompt() -> None:
     """
-    Etapa 3 (full_script) deve incluir as recent_openings no system prompt,
-    com instrução explícita para não repeti-las.
+    Etapa 3 (hook) escreve a abertura e deve incluir as recent_openings no
+    system prompt, com instrução explícita para não repeti-las.
     """
-    client = _client_with("ângulo", "outline", "roteiro", "hook")
+    client = _client_with("ângulo", "outline", "hook", "roteiro")
     openings = ["Você sabia que...", "Hoje eu vou te mostrar..."]
 
     generate_script(
@@ -119,7 +161,7 @@ def test_recent_openings_appear_in_full_script_system_prompt() -> None:
         client=client,
     )
 
-    # Terceira chamada (índice 2) é a etapa full_script
+    # Terceira chamada (índice 2) é a etapa hook
     third_call = client.chat.completions.create.call_args_list[2]
     messages: list[dict[str, str]] = third_call.kwargs["messages"]
     system_prompt = next(m["content"] for m in messages if m["role"] == "system")
@@ -131,7 +173,7 @@ def test_recent_openings_appear_in_full_script_system_prompt() -> None:
 
 def test_no_recent_openings_omits_restriction_block() -> None:
     """Sem recent_openings, o bloco de restrição NÃO deve aparecer no prompt."""
-    client = _client_with("ângulo", "outline", "roteiro", "hook")
+    client = _client_with("ângulo", "outline", "hook", "roteiro")
 
     generate_script(
         topic="Machine Learning",
@@ -150,7 +192,7 @@ def test_no_recent_openings_omits_restriction_block() -> None:
 
 def test_short_format_mentions_duration_in_prompt() -> None:
     """Formato 'short' deve incluir referência à duração (60 segundos / Short) nos prompts."""
-    client = _client_with("ângulo", "outline", "roteiro", "hook")
+    client = _client_with("ângulo", "outline", "hook", "roteiro")
 
     generate_script(
         topic="Dica de Python",
@@ -169,7 +211,7 @@ def test_short_format_mentions_duration_in_prompt() -> None:
 
 def test_long_format_mentions_duration_in_prompt() -> None:
     """Formato 'long' deve incluir referência a minutos no system prompt."""
-    client = _client_with("ângulo", "outline", "roteiro", "hook")
+    client = _client_with("ângulo", "outline", "hook", "roteiro")
 
     generate_script(
         topic="Arquitetura de software",
@@ -206,12 +248,12 @@ def test_outline_receives_angle_from_step1() -> None:
     assert "ÂNGULO_ESPECIFICO" in user_prompt
 
 
-def test_hook_receives_full_script_from_step3() -> None:
+def test_full_script_receives_hook_from_step3() -> None:
     """
-    A etapa 4 (hook) deve receber o roteiro completo retornado pela etapa 3
+    A etapa 4 (restante do roteiro) deve receber o hook retornado pela etapa 3
     no seu user prompt — encadeamento das etapas.
     """
-    client = _client_with("ângulo", "outline", "ROTEIRO_COMPLETO_XYZ", "hook")
+    client = _client_with("ângulo", "outline", "Abertura específica XYZ", "roteiro")
 
     generate_script(
         topic="Saúde mental",
@@ -224,7 +266,7 @@ def test_hook_receives_full_script_from_step3() -> None:
     messages: list[dict[str, str]] = fourth_call.kwargs["messages"]
     user_prompt = next(m["content"] for m in messages if m["role"] == "user")
 
-    assert "ROTEIRO_COMPLETO_XYZ" in user_prompt
+    assert "Abertura específica XYZ" in user_prompt
 
 
 # ── Testes de retry em _call_llm ──────────────────────────────────────────────
@@ -592,7 +634,7 @@ def test_call_llm_system_prompt_contains_no_think_token() -> None:
     Camada 1: todos os system prompts gerados devem começar com /no_think,
     o token que o Qwen3 reconhece para desabilitar o thinking mode.
     """
-    client = _client_with("ângulo", "outline", "roteiro", "hook")
+    client = _client_with("ângulo", "outline", "hook", "roteiro")
 
     generate_script(topic="teste", persona="teste", fmt="long", client=client)
 
@@ -740,7 +782,7 @@ def test_extract_narration_collapses_multiple_blank_lines() -> None:
 
 def test_narration_field_exists_in_script_result() -> None:
     """ScriptResult deve ter o campo `narration` preenchido."""
-    client = _client_with("ângulo", "outline", "roteiro limpo.", "hook")
+    client = _client_with("ângulo", "outline", "hook", "roteiro limpo.")
 
     result = generate_script(
         topic="Sono e memória",
@@ -766,7 +808,7 @@ def test_narration_has_no_emojis_or_markdown() -> None:
         "*pausa dramática*\n"
         "Isso acontece porque o sono REM é essencial para consolidar o aprendizado."
     )
-    client = _client_with("ângulo", "outline", dirty_script, "hook")
+    client = _client_with("ângulo", "outline", "hook", dirty_script)
 
     result = generate_script(
         topic="Sono e memória",
@@ -789,7 +831,7 @@ def test_narration_has_no_emojis_or_markdown() -> None:
 def test_narration_differs_from_full_script_when_dirty() -> None:
     """narration e full_script devem ser diferentes quando o script tem formatação."""
     dirty_script = "**Seção (0-5s):**\n🚀 Texto real aqui."
-    client = _client_with("ângulo", "outline", dirty_script, "hook")
+    client = _client_with("ângulo", "outline", "hook", dirty_script)
 
     result = generate_script(
         topic="teste",
@@ -798,7 +840,7 @@ def test_narration_differs_from_full_script_when_dirty() -> None:
         client=client,
     )
 
-    assert result.full_script == dirty_script
+    assert result.full_script == f"hook\n\n{dirty_script}"
     assert result.narration != result.full_script
 
 
@@ -807,7 +849,7 @@ def test_language_rule_in_all_four_system_prompts() -> None:
     O bloco IDIOMA – REGRA ABSOLUTA deve aparecer em todos os 4 system prompts,
     garantindo que o anti-espanhol se aplique a cada etapa.
     """
-    client = _client_with("ângulo", "outline", "roteiro", "hook")
+    client = _client_with("ângulo", "outline", "hook", "roteiro")
 
     generate_script(
         topic="Qualquer tema",
@@ -852,8 +894,8 @@ def test_full_script_clean_when_qwen3_emits_orphaned_think() -> None:
     client.chat.completions.create.side_effect = [
         _fake_response(_QWEN3_ORPHANED_PREFIX + pt_content["angle"]),
         _fake_response(_QWEN3_ORPHANED_PREFIX + pt_content["outline"]),
-        _fake_response(_QWEN3_ORPHANED_PREFIX + pt_content["script"]),
         _fake_response(_QWEN3_ORPHANED_PREFIX + pt_content["hook"]),
+        _fake_response(_QWEN3_ORPHANED_PREFIX + pt_content["script"]),
     ]
 
     result = generate_script(
@@ -887,8 +929,8 @@ def test_narration_clean_when_full_script_has_complete_think_block() -> None:
     client = _client_with(
         "ângulo editorial",
         "outline aqui",
-        script_with_think,
         "hook limpo",
+        script_with_think,
     )
 
     result = generate_script(
