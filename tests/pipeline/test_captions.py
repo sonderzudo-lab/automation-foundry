@@ -984,3 +984,66 @@ def test_rendered_ass_keeps_word_timings_inside_each_block() -> None:
     assert dialogues[1].startswith("Dialogue: 0,0:00:02.00,0:00:04.00,")
     assert rendered.count("{\\kf50}") == 8
 
+
+def _restored_texts(heard: str, approved: str) -> list[str]:
+    restored = captions._restore_approved_wording(_timed_words(heard), approved)
+    assert all(
+        earlier.start_seconds < earlier.end_seconds <= later.start_seconds
+        for earlier, later in zip(restored, restored[1:], strict=False)
+    )
+    return [word.text for word in restored]
+
+
+def test_captions_show_the_approved_spelling_over_the_heard_timings() -> None:
+    heard = _timed_words("terceiro, abre um caderno e deixa a mao. nao e para tarefas.")
+    restored = captions._restore_approved_wording(
+        heard,
+        "Terceiro, abre um caderno e deixa à mão. Não é pra tarefas.",
+    )
+
+    assert [word.text for word in restored] == [
+        "Terceiro,", "abre", "um", "caderno", "e", "deixa", "à", "mão.",
+        "Não", "é", "pra", "tarefas.",
+    ]
+    assert [(word.start_seconds, word.end_seconds) for word in restored] == [
+        (word.start_seconds, word.end_seconds) for word in heard
+    ]
+
+
+def test_approved_wording_spreads_over_a_different_number_of_heard_words() -> None:
+    heard = _timed_words("cerca de dez por cento das mesas")
+    restored = captions._restore_approved_wording(heard, "Cerca de 10% das mesas")
+
+    assert [word.text for word in restored] == ["Cerca", "de", "10%", "das", "mesas"]
+    assert (restored[2].start_seconds, restored[2].end_seconds) == (
+        heard[2].start_seconds,
+        heard[4].end_seconds,
+    )
+
+
+def test_approved_wording_keeps_unmatched_speech_and_short_missed_words() -> None:
+    # A word only the transcription heard stays; a short approved run the
+    # transcription missed borrows time from the word before it.
+    assert _restored_texts("separa ahn os itens", "Separa os itens.") == [
+        "Separa", "ahn", "os", "itens.",
+    ]
+    assert _restored_texts("separa os itens", "Separa só os itens.") == [
+        "Separa", "só", "os", "itens.",
+    ]
+    assert _restored_texts("os itens", "Separa os itens.") == ["Separa", "os", "itens."]
+    # A long approved run with no speech behind it is not invented on screen.
+    assert _restored_texts(
+        "separa os itens",
+        "Separa os itens. Depois guarda tudo no lugar certo.",
+    ) == ["Separa", "os", "itens."]
+
+
+def test_approved_wording_glues_lone_dashes_and_rejects_unsafe_text() -> None:
+    assert _restored_texts("um prato. o importante", "um prato — o importante") == [
+        "um", "prato —", "o", "importante",
+    ]
+    assert _block_texts("um prato — o importante é isso.")[0] == "um prato —"
+    assert _restored_texts("uma {tag} aqui", "Uma {tag} aqui") == ["Uma", "{tag}", "aqui"]
+    heard = _timed_words("so palavras")
+    assert captions._restore_approved_wording(heard, "— …") == heard
+

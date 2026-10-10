@@ -92,7 +92,10 @@ _MATCH_QUANTUM = Decimal("0.0000000001")
 _MIN_REPAIRED_WORD_SECONDS = Decimal("0.02")
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+", re.ASCII)
 _SENTENCE_END = re.compile(r"[.!?…][’”\"')\]]*$")
-_CLAUSE_END = re.compile(r"[,;:][’”\"')\]]*$")
+_CLAUSE_END = re.compile(r"[,;:—–][’”\"')\]]*$")
+# Approved words the transcription missed are shown only in short runs; a
+# longer run was probably never spoken and has no timing to borrow.
+_MAX_UNTIMED_APPROVED_WORDS = 3
 # Six words was the fixed block size before blocks followed the sentences. The
 # character limit keeps a block within two lines at the style's font size.
 _MAX_BLOCK_WORDS = 6
@@ -872,7 +875,10 @@ def _generate_caption_atomic(
             expected_language=language_code,
             audio_duration=audio_duration,
         )
-        rendered = _render_ass(result.words, video_format=video_format)
+        rendered = _render_ass(
+            _restore_approved_wording(result.words, narration),
+            video_format=video_format,
+        )
         temporary.write_text(rendered, encoding="utf-8", newline="\n")
         with temporary.open("r+b") as handle:
             os.fsync(handle.fileno())
@@ -1001,6 +1007,93 @@ def _render_ass(words: tuple[CaptionWord, ...], *, video_format: str) -> str:
             + " ".join(karaoke)
         )
     return "\n".join(lines) + "\n"
+
+
+def _restore_approved_wording(
+    words: tuple[CaptionWord, ...],
+    narration: str,
+) -> tuple[CaptionWord, ...]:
+    """Show the approved narration's spelling over the transcription's timings.
+
+    The transcription decides when each word is on screen; the approved text
+    decides how it is written, so capitals, accents and punctuation follow what
+    the reviewer approved. Words only the transcription heard are kept as heard.
+    """
+    approved: list[str] = []
+    for raw in narration.split():
+        if _tokens(raw):
+            approved.append(raw)
+        elif approved and _displayable(f"{approved[-1]} {raw}"):
+            # A lone dash or ellipsis has no timing of its own.
+            approved[-1] = f"{approved[-1]} {raw}"
+    if not approved:
+        return words
+
+    restored: list[CaptionWord] = []
+    leading: list[str] = []
+
+    def spread(texts: list[str], start: Decimal, end: Decimal) -> None:
+        weights = [max(1, len("".join(_tokens(text)))) for text in texts]
+        total = Decimal(sum(weights))
+        cursor = start
+        for position, (text, weight) in enumerate(zip(texts, weights, strict=True)):
+            stop = (
+                end
+                if position == len(texts) - 1
+                else cursor + (end - start) * Decimal(weight) / total
+            )
+            restored.append(CaptionWord(text, cursor, stop))
+            cursor = stop
+
+    matcher = SequenceMatcher(
+        None,
+        ["".join(_tokens(word.text)) for word in words],
+        ["".join(_tokens(text)) for text in approved],
+        autojunk=False,
+    )
+    for tag, heard_from, heard_to, approved_from, approved_to in matcher.get_opcodes():
+        heard = words[heard_from:heard_to]
+        texts = [
+            text if _displayable(text) else ""
+            for text in approved[approved_from:approved_to]
+        ]
+        if tag == "insert":
+            if len(texts) > _MAX_UNTIMED_APPROVED_WORDS or not all(texts):
+                continue
+            if restored:
+                previous = restored.pop()
+                spread([previous.text, *texts], previous.start_seconds, previous.end_seconds)
+            else:
+                leading = texts
+            continue
+        if tag == "delete":
+            restored.extend(heard)
+            continue
+        if leading:
+            texts = [*leading, *texts]
+            leading = []
+        if len(texts) == len(heard):
+            restored.extend(
+                CaptionWord(text or word.text, word.start_seconds, word.end_seconds)
+                for text, word in zip(texts, heard, strict=True)
+            )
+        elif not all(texts):
+            restored.extend(heard)
+        else:
+            spread(
+                texts,
+                _timing_decimal(heard[0].start_seconds),
+                _timing_decimal(heard[-1].end_seconds),
+            )
+    return tuple(restored) if restored else words
+
+
+def _displayable(text: str) -> bool:
+    return (
+        0 < len(text) <= _MAX_WORD_LENGTH
+        and not any(character in text for character in "\r\n{}\\")
+        and not any(ord(character) < 32 for character in text)
+    )
 
 
 def _caption_blocks(
