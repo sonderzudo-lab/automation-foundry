@@ -31,8 +31,10 @@ import pytest
 from openai import APITimeoutError
 
 from src.pipeline.script_gen import (
+    ScriptLengthError,
     ScriptResult,
     _call_llm,
+    _count_words,
     _extract_narration,
     _strip_think_blocks,  # alias para sanitize_llm_output (compatibilidade)
     generate_script,
@@ -62,6 +64,10 @@ def _client_with(*responses: str) -> MagicMock:
     return client
 
 
+# Enchimento que leva um roteiro short de teste para dentro da faixa de 100–150 palavras.
+_FILLER = " ".join(["palavra"] * 110)
+
+
 def _timeout_error() -> APITimeoutError:
     """Cria um APITimeoutError com request httpx mínimo."""
     req = httpx.Request("POST", "http://localhost:11434/v1/chat/completions")
@@ -87,7 +93,7 @@ def test_exactly_four_llm_calls() -> None:
 
 def test_script_result_fields_match_llm_responses() -> None:
     """ScriptResult deve ter cada campo preenchido com a resposta da etapa correspondente."""
-    client = _client_with("Ângulo A", "Outline B", "Hook D", "Roteiro C")
+    client = _client_with("Ângulo A", "Outline B", "Hook D", f"Roteiro C {_FILLER}")
 
     result = generate_script(
         topic="Python em 2026",
@@ -100,8 +106,8 @@ def test_script_result_fields_match_llm_responses() -> None:
     assert result.angle == "Ângulo A"
     assert result.outline == "Outline B"
     assert result.hook == "Hook D"
-    assert result.full_script == "Hook D\n\nRoteiro C"
-    assert result.narration == "Hook D\n\nRoteiro C"
+    assert result.full_script == f"Hook D\n\nRoteiro C {_FILLER}"
+    assert result.narration == f"Hook D\n\nRoteiro C {_FILLER}"
 
 
 def test_hook_is_the_spoken_opening_of_the_script() -> None:
@@ -192,7 +198,7 @@ def test_no_recent_openings_omits_restriction_block() -> None:
 
 def test_short_format_mentions_duration_in_prompt() -> None:
     """Formato 'short' deve incluir referência à duração (60 segundos / Short) nos prompts."""
-    client = _client_with("ângulo", "outline", "hook", "roteiro")
+    client = _client_with("ângulo", "outline", "hook", _FILLER)
 
     generate_script(
         topic="Dica de Python",
@@ -267,6 +273,65 @@ def test_full_script_receives_hook_from_step3() -> None:
     user_prompt = next(m["content"] for m in messages if m["role"] == "user")
 
     assert "Abertura específica XYZ" in user_prompt
+
+
+# ── Testes da faixa de palavras da narração ───────────────────────────────────
+
+
+def _system_prompt(client: MagicMock, call_index: int) -> str:
+    messages: list[dict[str, str]] = client.chat.completions.create.call_args_list[
+        call_index
+    ].kwargs["messages"]
+    return next(m["content"] for m in messages if m["role"] == "system")
+
+
+def test_short_script_receives_the_word_budget_left_after_the_hook() -> None:
+    """A faixa 100–150 vale para a narração inteira; o restante desconta o hook."""
+    hook = " ".join(["abertura"] * 10)
+    client = _client_with("ângulo", "outline", hook, _FILLER)
+
+    generate_script(topic="Sono", persona="Ciência", fmt="short", client=client)
+
+    assert "entre 90 e 140 palavras faladas" in _system_prompt(client, 3)
+    assert "tentativa anterior" not in _system_prompt(client, 3)
+
+
+def test_short_script_outside_the_range_is_rewritten_with_feedback() -> None:
+    """Narração curta demais refaz só o restante do roteiro, informando o tamanho recusado."""
+    too_short = " ".join(["curto"] * 60)
+    client = _client_with("ângulo", "outline", "hook", too_short, _FILLER)
+
+    result = generate_script(topic="Sono", persona="Ciência", fmt="short", client=client)
+
+    assert client.chat.completions.create.call_count == 5
+    assert "A tentativa anterior ficou com 60 palavras" in _system_prompt(client, 4)
+    assert result.hook == "hook"
+    assert result.narration == f"hook\n\n{_FILLER}"
+
+
+def test_short_script_still_outside_the_range_raises_after_three_attempts() -> None:
+    """Depois de três tentativas fora da faixa, nenhum roteiro é devolvido."""
+    too_long = " ".join(["longo"] * 200)
+    client = _client_with("ângulo", "outline", "hook", too_long, too_long, too_long)
+
+    with pytest.raises(ScriptLengthError):
+        generate_script(topic="Sono", persona="Ciência", fmt="short", client=client)
+
+    assert client.chat.completions.create.call_count == 6
+
+
+def test_long_script_has_no_verified_word_range_yet() -> None:
+    """O formato long ainda não tem faixa validada e não recebe a instrução de tamanho."""
+    client = _client_with("ângulo", "outline", "hook", "roteiro")
+
+    generate_script(topic="Sono", persona="Ciência", fmt="long", client=client)
+
+    assert client.chat.completions.create.call_count == 4
+    assert "TAMANHO OBRIGATÓRIO" not in _system_prompt(client, 3)
+
+
+def test_word_count_ignores_standalone_punctuation() -> None:
+    assert _count_words("Ela disse — sem pressa — que 8 horas bastam.") == 8
 
 
 # ── Testes de retry em _call_llm ──────────────────────────────────────────────
@@ -681,6 +746,26 @@ def test_extract_narration_removes_invisible_emoji_components(
     assert _extract_narration(dirty) == expected
 
 
+def test_extract_narration_removes_bracket_labels_and_word_count_notes() -> None:
+    """Padrões vistos em gerações reais do qwen3:14b com a faixa de tamanho no prompt."""
+    text = (
+        "Dormir menos custa caro.\n\n"
+        "[10-40 segundos]\n"
+        "O cérebro decide pior. [Fecho] Priorize o sono.\n\n"
+        "(100 palavras)\n"
+        "(Total: ~120 palavras)"
+    )
+    assert _extract_narration(text) == (
+        "Dormir menos custa caro.\n\nO cérebro decide pior. Priorize o sono."
+    )
+
+
+def test_extract_narration_keeps_spoken_parentheses_about_words() -> None:
+    """Só a anotação de contagem some; um parêntese falado comum permanece."""
+    text = "Ela repetiu (sem pressa) as mesmas palavras."
+    assert _extract_narration(text) == text
+
+
 def test_extract_narration_preserves_portuguese_punctuation() -> None:
     """Travessão, aspas curvas e reticências ficam fora das faixas removidas."""
     text = "Ela disse — sem pressa — “durma bem”… e saiu."
@@ -782,7 +867,7 @@ def test_extract_narration_collapses_multiple_blank_lines() -> None:
 
 def test_narration_field_exists_in_script_result() -> None:
     """ScriptResult deve ter o campo `narration` preenchido."""
-    client = _client_with("ângulo", "outline", "hook", "roteiro limpo.")
+    client = _client_with("ângulo", "outline", "hook", f"roteiro limpo. {_FILLER}")
 
     result = generate_script(
         topic="Sono e memória",
@@ -806,7 +891,8 @@ def test_narration_has_no_emojis_or_markdown() -> None:
         "🧠 O cérebro apaga memórias enquanto você dorme.\n"
         "---\n"
         "*pausa dramática*\n"
-        "Isso acontece porque o sono REM é essencial para consolidar o aprendizado."
+        "Isso acontece porque o sono REM é essencial para consolidar o aprendizado.\n"
+        f"{_FILLER}"
     )
     client = _client_with("ângulo", "outline", "hook", dirty_script)
 
@@ -830,7 +916,7 @@ def test_narration_has_no_emojis_or_markdown() -> None:
 
 def test_narration_differs_from_full_script_when_dirty() -> None:
     """narration e full_script devem ser diferentes quando o script tem formatação."""
-    dirty_script = "**Seção (0-5s):**\n🚀 Texto real aqui."
+    dirty_script = f"**Seção (0-5s):**\n🚀 Texto real aqui. {_FILLER}"
     client = _client_with("ângulo", "outline", "hook", dirty_script)
 
     result = generate_script(
@@ -895,7 +981,7 @@ def test_full_script_clean_when_qwen3_emits_orphaned_think() -> None:
         _fake_response(_QWEN3_ORPHANED_PREFIX + pt_content["angle"]),
         _fake_response(_QWEN3_ORPHANED_PREFIX + pt_content["outline"]),
         _fake_response(_QWEN3_ORPHANED_PREFIX + pt_content["hook"]),
-        _fake_response(_QWEN3_ORPHANED_PREFIX + pt_content["script"]),
+        _fake_response(_QWEN3_ORPHANED_PREFIX + pt_content["script"] + f"\n{_FILLER}"),
     ]
 
     result = generate_script(
@@ -924,7 +1010,8 @@ def test_narration_clean_when_full_script_has_complete_think_block() -> None:
     script_with_think = (
         "<think>Checking structure one more time...</think>\n\n"
         "**Gancho (0-5s):**\n"
-        "O sono molda cada memória que você tem."
+        "O sono molda cada memória que você tem.\n"
+        f"{_FILLER}"
     )
     client = _client_with(
         "ângulo editorial",

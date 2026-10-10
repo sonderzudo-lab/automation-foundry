@@ -29,7 +29,7 @@ from src.pipeline.a1_executor import (
     parse_content_script_form,
     prepare_content_script_run,
 )
-from src.pipeline.script_gen import EmptyResponseError, ScriptResult
+from src.pipeline.script_gen import EmptyResponseError, ScriptLengthError, ScriptResult
 from src.platform.approval_service import approval_payload_digest, decide_approval
 from src.platform.control_service import request_run_cancellation
 from src.platform.models import (
@@ -235,6 +235,39 @@ async def test_a1_failure_is_structured_retryable_and_has_no_artifact(
     }
     assert step is not None and step.error == run.error
     assert artifacts == []
+    assert not (tmp_path / "storage").exists()
+
+
+async def test_a1_script_outside_the_word_range_fails_retryable_without_artifact(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    def too_short(*_args: object) -> ScriptResult:
+        raise ScriptLengthError("private narration detail")
+
+    result = await execute_content_script_run(
+        session,
+        idempotency_key="content-a1-length",
+        input_payload=_input_payload(),
+        script_generator=too_short,
+        storage_root=tmp_path / "storage",
+    )
+
+    run = await session.get(Run, result.run_id)
+    step = await session.get(StepRun, result.step_run_id)
+    artifacts = list((await session.scalars(select(Artifact))).all())
+    approvals = list((await session.scalars(select(Approval))).all())
+    assert run is not None and run.status == RunStatus.FAILED.value
+    assert step is not None and step.status == RunStatus.FAILED.value
+    assert run.error == step.error == {
+        "code": "CONTENT_SCRIPT_LENGTH_OUT_OF_RANGE",
+        "exception_type": "RetryableTaskError",
+        "retryable": True,
+        "timed_out": False,
+    }
+    assert artifacts == []
+    assert approvals == []
+    assert "private narration detail" not in str(run.error)
     assert not (tmp_path / "storage").exists()
 
 

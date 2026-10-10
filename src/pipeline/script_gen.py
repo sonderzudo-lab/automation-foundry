@@ -60,6 +60,16 @@ class EmptyResponseError(RuntimeError):
     """Lançada quando o Ollama retorna resposta vazia ou só whitespace."""
 
 
+class ScriptLengthError(RuntimeError):
+    """Lançada quando a narração segue fora da faixa de palavras após todas as tentativas."""
+
+
+# Faixa de palavras faladas aceita por formato, a mesma prometida em _FORMAT_CONTEXT.
+# O formato long ainda não atravessou uma run real e segue sem faixa verificada.
+_NARRATION_WORD_RANGE: dict[str, tuple[int, int]] = {"short": (100, 150)}
+_LENGTH_ATTEMPTS = 3
+
+
 # ── Constante de idioma ───────────────────────────────────────────────────────
 
 # Bloco adicionado ao final de TODOS os system prompts para prevenir misturas de idioma.
@@ -133,6 +143,11 @@ _TIMING_ANNOTATION_RE = re.compile(
     re.UNICODE,
 )
 
+# Rótulos entre colchetes ([10-40 segundos], [Desenvolvimento]) e a contagem que o
+# modelo anota ao receber uma faixa de tamanho: (100 palavras), (Total: ~120 palavras).
+_BRACKET_LABEL_RE = re.compile(r"\[[^\]\n]{0,60}\]")
+_WORD_COUNT_NOTE_RE = re.compile(r"\([^)\n]{0,20}\d+\s+palavras[^)\n]{0,20}\)", re.IGNORECASE)
+
 
 # ── Funções de limpeza ────────────────────────────────────────────────────────
 
@@ -197,6 +212,8 @@ def _normalize_markdown(text: str) -> str:
     text = _MD_UNDERLINE_RE.sub(r"\1", text)       # __texto__ → texto
     text = _STAGE_DIRECTION_RE.sub("", text)       # *stage* → remove
     text = _TIMING_ANNOTATION_RE.sub("", text)     # (0-5s) → remove
+    text = _BRACKET_LABEL_RE.sub("", text)         # [10-40 segundos] → remove
+    text = _WORD_COUNT_NOTE_RE.sub("", text)       # (100 palavras) → remove
     text = re.sub(r"[*#_]+", "", text)             # asteriscos/hashes soltos
     return text.strip()
 
@@ -269,8 +286,10 @@ def _extract_narration(text: str) -> str:
         line = _MD_BOLD_RE.sub(r"\1", line)
         line = _MD_UNDERLINE_RE.sub(r"\1", line)
 
-        # 6. Remove anotações de tempo
+        # 6. Remove anotações de tempo, rótulos entre colchetes e contagem de palavras
         line = _TIMING_ANNOTATION_RE.sub("", line)
+        line = _BRACKET_LABEL_RE.sub("", line)
+        line = _WORD_COUNT_NOTE_RE.sub("", line)
 
         # 7. Remove emojis
         line = _EMOJI_RE.sub("", line)
@@ -501,15 +520,37 @@ def _prompts_full_script(
     hook: str,
     persona: str,
     fmt: Literal["short", "long"],
+    *,
+    body_words: tuple[int, int] | None = None,
+    previous_words: int | None = None,
 ) -> tuple[str, str]:
-    """Etapa 4: restante do roteiro, que continua a partir do hook já escrito."""
+    """
+    Etapa 4: restante do roteiro, que continua a partir do hook já escrito.
+
+    body_words é a faixa de palavras que cabe ao restante depois de descontado o
+    hook; previous_words informa o tamanho de uma tentativa recusada.
+    """
+    length_block = ""
+    if body_words is not None:
+        length_block = (
+            f"\n\nTAMANHO OBRIGATÓRIO: escreva entre {body_words[0]} e {body_words[1]} "
+            "palavras faladas, sem contar a abertura. Não anote a contagem na resposta."
+        )
+        if previous_words is not None:
+            length_block += (
+                f" A tentativa anterior ficou com {previous_words} palavras e foi recusada; "
+                "ajuste o tamanho."
+            )
+
     system = (
         f"{_system_base(persona, fmt)}\n\n"
         "Sua tarefa: escrever o RESTANTE DO ROTEIRO, seção por seção, seguindo o outline. "
         "A abertura do vídeo já está escrita e será narrada antes do seu texto: "
         "continue a partir dela, sem repeti-la nem reescrevê-la. "
         "Inclua falas naturais, transições e linguagem coloquial PT-BR. "
-        "Escreva APENAS o texto falado — sem didascálias de câmera ou stage directions."
+        "Escreva APENAS o texto falado — sem didascálias de câmera ou stage directions, "
+        "sem rótulos de seção, marcações de tempo ou aspas em volta do texto."
+        f"{length_block}"
     )
     user = (
         f"Tema: {topic}\n"
@@ -532,6 +573,11 @@ def _drop_repeated_opening(body: str, hook: str) -> str:
         re.IGNORECASE,
     )
     return body[repeated.end():] if repeated else body
+
+
+def _count_words(text: str) -> int:
+    """Conta as palavras faladas: tokens com ao menos uma letra ou dígito."""
+    return sum(1 for token in text.split() if any(char.isalnum() for char in token))
 
 
 # ── Função principal ──────────────────────────────────────────────────────────
@@ -574,18 +620,61 @@ def generate_script(
     # O hook passa pela mesma limpeza da narração: o texto revisado é o texto falado.
     hook = _extract_narration(_call_llm(client, system=sys3, user=usr3, step="hook"))
 
-    sys4, usr4 = _prompts_full_script(topic, angle, outline, hook, persona, fmt)
-    body = _drop_repeated_opening(
-        _call_llm(client, system=sys4, user=usr4, step="full_script"),
-        hook,
+    # O prompt sozinho não segura o tamanho: a narração é contada e, fora da faixa,
+    # só o restante do roteiro é refeito, com o tamanho recusado informado ao modelo.
+    word_range = _NARRATION_WORD_RANGE.get(fmt)
+    hook_words = _count_words(hook)
+    body_range = (
+        None
+        if word_range is None
+        else (max(1, word_range[0] - hook_words), max(1, word_range[1] - hook_words))
     )
-    full_script = f"{hook}\n\n{body}"
+    previous_words: int | None = None
+    for attempt in range(1, _LENGTH_ATTEMPTS + 1):
+        sys4, usr4 = _prompts_full_script(
+            topic,
+            angle,
+            outline,
+            hook,
+            persona,
+            fmt,
+            body_words=body_range,
+            previous_words=previous_words,
+        )
+        body = _drop_repeated_opening(
+            _call_llm(client, system=sys4, user=usr4, step="full_script"),
+            hook,
+        )
+        full_script = f"{hook}\n\n{body}"
 
-    # Limpeza programática: mais rápida, determinística e sem custo de GPU extra
-    # vs. uma 5ª chamada LLM (que adicionaria ~30s e poderia introduzir novos artefatos).
-    narration = _extract_narration(full_script)
+        # Limpeza programática: mais rápida, determinística e sem custo de GPU extra
+        # vs. uma 5ª chamada LLM (que adicionaria ~30s e poderia introduzir novos artefatos).
+        narration = _extract_narration(full_script)
+        words = _count_words(narration)
+        if word_range is None or word_range[0] <= words <= word_range[1]:
+            break
+        log.warning(
+            "script_length_out_of_range",
+            fmt=fmt,
+            attempt=attempt,
+            words=words,
+            minimum=word_range[0],
+            maximum=word_range[1],
+        )
+        previous_words = max(0, words - hook_words)
+    else:
+        raise ScriptLengthError(
+            f"narração com {words} palavras após {_LENGTH_ATTEMPTS} tentativas "
+            f"no formato '{fmt}'"
+        )
 
-    log.info("script_gen_done", topic=topic, fmt=fmt, narration_chars=len(narration))
+    log.info(
+        "script_gen_done",
+        topic=topic,
+        fmt=fmt,
+        narration_chars=len(narration),
+        narration_words=words,
+    )
 
     return ScriptResult(
         angle=angle,

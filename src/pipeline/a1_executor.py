@@ -51,7 +51,12 @@ from src.pipeline.narration_review import (
     load_narration_review,
     request_narration_approval,
 )
-from src.pipeline.script_gen import EmptyResponseError, ScriptResult, generate_script
+from src.pipeline.script_gen import (
+    EmptyResponseError,
+    ScriptLengthError,
+    ScriptResult,
+    generate_script,
+)
 from src.pipeline.thumbnail_review import (
     THUMBNAIL_REVIEW_APPROVAL_ACTION,
     ThumbnailReview,
@@ -324,6 +329,9 @@ async def execute_content_script_run(
             )
         except (APITimeoutError, APIConnectionError, EmptyResponseError) as exc:
             raise RetryableTaskError("CONTENT_LLM_UNAVAILABLE") from exc
+        except ScriptLengthError as exc:
+            # Outra geração pode acertar o tamanho, então um retry explícito é permitido.
+            raise RetryableTaskError("CONTENT_SCRIPT_LENGTH_OUT_OF_RANGE") from exc
         _validate_script_result(generated)
         try:
             _write_script_bundle(
