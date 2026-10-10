@@ -91,6 +91,12 @@ _MIN_TRANSCRIPT_MATCH = Decimal("0.85")
 _MATCH_QUANTUM = Decimal("0.0000000001")
 _MIN_REPAIRED_WORD_SECONDS = Decimal("0.02")
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+", re.ASCII)
+_SENTENCE_END = re.compile(r"[.!?…][’”\"')\]]*$")
+_CLAUSE_END = re.compile(r"[,;:][’”\"')\]]*$")
+# Six words was the fixed block size before blocks followed the sentences. The
+# character limit keeps a block within two lines at the style's font size.
+_MAX_BLOCK_WORDS = 6
+_MAX_BLOCK_CHARACTERS = {"short": 42, "long": 60}
 
 
 class CaptionRetryableAdapterError(RuntimeError):
@@ -973,8 +979,10 @@ def _render_ass(words: tuple[CaptionWord, ...], *, video_format: str) -> str:
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    for offset in range(0, len(words), 6):
-        group = words[offset : offset + 6]
+    for group in _caption_blocks(
+        words,
+        max_characters=_MAX_BLOCK_CHARACTERS["short" if video_format == "short" else "long"],
+    ):
         start = _timing_decimal(group[0].start_seconds)
         end = _timing_decimal(group[-1].end_seconds)
         karaoke: list[str] = []
@@ -993,6 +1001,104 @@ def _render_ass(words: tuple[CaptionWord, ...], *, video_format: str) -> str:
             + " ".join(karaoke)
         )
     return "\n".join(lines) + "\n"
+
+
+def _caption_blocks(
+    words: tuple[CaptionWord, ...],
+    *,
+    max_characters: int,
+) -> list[tuple[CaptionWord, ...]]:
+    """Group timed words into on-screen blocks that follow the spoken phrasing.
+
+    A block never runs past the end of a sentence. Inside a sentence, clauses
+    are kept together while they fit; a clause that does not fit is cut into
+    even parts, so no block is left with a single trailing word.
+    """
+    blocks: list[tuple[CaptionWord, ...]] = []
+    sentence: list[CaptionWord] = []
+    for word in words:
+        sentence.append(word)
+        if _SENTENCE_END.search(word.text.strip()):
+            blocks.extend(_sentence_blocks(sentence, max_characters=max_characters))
+            sentence = []
+    if sentence:
+        blocks.extend(_sentence_blocks(sentence, max_characters=max_characters))
+    return blocks
+
+
+def _sentence_blocks(
+    sentence: list[CaptionWord],
+    *,
+    max_characters: int,
+) -> list[tuple[CaptionWord, ...]]:
+    clauses: list[list[CaptionWord]] = []
+    clause: list[CaptionWord] = []
+    for word in sentence:
+        clause.append(word)
+        if _CLAUSE_END.search(word.text.strip()):
+            clauses.append(clause)
+            clause = []
+    if clause:
+        clauses.append(clause)
+
+    merged: list[list[CaptionWord]] = []
+    for clause in clauses:
+        if merged and _fits(merged[-1] + clause, max_characters=max_characters):
+            merged[-1] = merged[-1] + clause
+        else:
+            merged.append(clause)
+    parts: list[list[CaptionWord]] = []
+    for chunk in merged:
+        parts.extend(_even_parts(chunk, max_characters=max_characters))
+
+    # A lone word ("Primeiro,") reads better with its neighbour: join the block
+    # that follows it, else the one before, else borrow that block's last word.
+    index = 0
+    while len(parts) > 1 and index < len(parts):
+        if len(parts[index]) != 1:
+            index += 1
+            continue
+        if index + 1 < len(parts) and _fits(
+            parts[index] + parts[index + 1],
+            max_characters=max_characters,
+        ):
+            parts[index : index + 2] = [parts[index] + parts[index + 1]]
+        elif index > 0 and _fits(
+            parts[index - 1] + parts[index],
+            max_characters=max_characters,
+        ):
+            parts[index - 1 : index + 1] = [parts[index - 1] + parts[index]]
+        elif index > 0 and len(parts[index - 1]) > 2:
+            parts[index] = [parts[index - 1][-1], *parts[index]]
+            parts[index - 1] = parts[index - 1][:-1]
+            index += 1
+        else:
+            index += 1
+    return [tuple(part) for part in parts]
+
+
+def _even_parts(
+    chunk: list[CaptionWord],
+    *,
+    max_characters: int,
+) -> list[list[CaptionWord]]:
+    for part_count in range(1, len(chunk) + 1):
+        parts = [
+            chunk[index * len(chunk) // part_count : (index + 1) * len(chunk) // part_count]
+            for index in range(part_count)
+        ]
+        if all(
+            len(part) == 1 or _fits(part, max_characters=max_characters)
+            for part in parts
+        ):
+            return parts
+    return [[word] for word in chunk]
+
+
+def _fits(group: list[CaptionWord], *, max_characters: int) -> bool:
+    if len(group) > _MAX_BLOCK_WORDS:
+        return False
+    return len(" ".join(word.text.strip() for word in group)) <= max_characters
 
 
 def _tokens(value: str) -> list[str]:

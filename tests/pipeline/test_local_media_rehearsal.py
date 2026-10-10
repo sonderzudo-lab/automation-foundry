@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 from collections.abc import AsyncGenerator
 from decimal import Decimal
@@ -194,7 +193,16 @@ async def test_local_media_rehearsal_uses_real_a3_import_and_a4_timing(
     caption_text = (storage_root / caption_artifact.relative_path).read_text("utf-8")
     dialogues = _ASS_DIALOGUE.findall(caption_text)
     narration_words = rehearsal_script().narration.split()
-    assert len(dialogues) == math.ceil(len(narration_words) / 6)
+    blocks = [
+        re.sub(r"\{[^}]*\}", "", line.split(",", 9)[9]).split()
+        for line in caption_text.splitlines()
+        if line.startswith("Dialogue:")
+    ]
+    assert len(blocks) == len(dialogues)
+    assert all(1 <= len(block) <= 6 for block in blocks)
+    # A block may end a sentence, but never continues past one.
+    assert not any(word.endswith((".", "!", "?")) for block in blocks for word in block[:-1])
+    assert [word for block in blocks for word in block] == narration_words
     assert caption_text.count("{\\kf") == len(narration_words)
     assert all(word.strip(".,") in caption_text for word in narration_words)
     first_start = _ass_seconds(*dialogues[0][:3])

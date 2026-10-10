@@ -910,3 +910,77 @@ async def test_a4_marks_run_failed_when_evidence_registration_fails(
     assert run.error is not None
     assert run.error["code"] == "CONTENT_CAPTIONS_EVIDENCE_PERSIST_FAILED"
     assert caption_artifacts == []
+
+
+def _timed_words(text: str) -> tuple[CaptionWord, ...]:
+    return tuple(
+        CaptionWord(
+            text=word,
+            start_seconds=Decimal(index) / 2,
+            end_seconds=Decimal(index + 1) / 2,
+        )
+        for index, word in enumerate(text.split())
+    )
+
+
+def _block_texts(text: str, *, max_characters: int = 42) -> list[str]:
+    return [
+        " ".join(word.text for word in block)
+        for block in captions._caption_blocks(
+            _timed_words(text),
+            max_characters=max_characters,
+        )
+    ]
+
+
+def test_caption_blocks_follow_sentences_and_clauses() -> None:
+    blocks = _block_texts(
+        "Descubra sugestões práticas para organizar sua mesa antes de começar um "
+        "projeto criativo. Primeiro, separa só os itens que você vai usar. O resto, "
+        "põe em outro lugar. E soltar a mente."
+    )
+
+    assert blocks == [
+        "Descubra sugestões práticas para",
+        "organizar sua mesa antes",
+        "de começar um projeto criativo.",
+        "Primeiro, separa só os itens",
+        "que você vai usar.",
+        "O resto, põe em outro lugar.",
+        "E soltar a mente.",
+    ]
+
+
+def test_caption_blocks_respect_limits_and_keep_every_word_once() -> None:
+    text = (
+        "Uma frase bem comprida sem nenhuma vírgula que precisa ser dividida em "
+        "partes parecidas para caber na tela. Não. Extraordinariamente "
+        "incompreensibilíssimas circunstâncias, afinal."
+    )
+    blocks = _block_texts(text)
+
+    assert " ".join(blocks).split() == text.split()
+    assert all(len(block.split()) <= 6 for block in blocks)
+    assert all(len(block) <= 42 or len(block.split()) == 1 for block in blocks)
+    assert "Não." in blocks
+    # Eighteen words without a comma are cut into even parts, not 6 + 6 + 6 by luck
+    # of a fixed step: the same rule gives 4 + 5 for nine words.
+    assert [len(block.split()) for block in blocks[:3]] == [6, 6, 6]
+    assert [
+        len(block.split())
+        for block in _block_texts("Um dois três quatro cinco seis sete oito nove.")
+    ] == [4, 5]
+
+
+def test_rendered_ass_keeps_word_timings_inside_each_block() -> None:
+    rendered = captions._render_ass(
+        _timed_words("Primeiro, separa os itens. Depois, guarda o resto."),
+        video_format="short",
+    )
+    dialogues = [line for line in rendered.splitlines() if line.startswith("Dialogue:")]
+
+    assert len(dialogues) == 2
+    assert dialogues[0].startswith("Dialogue: 0,0:00:00.00,0:00:02.00,")
+    assert dialogues[1].startswith("Dialogue: 0,0:00:02.00,0:00:04.00,")
+    assert rendered.count("{\\kf50}") == 8
+
