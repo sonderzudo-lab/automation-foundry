@@ -197,8 +197,9 @@ class ContentScriptReview:
     narration: str
     # Facts the operator supplied with the topic and the narration sentences the
     # deterministic check could not tie to the topic or to one of those facts.
+    # None means the bundle predates the check, which is not the same as no finding.
     facts: tuple[SourcedFact, ...] = ()
-    unsourced_claims: tuple[str, ...] = ()
+    unsourced_claims: tuple[str, ...] | None = None
 
 
 def parse_content_script_form(values: dict[str, str]) -> dict[str, object]:
@@ -381,7 +382,7 @@ async def execute_content_script_run(
             "model": settings.ollama_model,
             "full_script_characters": len(generated.full_script),
             "narration_characters": len(generated.narration),
-            "unsourced_claims": len(generated.unsourced_claims),
+            "unsourced_claims": len(generated.unsourced_claims or []),
         }
 
     task_result = await execute_task_step(
@@ -928,7 +929,9 @@ async def load_content_script_review(
         full_script=result.full_script,
         narration=result.narration,
         facts=tuple(input_data.facts),
-        unsourced_claims=tuple(result.unsourced_claims),
+        unsourced_claims=(
+            None if result.unsourced_claims is None else tuple(result.unsourced_claims)
+        ),
     )
 
 

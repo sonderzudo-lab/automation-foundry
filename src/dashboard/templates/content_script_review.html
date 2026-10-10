@@ -14,7 +14,9 @@
 <section class="card">
   <div class="card-header"><h2 class="card-title" style="font-size:1rem">Frases para conferir</h2><p class="card-description">Verificação automática e heurística da narração: marca números fora da pauta e dos fatos, proporções por extenso e apelos a estudos. Não confirma se algo é verdadeiro e pode marcar frases inofensivas.</p></div>
   <div class="card-content">
-    {% if review.unsourced_claims %}
+    {% if review.unsourced_claims is none %}
+    <p class="note">Este roteiro não passou pela verificação automática. Nenhuma frase foi analisada.</p>
+    {% elif review.unsourced_claims %}
     <ul class="prose">{% for claim in review.unsourced_claims %}<li>{{ claim }}</li>{% endfor %}</ul>
     {% else %}
     <p class="note">Nenhuma frase marcada. Isso não substitui a sua leitura do roteiro.</p>

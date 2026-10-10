@@ -510,6 +510,9 @@ async def test_a1_approval_reviews_exact_bundle_and_finalizes_idempotently(
     )
     assert review.full_script == _generated_script().full_script
     assert review.narration == _generated_script().narration
+    # Um roteiro sem a verificação não é o mesmo que um roteiro sem frases marcadas.
+    assert review.unsourced_claims is None
+    assert review.facts == ()
     assert not hasattr(review, "persona")
 
     await decide_approval(

@@ -56,7 +56,8 @@ class ScriptResult(BaseModel):
     hook: str         # Abertura narrada: o início de full_script, já sem formatação
     narration: str    # Texto puro para TTS: sem emojis, markdown, stage directions
     # Frases da narração com número, proporção ou apelo a estudo que a pauta não sustenta.
-    unsourced_claims: list[str] = Field(default_factory=list)
+    # None significa que a verificação não rodou, como nos bundles anteriores a ela.
+    unsourced_claims: list[str] | None = None
 
 
 class SourcedFact(BaseModel):
