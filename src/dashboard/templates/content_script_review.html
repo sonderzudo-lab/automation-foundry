@@ -11,6 +11,26 @@
   <div class="card-header"><h2 class="card-title" style="font-size:1rem">Resumo</h2></div>
   <div class="card-content"><dl class="kv"><dt>Tema</dt><dd>{{ review.topic }}</dd><dt>Formato</dt><dd>{{ review.format }}</dd><dt>SHA-256</dt><dd>{{ ui.hash_chip(review.sha256, "SHA-256 do bundle") }}</dd></dl></div>
 </section>
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Frases para conferir</h2><p class="card-description">Verificação automática e heurística da narração: marca números fora da pauta e dos fatos, proporções por extenso e apelos a estudos. Não confirma se algo é verdadeiro e pode marcar frases inofensivas.</p></div>
+  <div class="card-content">
+    {% if review.unsourced_claims %}
+    <ul class="prose">{% for claim in review.unsourced_claims %}<li>{{ claim }}</li>{% endfor %}</ul>
+    {% else %}
+    <p class="note">Nenhuma frase marcada. Isso não substitui a sua leitura do roteiro.</p>
+    {% endif %}
+  </div>
+</section>
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Fatos com fonte</h2><p class="card-description">Os únicos dados que o roteiro podia citar. Sem fatos, ele foi instruído a não citar números nem estudos.</p></div>
+  <div class="card-content">
+    {% if review.facts %}
+    <ul class="prose">{% for fact in review.facts %}<li>{{ fact.claim }} <span class="muted">· fonte: {{ fact.source }}</span></li>{% endfor %}</ul>
+    {% else %}
+    <p class="note">Nenhum fato com fonte foi fornecido nesta pauta.</p>
+    {% endif %}
+  </div>
+</section>
 <section class="card"><div class="card-header"><h2 class="card-title" style="font-size:1rem">Ângulo</h2></div><div class="card-content"><pre class="prose">{{ review.angle }}</pre></div></section>
 <section class="card"><div class="card-header"><h2 class="card-title" style="font-size:1rem">Estrutura</h2></div><div class="card-content"><pre class="prose">{{ review.outline }}</pre></div></section>
 <section class="card"><div class="card-header"><h2 class="card-title" style="font-size:1rem">Hook</h2></div><div class="card-content"><pre class="prose" style="font-size:1.0625rem;font-weight:500">{{ review.hook }}</pre></div></section>

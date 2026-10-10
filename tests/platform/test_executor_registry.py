@@ -47,6 +47,7 @@ async def test_registry_dispatches_only_declared_manual_executor(
         "persona",
         "format",
         "recent_openings",
+        "facts",
     ]
     assert smoke_executor.queue.value == "io"
     assert smoke_executor.runs_in_background is False
@@ -73,10 +74,12 @@ def test_registry_validates_executor_owned_manual_input() -> None:
             "persona": "Ciência acessível",
             "format": "short",
             "recent_openings": "",
+            "facts": "",
         },
     )
     assert payload["format"] == "short"
     assert payload["recent_openings"] == []
+    assert "facts" not in payload
 
     with pytest.raises(ValueError, match="do not match"):
         parse_registered_manual_input(

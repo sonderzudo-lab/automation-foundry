@@ -2984,13 +2984,20 @@ async def test_dashboard_reviews_and_approves_complete_a1_script(
                 "persona": "persona-private-must-not-render",
                 "format": "short",
                 "recent_openings": [],
+                "facts": [
+                    {
+                        "claim": "Adultos precisam de 7 horas de sono",
+                        "source": "https://example.test/<sono>",
+                    }
+                ],
             },
-            script_generator=lambda *_args: ScriptResult(
+            script_generator=lambda *_args, **_kwargs: ScriptResult(
                 angle="Ângulo editorial completo",
                 outline="1. Hook\n2. Explicação\n3. Fecho",
                 full_script="Roteiro completo para revisão humana.",
                 hook="Hook editorial",
                 narration="Narração integral para revisão humana.",
+                unsourced_claims=["Quem dorme pouco erra o dobro."],
             ),
             storage_root=storage_root,
         )
@@ -3036,6 +3043,11 @@ async def test_dashboard_reviews_and_approves_complete_a1_script(
     assert review.headers["cache-control"] == "no-store"
     assert "Roteiro completo para revisão humana." in review.text
     assert "Narração integral para revisão humana." in review.text
+    assert "Frases para conferir" in review.text
+    assert "Quem dorme pouco erra o dobro." in review.text
+    assert "Adultos precisam de 7 horas de sono" in review.text
+    assert "fonte: https://example.test/&lt;sono&gt;" in review.text
+    assert "Nenhuma frase marcada" not in review.text
     assert "persona-private-must-not-render" not in review.text
     assert f'action="/approvals/{result.approval_id}/approve"' in review.text
     assert f'action="/approvals/{result.approval_id}/reject"' in review.text

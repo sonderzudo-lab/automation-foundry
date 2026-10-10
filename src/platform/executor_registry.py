@@ -139,6 +139,14 @@ _EXECUTORS = {
                 False,
                 2_000,
             ),
+            ManualInputField(
+                "facts",
+                "Fatos com fonte, um por linha: fato | fonte (opcional; sem eles o roteiro "
+                "não cita números nem estudos)",
+                "textarea",
+                False,
+                6_000,
+            ),
         ),
         parse_manual_input=parse_content_script_form,
         prepare=prepare_content_script_run,

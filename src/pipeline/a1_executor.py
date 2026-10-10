@@ -195,20 +195,34 @@ class ContentScriptReview:
     hook: str
     full_script: str
     narration: str
+    # Facts the operator supplied with the topic and the narration sentences the
+    # deterministic check could not tie to the topic or to one of those facts.
+    facts: tuple[SourcedFact, ...] = ()
+    unsourced_claims: tuple[str, ...] = ()
 
 
 def parse_content_script_form(values: dict[str, str]) -> dict[str, object]:
     """Normalize dashboard fields through the same typed A1 input boundary."""
-    expected = {"topic", "persona", "format", "recent_openings"}
+    expected = {"topic", "persona", "format", "recent_openings", "facts"}
     if set(values) - expected:
         raise ValueError("unsupported content script input field")
     openings = values.get("recent_openings", "")
+    facts: list[dict[str, str]] = []
+    for line in values.get("facts", "").splitlines():
+        if not line.strip():
+            continue
+        # The source is whatever follows the last separator, so a claim may contain "|".
+        claim, separator, source = line.rpartition("|")
+        if not separator:
+            raise ValueError("each fact needs its source: 'fato | fonte'")
+        facts.append({"claim": claim.strip(), "source": source.strip()})
     payload = ContentScriptInput.model_validate(
         {
             "topic": values.get("topic"),
             "persona": values.get("persona"),
             "format": values.get("format"),
             "recent_openings": openings.splitlines(),
+            "facts": facts,
         }
     )
     return payload.as_payload()
@@ -913,6 +927,8 @@ async def load_content_script_review(
         hook=result.hook,
         full_script=result.full_script,
         narration=result.narration,
+        facts=tuple(input_data.facts),
+        unsourced_claims=tuple(result.unsourced_claims),
     )
 
 
@@ -1338,6 +1354,11 @@ def _load_verified_script_bundle(
             raise ValueError("persona mismatch")
         if payload.get("format") != input_data.format:
             raise ValueError("format mismatch")
+        # Bundles written before the field existed carry no facts at all.
+        if payload.get("facts", []) != [
+            fact.model_dump(mode="json") for fact in input_data.facts
+        ]:
+            raise ValueError("facts mismatch")
         result = ScriptResult.model_validate(payload.get("result"))
         if any(
             not getattr(result, field).strip()

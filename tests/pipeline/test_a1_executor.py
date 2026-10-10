@@ -96,6 +96,31 @@ def test_manual_form_is_typed_bounded_and_normalized() -> None:
         "format": "short",
         "recent_openings": ["Primeira abertura", "Segunda abertura"],
     }
+    with_facts = parse_content_script_form(
+        {
+            "topic": "Sono e memória",
+            "persona": "Ciência acessível",
+            "format": "short",
+            "recent_openings": "",
+            "facts": (
+                "Adultos precisam de 7 horas de sono | https://example.test/sono\n\n"
+                "  A | B dura 90 minutos |  Manual do sono, p. 12  "
+            ),
+        }
+    )
+    assert with_facts["facts"] == [
+        {"claim": "Adultos precisam de 7 horas de sono", "source": "https://example.test/sono"},
+        {"claim": "A | B dura 90 minutos", "source": "Manual do sono, p. 12"},
+    ]
+    with pytest.raises(ValueError, match="fato \\| fonte"):
+        parse_content_script_form(
+            {
+                "topic": "Sono e memória",
+                "persona": "Ciência acessível",
+                "format": "short",
+                "facts": "Número solto sem fonte",
+            }
+        )
     with pytest.raises(ValidationError):
         parse_content_script_form(
             {
@@ -250,6 +275,16 @@ async def test_a1_passes_sourced_facts_and_records_unsourced_claims(
     )
     assert bundle["facts"] == [fact]
     assert bundle["result"]["unsourced_claims"] == ["Quem dorme pouco erra o dobro."]
+
+    approval = await session.get(Approval, result.approval_id)
+    assert approval is not None
+    review = await load_content_script_review(
+        session,
+        approval=approval,
+        storage_root=tmp_path / "storage",
+    )
+    assert review.facts == (SourcedFact(**fact),)
+    assert review.unsourced_claims == ("Quem dorme pouco erra o dobro.",)
 
 
 def test_a1_input_without_facts_keeps_the_payload_of_earlier_runs() -> None:
