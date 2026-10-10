@@ -72,9 +72,19 @@ class Settings(BaseSettings):
 
     # Kokoro permanece apenas em modo de teste local até a qualidade PT-BR e o
     # risco residual de proveniência por voz serem aceitos explicitamente.
-    content_tts_backend: Literal["disabled", "kokoro_quality_test"] = "disabled"
+    content_tts_backend: Literal[
+        "disabled",
+        "kokoro_quality_test",
+        "qwen3_tts_clone_quality_test",
+    ] = "disabled"
     content_tts_voice_id: str = Field(default="pf_dora", min_length=1, max_length=100)
     content_tts_language_code: str = Field(default="p", min_length=1, max_length=20)
+    # Qwen3-TTS roda em um ambiente virtual separado e clona uma gravação de referência
+    # do proprietário (ou de locutor com autorização escrita), com a transcrição dela.
+    content_tts_qwen3_python_path: str | None = Field(default=None, max_length=1000)
+    content_tts_qwen3_model_dir: str | None = Field(default=None, max_length=1000)
+    content_tts_reference_audio_path: str | None = Field(default=None, max_length=1000)
+    content_tts_reference_text_path: str | None = Field(default=None, max_length=1000)
     # Quando habilitado, A2 pausa para audição humana antes de A3/A4/A5.
     content_narration_review_enabled: bool = False
     # FLUX.1 permanece bloqueado. O único modo opt-in importa PNGs escolhidos
@@ -245,6 +255,28 @@ class Settings(BaseSettings):
             raise ValueError("Kokoro quality test requires language code 'p'")
         if self.content_tts_voice_id not in {"pf_dora", "pm_alex", "pm_santa"}:
             raise ValueError("Kokoro quality test requires an audited PT-BR voice ID")
+        return self
+
+    @model_validator(mode="after")
+    def _qwen3_clone_quality_test_must_name_its_local_files(self) -> Settings:
+        if self.content_tts_backend != "qwen3_tts_clone_quality_test":
+            return self
+        if self.content_tts_language_code != "pt":
+            raise ValueError("Qwen3-TTS clone quality test requires language code 'pt'")
+        if self.content_tts_voice_id in {"pf_dora", "pm_alex", "pm_santa"}:
+            raise ValueError(
+                "Qwen3-TTS clone quality test requires a voice ID that names the reference "
+                "recording, not a Kokoro voice"
+            )
+        for field in (
+            "content_tts_qwen3_python_path",
+            "content_tts_qwen3_model_dir",
+            "content_tts_reference_audio_path",
+            "content_tts_reference_text_path",
+        ):
+            value = getattr(self, field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field} is required by the Qwen3-TTS clone quality test")
         return self
 
     @model_validator(mode="after")

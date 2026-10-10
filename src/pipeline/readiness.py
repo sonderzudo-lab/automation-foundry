@@ -38,6 +38,7 @@ from src.pipeline.tts import (
     KOKORO_MODEL_REVISION,
     KOKORO_PACKAGE_VERSION,
     KOKORO_PT_BR_VOICE_SHA256_PREFIXES,
+    KOKORO_QUALITY_TEST_BACKEND,
 )
 
 log = structlog.get_logger(__name__)
@@ -473,7 +474,14 @@ async def collect_content_readiness(
     whisper = config.content_caption_backend == FASTER_WHISPER_QUALITY_TEST_BACKEND
     assembly = config.content_assembly_backend != "disabled"
 
-    tts_off = "A narração está desabilitada (CONTENT_TTS_BACKEND); nada foi consultado."
+    # The three narration probes inspect Kokoro and eSpeak NG; another narration
+    # backend does not use them and has no probe of its own yet.
+    kokoro = config.content_tts_backend == KOKORO_QUALITY_TEST_BACKEND
+    tts_off = (
+        "O backend de narração selecionado não usa Kokoro nem eSpeak NG; nada foi consultado."
+        if tts
+        else "A narração está desabilitada (CONTENT_TTS_BACKEND); nada foi consultado."
+    )
     whisper_off = (
         "O backend de legendas selecionado não usa o modelo de transcrição; nada foi consultado."
         if caption
@@ -485,10 +493,10 @@ async def collect_content_readiness(
     # (spec, enabled?, reason when not applicable, probe)
     plan: list[tuple[_Spec, bool, str, Callable[[], ProbeOutcome]]] = [
         (_STORAGE, True, "", partial(checks.probe_storage, config.storage_root)),
-        (_TTS_PACKAGES, tts, tts_off,
+        (_TTS_PACKAGES, kokoro, tts_off,
          partial(checks.probe_tts_packages, kokoro_version=KOKORO_PACKAGE_VERSION)),
-        (_TTS_ESPEAK, tts, tts_off, checks.probe_espeak),
-        (_TTS_CACHE, tts, tts_off, partial(
+        (_TTS_ESPEAK, kokoro, tts_off, checks.probe_espeak),
+        (_TTS_CACHE, kokoro, tts_off, partial(
             checks.probe_tts_cache,
             voice_id=config.content_tts_voice_id,
             allowed_voices=tuple(KOKORO_PT_BR_VOICE_SHA256_PREFIXES),

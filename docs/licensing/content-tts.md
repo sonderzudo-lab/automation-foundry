@@ -109,6 +109,39 @@ da audição, com nome `*_quality_test`, revisão e hashes fixados, e a mudança
 escopo para conteúdo monetizado continua dependendo da decisão explícita sobre
 os riscos 1 a 3.
 
+### Audição e adapter de 2026-10-10
+
+O proprietário gravou uma referência da própria voz (28 s, lendo um texto
+fornecido) e ouviu a mesma narração de 102 palavras nos dois candidatos, cada um
+em ambiente virtual próprio fora do projeto:
+
+| | Chatterbox PT-BR | Qwen3-TTS 1.7B Base |
+| --- | --- | --- |
+| Duração do áudio | 49 s | 40 s |
+| Tempo de geração na RTX 3090 | 41 s | 112 s, sem FlashAttention |
+| Pico de VRAM | 3,5 GB | 4,6 GB |
+
+Os hashes dos pesos baixados conferiram com os desta auditoria. O proprietário
+preferiu o Qwen3-TTS. O pacote PT-BR do Chatterbox só carregou com um carregador
+próprio, porque o loader público recusa o `s3gen_v3.pt` sem dois buffers não
+treinados; a biblioteca também baixou sozinha um modelo de segmentação de chinês.
+
+O backend `qwen3_tts_clone_quality_test` executa
+`scripts/tts/qwen3_clone_runner.py` com o Python do ambiente separado
+(`qwen-tts` no commit auditado, `transformers==4.57.3`), em subprocess sem shell,
+com timeout e com `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1`. Antes de iniciar o
+modelo ele confere o SHA-256 dos dois arquivos de pesos da revisão fixada,
+a existência do interpretador, da gravação de referência e da transcrição.
+Não existe voz embutida nem fallback: sem referência, falha fechado. O artifact
+registra modelo, revisão, hash dos pesos, hash parcial da gravação de
+referência, `training-data=undisclosed` e `scope=quality-test-only`.
+
+Limites: `CONTENT_TTS_BACKEND` segue `disabled` por padrão e o escopo continua
+não monetizado até a decisão escrita do proprietário sobre os riscos 1 a 3. Uma
+narração short leva cerca de 110 s e cabe no timeout do step; o formato long não
+cabe. A verificação de preparação do dashboard não inspeciona este backend.
+Nenhuma run A1→A8 o usou ainda.
+
 ## Controles implementados
 
 - `CONTENT_TTS_BACKEND=disabled` permanece o default.

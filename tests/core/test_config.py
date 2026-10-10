@@ -196,6 +196,48 @@ def test_assembly_backend_remains_fail_closed_until_ffmpeg_audit() -> None:
         Settings(_env_file=None, content_assembly_backend="ffmpeg")
 
 
+def test_qwen3_clone_quality_test_requires_its_profile_and_local_paths() -> None:
+    paths = {
+        "content_tts_qwen3_python_path": "D:/labs/tts-qwen3/venv/Scripts/python.exe",
+        "content_tts_qwen3_model_dir": "D:/labs/tts-qwen3/model",
+        "content_tts_reference_audio_path": "D:/voice/owner-reference.wav",
+        "content_tts_reference_text_path": "D:/voice/owner-reference.txt",
+    }
+    settings = Settings(
+        _env_file=None,
+        content_tts_backend="qwen3_tts_clone_quality_test",
+        content_tts_voice_id="owner-reference",
+        content_tts_language_code="pt",
+        **paths,
+    )
+    assert settings.content_tts_backend == "qwen3_tts_clone_quality_test"
+
+    with pytest.raises(ValidationError, match="language code 'pt'"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="qwen3_tts_clone_quality_test",
+            content_tts_voice_id="owner-reference",
+            content_tts_language_code="p",
+            **paths,
+        )
+    with pytest.raises(ValidationError, match="not a Kokoro voice"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="qwen3_tts_clone_quality_test",
+            content_tts_voice_id="pm_alex",
+            content_tts_language_code="pt",
+            **paths,
+        )
+    with pytest.raises(ValidationError, match="content_tts_reference_text_path is required"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="qwen3_tts_clone_quality_test",
+            content_tts_voice_id="owner-reference",
+            content_tts_language_code="pt",
+            **{**paths, "content_tts_reference_text_path": " "},
+        )
+
+
 def test_assembly_edit_defaults_to_static_and_accepts_only_known_edits() -> None:
     assert Settings(_env_file=None).content_assembly_edit == "static"
     assert Settings(_env_file=None, content_assembly_edit="motion").content_assembly_edit == "motion"

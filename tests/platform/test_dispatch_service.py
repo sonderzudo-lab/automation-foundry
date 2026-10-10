@@ -487,7 +487,7 @@ async def test_approved_a1_requeues_same_dispatch_and_completes_tts_once(
     monkeypatch.setattr(
         a1_executor,
         "get_configured_tts_synthesizer",
-        lambda _backend: synthesize,
+        lambda _backend, **_options: synthesize,
     )
     monkeypatch.setattr(
         a1_executor,

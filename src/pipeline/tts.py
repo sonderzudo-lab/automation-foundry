@@ -8,6 +8,8 @@ import importlib
 import importlib.metadata
 import os
 import shutil
+import subprocess
+import tempfile
 import time
 import wave
 from collections.abc import Callable
@@ -61,6 +63,23 @@ KOKORO_PT_BR_VOICE_SHA256_PREFIXES = {
     "pm_santa": "d4210316",
 }
 KOKORO_SAMPLE_RATE_HZ = 24_000
+QWEN3_CLONE_QUALITY_TEST_BACKEND = "qwen3_tts_clone_quality_test"
+QWEN3_MODEL_REPOSITORY = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+QWEN3_MODEL_REVISION = "fd4b254389122332181a7c3db7f27e918eec64e3"
+# Weight files of that revision, relative to the local model directory.
+QWEN3_BASE_MODEL_SHA256 = {
+    "model.safetensors": (
+        "38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c"
+    ),
+    "speech_tokenizer/model.safetensors": (
+        "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+    ),
+}
+_QWEN3_RUNNER = (
+    Path(__file__).resolve().parents[2] / "scripts" / "tts" / "qwen3_clone_runner.py"
+)
+_QWEN3_MAX_REFERENCE_AUDIO_BYTES = 50 * 1024 * 1024
+_QWEN3_MAX_REFERENCE_TEXT_BYTES = 4_000
 _SOURCE = "content-engine:a2"
 _RETENTION_DAYS = resolve_retention_days("narration_audio")
 _MAX_AUDIO_BYTES = 1024 * 1024 * 1024
@@ -102,11 +121,27 @@ class TTSExecutionResult:
     replayed: bool
 
 
-def get_configured_tts_synthesizer(backend: str) -> TTSSynthesizer:
+def get_configured_tts_synthesizer(
+    backend: str,
+    *,
+    qwen3_clone_config: Qwen3CloneQualityTestConfig | None = None,
+) -> TTSSynthesizer:
     """Return only explicitly reviewed runtime modes; unknown names fail closed."""
     normalized = backend.strip().casefold()
     if normalized == KOKORO_QUALITY_TEST_BACKEND:
         return synthesize_kokoro_quality_test
+    if normalized == QWEN3_CLONE_QUALITY_TEST_BACKEND:
+        if qwen3_clone_config is None:
+            def missing_config(
+                _narration: str,
+                _destination: Path,
+                _voice_id: str,
+                _language_code: str,
+            ) -> TTSAdapterResult:
+                raise TTSPermanentAdapterError("CONTENT_TTS_QWEN3_CONFIG_REQUIRED")
+
+            return missing_config
+        return build_qwen3_clone_quality_test_synthesizer(qwen3_clone_config)
 
     def unavailable(
         _narration: str,
@@ -122,6 +157,133 @@ def get_configured_tts_synthesizer(backend: str) -> TTSSynthesizer:
         raise TTSPermanentAdapterError(code)
 
     return unavailable
+
+
+@dataclass(frozen=True, slots=True)
+class Qwen3CloneQualityTestConfig:
+    """Local paths of the separate Qwen3-TTS environment and of the reference voice."""
+
+    python_path: str
+    model_dir: str
+    reference_audio_path: str
+    reference_text_path: str
+    timeout_seconds: float = 240.0
+
+
+def build_qwen3_clone_quality_test_synthesizer(
+    config: Qwen3CloneQualityTestConfig,
+) -> TTSSynthesizer:
+    """Build an adapter that clones one reference voice with pinned Qwen3-TTS weights.
+
+    The model runs in its own virtual environment because its pinned packages
+    conflict with this project's. The voice is the reference recording, never a
+    built-in one; the result stays labelled for local quality evaluation only.
+    """
+
+    def synthesize(
+        narration: str,
+        destination: Path,
+        voice_id: str,
+        language_code: str,
+    ) -> TTSAdapterResult:
+        if language_code != "pt":
+            raise TTSPermanentAdapterError("CONTENT_TTS_QWEN3_REQUIRES_PT")
+        if not 1 <= config.timeout_seconds <= 3600:
+            raise TTSPermanentAdapterError("CONTENT_TTS_QWEN3_TIMEOUT_INVALID")
+        python = _existing_file(config.python_path, "CONTENT_TTS_QWEN3_PYTHON_UNAVAILABLE")
+        model_dir = Path(config.model_dir)
+        for relative_path, expected_sha256 in QWEN3_BASE_MODEL_SHA256.items():
+            weights = _existing_file(
+                str(model_dir / relative_path),
+                "CONTENT_TTS_QWEN3_MODEL_UNAVAILABLE",
+            )
+            if _sha256_unchanged_file(weights) != expected_sha256:
+                raise TTSPermanentAdapterError("CONTENT_TTS_QWEN3_MODEL_HASH_MISMATCH")
+        reference_audio = _existing_file(
+            config.reference_audio_path,
+            "CONTENT_TTS_QWEN3_REFERENCE_UNAVAILABLE",
+        )
+        reference_text = _existing_file(
+            config.reference_text_path,
+            "CONTENT_TTS_QWEN3_REFERENCE_UNAVAILABLE",
+        )
+        if not (
+            0 < reference_audio.stat().st_size <= _QWEN3_MAX_REFERENCE_AUDIO_BYTES
+            and 0 < reference_text.stat().st_size <= _QWEN3_MAX_REFERENCE_TEXT_BYTES
+        ):
+            raise TTSPermanentAdapterError("CONTENT_TTS_QWEN3_REFERENCE_INVALID")
+        if not _QWEN3_RUNNER.is_file():
+            raise TTSPermanentAdapterError("CONTENT_TTS_QWEN3_RUNNER_UNAVAILABLE")
+
+        with tempfile.TemporaryDirectory(
+            prefix="qwen3-clone-",
+            dir=destination.parent,
+        ) as workspace:
+            text_file = Path(workspace) / "narration.txt"
+            text_file.write_text(narration, encoding="utf-8")
+            try:
+                completed = subprocess.run(
+                    [
+                        str(python),
+                        str(_QWEN3_RUNNER),
+                        "--model-dir", str(model_dir),
+                        "--text-file", str(text_file),
+                        "--reference", str(reference_audio),
+                        "--reference-text-file", str(reference_text),
+                        "--output", str(destination),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    timeout=config.timeout_seconds,
+                    check=False,
+                    shell=False,
+                    # The weights are local and pinned; the runner must not reach the Hub.
+                    env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise TTSRetryableAdapterError(
+                    "CONTENT_TTS_QWEN3_INFERENCE_FAILED"
+                ) from exc
+        if completed.returncode != 0:
+            raise TTSRetryableAdapterError("CONTENT_TTS_QWEN3_INFERENCE_FAILED")
+
+        return TTSAdapterResult(
+            backend=QWEN3_CLONE_QUALITY_TEST_BACKEND,
+            model_id=(
+                f"{QWEN3_MODEL_REPOSITORY}@{QWEN3_MODEL_REVISION}"
+                f"#sha256:{QWEN3_BASE_MODEL_SHA256['model.safetensors']}"
+            ),
+            voice_id=voice_id,
+            language_code=language_code,
+            license_id=(
+                "Apache-2.0(code; weights per model card); training-data=undisclosed; "
+                f"voice=reference-recording#sha256:{_sha256_file(reference_audio)[:16]}; "
+                "scope=quality-test-only"
+            ),
+        )
+
+    return synthesize
+
+
+def _existing_file(path: str, code: str) -> Path:
+    try:
+        resolved = Path(path).resolve(strict=True)
+    except OSError as exc:
+        raise TTSPermanentAdapterError(code) from exc
+    if not resolved.is_file():
+        raise TTSPermanentAdapterError(code)
+    return resolved
+
+
+def _sha256_unchanged_file(path: Path) -> str:
+    """Hash a multi-gigabyte weight file once per size and modification time."""
+    stat = path.stat()
+    return _sha256_file_cached(str(path), stat.st_size, stat.st_mtime_ns)
+
+
+@lru_cache(maxsize=8)
+def _sha256_file_cached(path: str, _size: int, _mtime_ns: int) -> str:
+    return _sha256_file(Path(path))
 
 
 @dataclass(frozen=True, slots=True)

@@ -71,6 +71,8 @@ from src.pipeline.thumbnail_review import (
     request_thumbnail_approval,
 )
 from src.pipeline.tts import (
+    QWEN3_CLONE_QUALITY_TEST_BACKEND,
+    Qwen3CloneQualityTestConfig,
     TTSSynthesizer,
     execute_approved_tts_step,
     get_configured_tts_synthesizer,
@@ -590,7 +592,10 @@ async def execute_content_script_run(
             storage_root=root,
             synthesizer=(
                 tts_synthesizer
-                or get_configured_tts_synthesizer(_tts_backend())
+                or get_configured_tts_synthesizer(
+                    _tts_backend(),
+                    qwen3_clone_config=_qwen3_clone_quality_test_config(),
+                )
             ),
             voice_id=_tts_voice_id(),
             language_code=_tts_language_code(),
@@ -1087,6 +1092,33 @@ def _tts_backend() -> str:
 
 def _tts_enabled() -> bool:
     return _tts_backend() != "disabled"
+
+
+def _qwen3_clone_quality_test_config() -> Qwen3CloneQualityTestConfig | None:
+    if _tts_backend() != QWEN3_CLONE_QUALITY_TEST_BACKEND:
+        return None
+    paths = [
+        getattr(settings, field, None)
+        for field in (
+            "content_tts_qwen3_python_path",
+            "content_tts_qwen3_model_dir",
+            "content_tts_reference_audio_path",
+            "content_tts_reference_text_path",
+        )
+    ]
+    if not all(isinstance(path, str) and path.strip() for path in paths):
+        raise ContentScriptRunNotRunnableError(
+            "Qwen3-TTS clone quality test requires its local paths"
+        )
+    python_path, model_dir, reference_audio, reference_text = (str(path) for path in paths)
+    return Qwen3CloneQualityTestConfig(
+        python_path=python_path,
+        model_dir=model_dir,
+        reference_audio_path=reference_audio,
+        reference_text_path=reference_text,
+        # Leave room inside the step timeout for hashing the weights and validating the WAV.
+        timeout_seconds=max(1.0, float(settings.celery_soft_time_limit_seconds - 45)),
+    )
 
 
 def _narration_review_enabled() -> bool:

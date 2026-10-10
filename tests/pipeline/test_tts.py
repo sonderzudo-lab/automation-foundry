@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 import wave
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -22,6 +23,8 @@ from src.pipeline.a1_executor import execute_content_script_run
 from src.pipeline.script_gen import ScriptResult
 from src.pipeline.tts import (
     KOKORO_QUALITY_TEST_BACKEND,
+    QWEN3_CLONE_QUALITY_TEST_BACKEND,
+    Qwen3CloneQualityTestConfig,
     TTSAdapterResult,
     TTSPermanentAdapterError,
     TTSRetryableAdapterError,
@@ -215,6 +218,160 @@ async def _approved_a1(
         ).hexdigest(),
     }
     return run, approval, artifact, approval_input
+
+
+def _qwen3_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Qwen3CloneQualityTestConfig:
+    """Small stand-ins for the separate environment, the weights and the reference."""
+    model_dir = tmp_path / "model"
+    (model_dir / "speech_tokenizer").mkdir(parents=True)
+    (model_dir / "model.safetensors").write_bytes(b"main-weights")
+    (model_dir / "speech_tokenizer" / "model.safetensors").write_bytes(b"tokenizer-weights")
+    monkeypatch.setattr(
+        tts,
+        "QWEN3_BASE_MODEL_SHA256",
+        {
+            "model.safetensors": hashlib.sha256(b"main-weights").hexdigest(),
+            "speech_tokenizer/model.safetensors": hashlib.sha256(
+                b"tokenizer-weights"
+            ).hexdigest(),
+        },
+    )
+    python = tmp_path / "python.exe"
+    python.write_bytes(b"not-a-real-interpreter")
+    reference_audio = tmp_path / "reference.wav"
+    reference_audio.write_bytes(b"reference-voice")
+    reference_text = tmp_path / "reference.txt"
+    reference_text.write_text("Texto lido na gravação.", encoding="utf-8")
+    return Qwen3CloneQualityTestConfig(
+        python_path=str(python),
+        model_dir=str(model_dir),
+        reference_audio_path=str(reference_audio),
+        reference_text_path=str(reference_text),
+        timeout_seconds=30,
+    )
+
+
+def test_qwen3_clone_backend_requires_its_configuration(tmp_path: Path) -> None:
+    with pytest.raises(TTSPermanentAdapterError, match="CONTENT_TTS_QWEN3_CONFIG_REQUIRED"):
+        get_configured_tts_synthesizer(QWEN3_CLONE_QUALITY_TEST_BACKEND)(
+            "Narração.",
+            tmp_path / "narration.wav",
+            "owner-reference",
+            "pt",
+        )
+
+
+def test_qwen3_clone_runs_the_pinned_model_offline_in_the_separate_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _qwen3_files(tmp_path, monkeypatch)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(command: list[str], **options: object) -> SimpleNamespace:
+        calls.append((command, options))
+        arguments = dict(zip(command[2::2], command[3::2], strict=True))
+        assert Path(arguments["--text-file"]).read_text(encoding="utf-8") == "Narração aprovada."
+        _write_valid_wav("", Path(arguments["--output"]), "owner-reference", "pt")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(tts.subprocess, "run", fake_run)
+    destination = tmp_path / "out" / "narration.wav"
+    destination.parent.mkdir()
+
+    result = get_configured_tts_synthesizer(
+        QWEN3_CLONE_QUALITY_TEST_BACKEND,
+        qwen3_clone_config=config,
+    )("Narração aprovada.", destination, "owner-reference", "pt")
+
+    command, options = calls[0]
+    assert command[0] == str(Path(config.python_path).resolve())
+    assert command[1].endswith("qwen3_clone_runner.py") and Path(command[1]).is_file()
+    assert command[command.index("--model-dir") + 1] == config.model_dir
+    assert command[command.index("--output") + 1] == str(destination)
+    assert options["shell"] is False and options["timeout"] == 30
+    environment = options["env"]
+    assert isinstance(environment, dict)
+    assert environment["HF_HUB_OFFLINE"] == "1" and environment["TRANSFORMERS_OFFLINE"] == "1"
+    assert destination.is_file()
+    assert result.backend == QWEN3_CLONE_QUALITY_TEST_BACKEND
+    assert result.voice_id == "owner-reference" and result.language_code == "pt"
+    assert result.model_id.startswith(
+        "Qwen/Qwen3-TTS-12Hz-1.7B-Base@fd4b254389122332181a7c3db7f27e918eec64e3#sha256:"
+    )
+    reference_digest = hashlib.sha256(b"reference-voice").hexdigest()[:16]
+    assert f"voice=reference-recording#sha256:{reference_digest}" in result.license_id
+    assert "training-data=undisclosed" in result.license_id
+    assert "scope=quality-test-only" in result.license_id
+    assert max(len(result.model_id), len(result.license_id)) <= 200
+    # The narration is handed over through a temporary file that does not outlive the call.
+    assert list(destination.parent.iterdir()) == [destination]
+
+
+@pytest.mark.parametrize(
+    ("break_it", "expected_code"),
+    [
+        ("language", "CONTENT_TTS_QWEN3_REQUIRES_PT"),
+        ("python", "CONTENT_TTS_QWEN3_PYTHON_UNAVAILABLE"),
+        ("weights_missing", "CONTENT_TTS_QWEN3_MODEL_UNAVAILABLE"),
+        ("weights_changed", "CONTENT_TTS_QWEN3_MODEL_HASH_MISMATCH"),
+        ("reference_missing", "CONTENT_TTS_QWEN3_REFERENCE_UNAVAILABLE"),
+        ("reference_empty", "CONTENT_TTS_QWEN3_REFERENCE_INVALID"),
+    ],
+)
+def test_qwen3_clone_fails_closed_before_starting_the_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    break_it: str,
+    expected_code: str,
+) -> None:
+    config = _qwen3_files(tmp_path, monkeypatch)
+    language = "pt"
+    if break_it == "language":
+        language = "p"
+    elif break_it == "python":
+        Path(config.python_path).unlink()
+    elif break_it == "weights_missing":
+        (Path(config.model_dir) / "speech_tokenizer" / "model.safetensors").unlink()
+    elif break_it == "weights_changed":
+        (Path(config.model_dir) / "model.safetensors").write_bytes(b"other-weights!!")
+    elif break_it == "reference_missing":
+        Path(config.reference_audio_path).unlink()
+    elif break_it == "reference_empty":
+        Path(config.reference_text_path).write_bytes(b"")
+
+    def must_not_run(*_args: object, **_options: object) -> SimpleNamespace:
+        raise AssertionError("the model must not start")
+
+    monkeypatch.setattr(tts.subprocess, "run", must_not_run)
+
+    with pytest.raises(TTSPermanentAdapterError, match=expected_code):
+        get_configured_tts_synthesizer(
+            QWEN3_CLONE_QUALITY_TEST_BACKEND,
+            qwen3_clone_config=config,
+        )("Narração.", tmp_path / "narration.wav", "owner-reference", language)
+
+
+@pytest.mark.parametrize("failure", ["exit_code", "timeout"])
+def test_qwen3_clone_inference_failures_are_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    config = _qwen3_files(tmp_path, monkeypatch)
+
+    def fake_run(command: list[str], **_options: object) -> SimpleNamespace:
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, 30)
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(tts.subprocess, "run", fake_run)
+
+    with pytest.raises(TTSRetryableAdapterError, match="CONTENT_TTS_QWEN3_INFERENCE_FAILED"):
+        get_configured_tts_synthesizer(
+            QWEN3_CLONE_QUALITY_TEST_BACKEND,
+            qwen3_clone_config=config,
+        )("Narração.", tmp_path / "narration.wav", "owner-reference", "pt")
 
 
 async def test_approved_tts_creates_verified_audio_and_observations(
