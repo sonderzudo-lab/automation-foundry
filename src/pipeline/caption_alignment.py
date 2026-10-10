@@ -44,7 +44,10 @@ from src.platform.models import (
 # duplicated instead of imported to keep this module free of the A1 import chain.
 _AUTOMATION_SLUG = "content-engine"
 _SOURCE = "content-engine:a4-alignment"
-_ALGORITHM = "rms-window-energy-vs-ass-events-v1"
+_ALGORITHM = "rms-window-energy-vs-ass-events-v2"
+# v1 paired the i-th caption block with the i-th speech segment and only when
+# both counts happened to match. Its reports stay readable; new ones are v2.
+_READABLE_ALGORITHMS = frozenset({"rms-window-energy-vs-ass-events-v1", _ALGORITHM})
 _REPORT_SCHEMA_VERSION = 1
 _RETENTION_DAYS = resolve_retention_days("caption_alignment_report")
 _CAPTION_ARTIFACT_TYPE = "caption_ass"
@@ -102,6 +105,7 @@ class CaptionAlignmentParameters:
     absolute_floor_dbfs: Decimal = Decimal("-55")
     merge_gap_seconds: Decimal = Decimal("0.30")
     min_speech_seconds: Decimal = Decimal("0.12")
+    onset_pause_seconds: Decimal = Decimal("0.15")
 
     def __post_init__(self) -> None:
         if not Decimal("0") < self.min_speech_coverage <= Decimal("1"):
@@ -120,6 +124,8 @@ class CaptionAlignmentParameters:
             raise ValueError("merge_gap_seconds must be in [0, 5]")
         if not Decimal("0") <= self.min_speech_seconds <= Decimal("5"):
             raise ValueError("min_speech_seconds must be in [0, 5]")
+        if not Decimal("0") <= self.onset_pause_seconds <= Decimal("5"):
+            raise ValueError("onset_pause_seconds must be in [0, 5]")
 
     def as_payload(self) -> dict[str, object]:
         """Return the canonical, JSON-safe projection stored in the report."""
@@ -132,6 +138,7 @@ class CaptionAlignmentParameters:
             "absolute_floor_dbfs": str(self.absolute_floor_dbfs),
             "merge_gap_seconds": str(self.merge_gap_seconds),
             "min_speech_seconds": str(self.min_speech_seconds),
+            "onset_pause_seconds": str(self.onset_pause_seconds),
         }
 
 
@@ -267,11 +274,15 @@ def measure_caption_alignment(
     end_offset = (
         captions[-1][1] - speech[-1][1] if speech and captions else Decimal("0")
     )
+    # A caption block opens after a gap in the captions, so speech should resume
+    # near it. Blocks and speech segments are cut by independent thresholds and
+    # do not correspond by position; each block is compared with the closest
+    # resumption instead.
     block_offset: Decimal | None = None
-    if speech and len(blocks) == len(speech):
+    if profile.onsets:
         block_offset = max(
-            (block[0] - segment[0]).copy_abs()
-            for block, segment in zip(blocks, speech, strict=True)
+            min((block[0] - onset).copy_abs() for onset in profile.onsets)
+            for block in blocks
         )
     tolerance = parameters.boundary_tolerance_seconds
     reasons: list[str] = []
@@ -538,7 +549,7 @@ async def load_caption_alignment_report(
     measurement = payload.get("measurement")
     if (
         payload.get("schema_version") != _REPORT_SCHEMA_VERSION
-        or payload.get("algorithm") != _ALGORITHM
+        or payload.get("algorithm") not in _READABLE_ALGORITHMS
         or payload.get("run_id") != run_id
         or payload.get("published") is not False
         or payload.get("external_service_consulted") is not False
@@ -697,6 +708,8 @@ class _SpeechProfile:
     peak_dbfs: Decimal
     threshold_dbfs: Decimal
     intervals: tuple[tuple[Decimal, Decimal], ...]
+    # Moments where speech resumes after a pause longer than onset_pause_seconds.
+    onsets: tuple[Decimal, ...]
 
 
 def _window_energies(
@@ -765,11 +778,20 @@ def _speech_profile(
         for interval in merged
         if interval[1] - interval[0] >= parameters.min_speech_seconds
     )
+    onsets = tuple(
+        start
+        for start, end in _merge_intervals(
+            tuple(voiced),
+            gap=parameters.onset_pause_seconds,
+        )
+        if end - start >= parameters.min_speech_seconds
+    )
     return _SpeechProfile(
         duration_seconds=duration,
         peak_dbfs=peak,
         threshold_dbfs=threshold,
         intervals=speech,
+        onsets=onsets,
     )
 
 
