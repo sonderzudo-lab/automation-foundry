@@ -36,7 +36,11 @@
 <section class="card">
   <div class="card-header"><h2 class="card-title" style="font-size:1rem">Próxima etapa A3</h2></div>
   <div class="card-content">
+    {% if review.minimum_visual_count is defined and review.minimum_visual_count != review.maximum_visual_count %}
+    <p class="text-sm">Após a aprovação, o pipeline aceitará de <strong>{{ review.minimum_visual_count }} a {{ review.maximum_visual_count }} PNGs</strong> de <strong>{{ review.visual_width }}x{{ review.visual_height }}</strong> para o formato {{ "Short" if review.format == "short" else "Longo" }}. A quantidade usada é a que o manifesto declarar; cada imagem fica de 4 a 10 segundos na tela, e {{ review.required_visual_count }} mantém uma a cada 6 segundos.</p>
+    {% else %}
     <p class="text-sm">Após a aprovação, o pipeline exigirá exatamente <strong>{{ review.required_visual_count }} PNGs</strong> de <strong>{{ review.visual_width }}x{{ review.visual_height }}</strong> para o formato {{ "Short" if review.format == "short" else "Longo" }}.</p>
+    {% endif %}
     <p class="text-sm muted" style="margin-top:.5rem">Cada imagem ainda precisa de manifesto local com direitos, uso comercial e SHA-256 próprios.</p>
     {% if review.visual_plan_checked %}
       {% if review.visual_plan_problem %}

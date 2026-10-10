@@ -56,6 +56,8 @@ _SOURCE = "content-engine:a3"
 _MANIFEST_RETENTION_DAYS = resolve_retention_days("visual_manifest")
 _IMAGE_RETENTION_DAYS = resolve_retention_days("visual_image")
 _SECONDS_PER_VISUAL = Decimal("6")
+_MIN_SECONDS_PER_VISUAL = Decimal("4")
+_MAX_SECONDS_PER_VISUAL = Decimal("10")
 LOCAL_ASSETS_QUALITY_TEST_BACKEND = "local_assets_quality_test"
 _MAX_VISUALS = 60
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
@@ -220,10 +222,67 @@ def build_local_asset_adapter(
 
 
 @dataclass(frozen=True, slots=True)
+class VisualCountBounds:
+    """How many visuals one narration accepts.
+
+    ``default`` is one visual per six seconds. A backend that brings its own
+    assets may use any count that keeps each visual on screen for four to ten
+    seconds.
+    """
+
+    minimum: int
+    default: int
+    maximum: int
+
+    def accepts(self, count: int) -> bool:
+        return self.minimum <= count <= self.maximum
+
+
+VisualCountResolver = Callable[[VisualCountBounds], int]
+
+
+def visual_count_bounds(duration_seconds: Decimal, *, word_count: int) -> VisualCountBounds:
+    """Derive the accepted visual counts from the verified narration length."""
+    cap = max(1, min(_MAX_VISUALS, word_count))
+    default = min(cap, max(1, math.ceil(duration_seconds / _SECONDS_PER_VISUAL)))
+    minimum = min(
+        default,
+        max(1, math.ceil(duration_seconds / _MAX_SECONDS_PER_VISUAL)),
+    )
+    maximum = min(
+        cap,
+        max(default, math.floor(duration_seconds / _MIN_SECONDS_PER_VISUAL)),
+    )
+    return VisualCountBounds(minimum=minimum, default=default, maximum=maximum)
+
+
+def build_local_asset_count_resolver(
+    *,
+    import_root: Path,
+    manifest_path: Path,
+) -> VisualCountResolver:
+    """Let the operator manifest choose the visual count inside the accepted range.
+
+    Any other situation keeps the default count, so the import itself reports
+    the precise manifest error.
+    """
+
+    def resolve(bounds: VisualCountBounds) -> int:
+        try:
+            _, manifest = _resolve_local_asset_manifest(import_root, manifest_path)
+            declared = len(_read_local_asset_manifest(manifest))
+        except VisualPermanentAdapterError:
+            return bounds.default
+        return declared if bounds.accepts(declared) else bounds.default
+
+    return resolve
+
+
+@dataclass(frozen=True, slots=True)
 class LocalAssetManifestStatus:
     """Whether the operator manifest can satisfy one A3 import right now."""
 
-    expected_count: int
+    bounds: VisualCountBounds
     declared_count: int | None
     problem_code: str | None
 
@@ -236,7 +295,7 @@ def inspect_local_asset_manifest(
     *,
     import_root: Path,
     manifest_path: Path,
-    expected_count: int,
+    bounds: VisualCountBounds,
 ) -> LocalAssetManifestStatus:
     """Run the A3 import checks against the manifest without copying anything.
 
@@ -248,10 +307,12 @@ def inspect_local_asset_manifest(
     try:
         root, manifest = _resolve_local_asset_manifest(import_root, manifest_path)
         declared_count = len(_read_local_asset_manifest(manifest))
+        if not bounds.accepts(declared_count):
+            raise VisualPermanentAdapterError("CONTENT_VISUALS_COUNT_MISMATCH")
         entries = _load_local_asset_manifest(
             manifest,
             root=root,
-            expected_count=expected_count,
+            expected_count=declared_count,
         )
         for entry in entries:
             _verify_pinned_local_asset(
@@ -260,12 +321,12 @@ def inspect_local_asset_manifest(
             )
     except VisualPermanentAdapterError as exc:
         return LocalAssetManifestStatus(
-            expected_count=expected_count,
+            bounds=bounds,
             declared_count=declared_count,
             problem_code=str(exc),
         )
     return LocalAssetManifestStatus(
-        expected_count=expected_count,
+        bounds=bounds,
         declared_count=declared_count,
         problem_code=None,
     )
@@ -448,6 +509,7 @@ async def execute_approved_visual_step(
     timeout_seconds: float,
     finalize_run: bool = True,
     sleep: Sleeper = asyncio.sleep,
+    count_resolver: VisualCountResolver | None = None,
 ) -> VisualExecutionResult:
     """Create licensed visual assets from the exact approved script and A2 WAV."""
     if queue not in {QueueClass.GPU, QueueClass.IO}:
@@ -462,10 +524,13 @@ async def execute_approved_visual_step(
         audio_artifact=audio_artifact,
         storage_root=storage_root,
     )
-    requests = _build_visual_requests(context)
     visual_directory = _visual_directory(
         storage_root,
         run_id=_persisted_id(run.id, "run"),
+    )
+    requests = _build_visual_requests(
+        context,
+        count=_resolve_visual_count(context, visual_directory, count_resolver),
     )
     step_key = f"{idempotency_key}:{VISUAL_STEP_NAME}"
 
@@ -765,15 +830,40 @@ def _load_visual_context(
     )
 
 
-def _build_visual_requests(context: _VisualContext) -> tuple[VisualRequest, ...]:
-    desired = max(
-        1,
-        min(
-            _MAX_VISUALS,
-            math.ceil(context.duration_seconds / _SECONDS_PER_VISUAL),
-        ),
+def _resolve_visual_count(
+    context: _VisualContext,
+    visual_directory: Path,
+    count_resolver: VisualCountResolver | None,
+) -> int:
+    bounds = visual_count_bounds(
+        context.duration_seconds,
+        word_count=len(context.full_script.split()),
     )
-    segments = _split_editorial_text(context.full_script, desired)
+    # A published bundle keeps its own count: the operator manifest may change
+    # after A3 and every replay must rebuild the same requests.
+    count = _existing_bundle_visual_count(visual_directory)
+    if count is None and count_resolver is not None:
+        count = count_resolver(bounds)
+    return count if count is not None and bounds.accepts(count) else bounds.default
+
+
+def _existing_bundle_visual_count(visual_directory: Path) -> int | None:
+    try:
+        payload = json.loads(
+            (visual_directory / "manifest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    count = payload.get("visual_count") if isinstance(payload, dict) else None
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+
+def _build_visual_requests(
+    context: _VisualContext,
+    *,
+    count: int,
+) -> tuple[VisualRequest, ...]:
+    segments = _split_editorial_text(context.full_script, count)
     width, height = (1080, 1920) if context.format == "short" else (1920, 1080)
     return tuple(
         VisualRequest(

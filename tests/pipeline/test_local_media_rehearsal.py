@@ -234,9 +234,10 @@ async def test_local_media_rehearsal_fails_closed_when_manifest_count_diverges(
 ) -> None:
     storage_root = tmp_path / "storage"
     import_root = tmp_path / "imports" / "content-visuals"
+    # Twelve seconds of narration accept two or three visuals; four is outside.
     write_synthetic_visual_import(
         import_root,
-        count=expected_visual_count() + 1,
+        count=expected_visual_count() + 2,
         width=1080,
         height=1920,
     )

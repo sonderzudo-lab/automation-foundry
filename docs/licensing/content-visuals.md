@@ -12,7 +12,8 @@ um backend.
 
 - A3 consome somente o bundle A1 aprovado e o WAV A2 conferidos por tamanho e
   SHA-256.
-- A quantidade é proporcional ao áudio, com um visual a cada seis segundos e
+- A quantidade é proporcional ao áudio, com um visual a cada seis segundos por
+  padrão (o backend de importação local aceita uma faixa, descrita abaixo) e
   limite de 60.
 - Cada adapter precisa declarar provider, modelo, ID/URI da fonte, licença,
   atribuição e `commercial_use=True` para cada arquivo.
@@ -39,10 +40,15 @@ CONTENT_VISUAL_IMPORT_ROOT=./imports/content-visuals
 CONTENT_VISUAL_MANIFEST_PATH=manifest.json
 ```
 
-O caminho do manifesto é resolvido dentro da raiz de importação. Cada run exige
-exatamente a quantidade calculada por A3 — um PNG por seis segundos de áudio,
-arredondado para cima, entre 1 e 60. Não há repetição automática. Short exige
+O caminho do manifesto é resolvido dentro da raiz de importação. A quantidade
+de imagens é a que o manifesto declarar, desde que cada imagem fique de 4 a 10
+segundos na tela: no mínimo um PNG a cada dez segundos de áudio (arredondado
+para cima) e no máximo um a cada quatro (arredondado para baixo), entre 1 e 60.
+Uma narração de 45 s aceita de 5 a 11 imagens. Fora dessa faixa a run falha com
+`CONTENT_VISUALS_COUNT_MISMATCH`. Não há repetição automática. Short exige
 1080x1920; long exige 1920x1080. Arquivos, IDs de fonte e nomes devem ser únicos.
+Depois que A3 publica o bundle, a quantidade usada fica fixa para aquela run,
+mesmo que o manifesto mude.
 
 Exemplo de `imports/content-visuals/manifest.json` para uma imagem própria:
 
@@ -74,9 +80,9 @@ campos extras/ausentes, `commercial_use` diferente de `true`, duplicatas, hash
 divergente, PNG inválido ou dimensões incorretas. Os arquivos de importação não
 são alterados; A3 copia os bytes conferidos para seu diretório de artifacts.
 
-A quantidade só é conhecida depois que a narração existe. Com o gate A2
-habilitado, a página de revisão da narração informa a quantidade exigida e
-confere o manifesto naquele momento: quantidade, campos, uso comercial,
+A faixa exata só é conhecida depois que a narração existe. Com o gate A2
+habilitado, a página de revisão da narração informa a faixa aceita e confere
+o manifesto naquele momento: quantidade dentro da faixa, campos, uso comercial,
 existência dos arquivos e SHA-256, sem copiar nada. Enquanto o import seria
 recusado, a aprovação pelo painel não é registrada e a revisão continua aberta
 para o operador terminar o manifesto. Dimensões e validade do PNG continuam

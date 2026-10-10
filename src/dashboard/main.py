@@ -1191,7 +1191,7 @@ def create_app(
                 detail=(
                     "approval not recorded; A3 visual manifest is not ready: "
                     f"{exc.problem_code} (declared={exc.declared_count}, "
-                    f"required={exc.required_count})"
+                    f"accepted={exc.minimum_count}..{exc.maximum_count})"
                 ),
             ) from exc
         except ValueError as exc:

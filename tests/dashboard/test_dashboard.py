@@ -3598,7 +3598,10 @@ async def test_dashboard_narration_review_streams_only_verified_audio(
     assert review.status_code == 200
     assert review.headers["cache-control"] == "no-store"
     assert audio_sha256 in review.text
-    assert f">{expected_visual_count()} PNGs<" in review.text
+    assert (
+        f">{expected_visual_count()} a {expected_visual_count() + 1} PNGs<"
+        in review.text
+    )
     assert "1080x1920" in review.text
     assert str(storage_root) not in review.text
     assert media.status_code == 200
@@ -3611,7 +3614,7 @@ async def test_dashboard_narration_review_streams_only_verified_audio(
 
     write_synthetic_visual_import(
         import_root,
-        count=expected_visual_count() + 1,
+        count=expected_visual_count() + 2,
         width=1080,
         height=1920,
     )

@@ -82,6 +82,8 @@ from src.pipeline.tts import (
 from src.pipeline.visuals import (
     LOCAL_ASSETS_QUALITY_TEST_BACKEND,
     VisualAdapter,
+    VisualCountBounds,
+    build_local_asset_count_resolver,
     execute_approved_visual_step,
     get_configured_visual_adapter,
     inspect_local_asset_manifest,
@@ -680,6 +682,15 @@ async def execute_content_script_run(
                     float(settings.celery_soft_time_limit_seconds - 15),
                 ),
                 finalize_run=not (_captions_enabled() or _assembly_enabled()),
+                count_resolver=(
+                    build_local_asset_count_resolver(
+                        import_root=_visual_import_root(),
+                        manifest_path=_visual_manifest_path(),
+                    )
+                    if visual_adapter is None
+                    and _visuals_backend() == LOCAL_ASSETS_QUALITY_TEST_BACKEND
+                    else None
+                ),
             )
             visual_replayed = visual_result.replayed
         caption_result = None
@@ -998,7 +1009,8 @@ async def finalize_content_script_approval(
             if narration_review.visual_plan_problem_code is not None:
                 raise NarrationVisualsNotReadyError(
                     problem_code=narration_review.visual_plan_problem_code,
-                    required_count=narration_review.required_visual_count,
+                    minimum_count=narration_review.minimum_visual_count,
+                    maximum_count=narration_review.maximum_visual_count,
                     declared_count=narration_review.declared_visual_count,
                 )
         return continuation_required
@@ -1168,7 +1180,11 @@ def _with_visual_plan_status(review: NarrationReview) -> NarrationReview:
     status = inspect_local_asset_manifest(
         import_root=_visual_import_root(),
         manifest_path=_visual_manifest_path(),
-        expected_count=review.required_visual_count,
+        bounds=VisualCountBounds(
+            minimum=review.minimum_visual_count,
+            default=review.required_visual_count,
+            maximum=review.maximum_visual_count,
+        ),
     )
     return replace(
         review,
@@ -1179,7 +1195,8 @@ def _with_visual_plan_status(review: NarrationReview) -> NarrationReview:
             if status.problem_code is None
             else describe_visual_plan_problem(
                 status.problem_code,
-                required_count=status.expected_count,
+                minimum_count=status.bounds.minimum,
+                maximum_count=status.bounds.maximum,
                 declared_count=status.declared_count,
             )
         ),
