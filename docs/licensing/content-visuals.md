@@ -187,6 +187,90 @@ Um futuro adapter poderia chamar-se somente `flux_schnell_quality_test`, nunca
 - exigir revisão humana de semelhança com pessoa real, marcas, artefatos e
   adequação editorial antes de montagem.
 
+## Candidatos auditados em 2026-10-10
+
+Auditoria somente documental, feita nas páginas e na API pública do Hugging
+Face. Nada foi baixado, instalado nem executado, e `CONTENT_VISUAL_BACKEND`
+continua aceitando apenas `disabled` e `local_assets_quality_test`. O objetivo
+foi reavaliar, para três modelos mais novos, os riscos que reprovaram o FLUX.1
+Schnell.
+
+| Item | FLUX.2 klein 4B | Z-Image Turbo | Qwen-Image |
+| --- | --- | --- | --- |
+| Repositório | `black-forest-labs/FLUX.2-klein-4B` | `Tongyi-MAI/Z-Image-Turbo` | `Qwen/Qwen-Image` |
+| Revisão observada | `e7b7dc27f91deacad38e78976d1f2b499d76a294` | `f332072aa78be7aecdf3ee76d5c247082da564a6` | `75e0b4be04f60ec59a75f475837eced720f823b6` |
+| Acesso | público, sem gate | público, sem gate | público, sem gate |
+| Licença declarada | Apache-2.0 no card ("commercial use") | Apache-2.0 só no metadado | Apache-2.0 no card |
+| Arquivo de licença junto dos pesos | `LICENSE.md` com o texto Apache-2.0, sem aviso de copyright nem apêndice | **não há** | `LICENSE` existe; conteúdo não lido nesta auditoria |
+| Text encoder | arquitetura `Qwen3ForCausalLM` (2560 × 36 camadas); o repositório não nomeia o modelo de origem | arquitetura `Qwen3ForCausalLM` (2560 × 36 camadas); origem não nomeada | arquitetura `Qwen2_5_VLForConditionalGeneration` (3584 × 28 camadas); origem não nomeada |
+| Dados de treino | só afirma que filtrou NSFW e CSAM conhecido (parceria com a IWF); **não lista datasets, consentimento ou opt-out** | **não mencionados** | **não mencionados** |
+| Titularidade do output | não tratada | não tratada | não tratada |
+| Segurança | filtros de entrada/saída e exemplo de watermark no código de inferência de referência; C2PA só na API paga; lista de usos proibidos no card | nada descrito | nada descrito |
+| Requisito declarado | cerca de 13 GB de VRAM, cita RTX 3090 | "16G VRAM", 8 passos, guidance 0 | não declarado; exemplo usa 50 passos |
+| Layout Diffusers | cerca de 16,0 GB (sem o bundle single-file duplicado de 7,75 GB) | cerca de 32,8 GB | não medido; transformer em 9 shards |
+
+### O que mudou em relação ao FLUX.1 Schnell
+
+- **Risco 1 (licença só no metadado):** resolvido no FLUX.2 klein 4B e,
+  aparentemente, no Qwen-Image, que trazem o arquivo de licença ao lado dos
+  pesos. Continua aberto no Z-Image Turbo.
+- **Risco 2 (CLIP-L sem licença):** nenhum dos três usa CLIP-L. Os text
+  encoders têm a arquitetura Qwen3 ou Qwen2.5-VL; o upstream `Qwen/Qwen3-4B`
+  (revisão `1cfa9a7208912126459214e8b04321603b3df60c`) é Apache-2.0 com arquivo
+  `LICENSE`. Nenhum repositório, porém, declara de qual checkpoint os pesos do
+  encoder foram copiados: a correspondência é inferida das dimensões e não foi
+  confirmada por hash.
+- **Risco 3 (dados de treino não divulgados):** **continua aberto nos três.** O
+  FLUX.2 klein 4B é o único que diz algo, e só sobre filtragem; nenhum informa
+  datasets, proveniência, consentimento ou opt-out.
+- **Risco 4 (titularidade do output):** continua aberto nos três.
+- **Risco 5 (safety checker, watermark, C2PA):** melhor no FLUX.2 klein 4B, mas
+  os filtros e o watermark ficam no código de inferência de referência; não foi
+  verificado se o pipeline `diffusers` os aplica. Nada nos outros dois.
+- **Risco 6 (não é fonte factual):** o card do FLUX.2 klein 4B repete o aviso;
+  a regra de não gerar dado, gráfico, documento ou captura de tela permanece.
+
+Observações adicionais:
+
+- O card do FLUX.2 klein 4B lista usos proibidos (conteúdo ilegal, enganoso,
+  íntimo não consensual, decisão automatizada de alto risco) que não fazem parte
+  do texto Apache-2.0. O efeito jurídico dessa lista não foi avaliado.
+- A variante FLUX.2 klein **9B** é não comercial e não é candidata.
+- Hashes LFS observados para o FLUX.2 klein 4B: transformer
+  `9f29f9edcfdae452a653ffb51a534ca4decd389952c225724ff3b94042612a6e`; text
+  encoder `8c0506e7f4936fa7e26183a4fd8da4e2bdbc5990ba64ae441f965d51228f36ea` e
+  `82f2bd839378541b0557bfabaf37c7d3d637071fdcb73302dedd7cf61162ce07`; VAE
+  `ca70d2202afe6415bdbcb8793ba8cd99fd159cfe6192381504d6c4d3036e0f04`. Como no
+  FLUX.1, eles não fecham o inventário: JSONs e tokenizers também precisam ser
+  congelados.
+- Qualidade em português, aderência ao prompt, tempo e VRAM reais na RTX 3090
+  não foram medidos.
+
+### Decisão
+
+Nenhum dos três é aprovado para conteúdo monetizado. O motivo decisivo é o
+risco 3: o proprietário decidiu, em 2026-10-09 (D4), não aceitar por enquanto
+modelos de imagem com dataset de treino não divulgado, e os três estão nessa
+situação. Visuais monetizados continuam com acervo próprio, stock ou geração
+externa com direitos declarados no manifesto.
+
+Se a D4 for revista, o FLUX.2 klein 4B é o candidato com a melhor evidência:
+licença em arquivo, sem gate, sem CLIP-L, mitigações descritas e requisito
+compatível com a RTX 3090. Mesmo assim ele só poderia entrar como
+`flux2_klein_quality_test`, com os limites descritos para o FLUX.1 acima, e
+qualquer teste de geração precisa de autorização para o download e deve
+acontecer fora do pipeline, porque A3 exige `commercial_use=True` por arquivo.
+
+Fontes primárias consultadas em 2026-10-10:
+
+- <https://huggingface.co/black-forest-labs/FLUX.2-klein-4B> (card,
+  `LICENSE.md`, `text_encoder/config.json` e listagem de arquivos);
+- <https://huggingface.co/Tongyi-MAI/Z-Image-Turbo> (card,
+  `text_encoder/config.json` e listagem de arquivos);
+- <https://huggingface.co/Qwen/Qwen-Image> (card, `text_encoder/config.json` e
+  listagem de arquivos);
+- <https://huggingface.co/Qwen/Qwen3-4B> (metadados e presença de `LICENSE`).
+
 ## Gate para habilitar um backend
 
 Antes de alterar `Settings`, a opção escolhida precisa ter:
