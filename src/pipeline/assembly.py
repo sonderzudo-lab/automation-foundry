@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -59,6 +60,16 @@ _MAX_MP4_BYTES = 20 * 1024 * 1024 * 1024
 _MAX_MOOV_BYTES = 64 * 1024 * 1024
 _DURATION_TOLERANCE_SECONDS = Decimal("0.50")
 _QUANTUM = Decimal("0.0000000001")
+_FRAME_RATE = 30
+# "motion" edit: slow zoom and drift on every image, a short crossfade centred on
+# each cut, and cuts moved to the start of a sentence when one is close enough.
+_MOTION_FADE_SECONDS = Decimal("0.4")
+_MOTION_MIN_SEGMENT_SECONDS = Decimal("2.5")
+_MOTION_ZOOM = "0.08"
+_ASS_EVENT_TIME = re.compile(r"^(\d{1,2}):([0-5]\d):([0-5]\d)\.(\d{2})$")
+_ASS_KARAOKE_WORD = re.compile(r"\{\\k[fo]?(\d+)\}([^{]*)")
+_ASS_OVERRIDE = re.compile(r"\{[^}]*\}")
+_SENTENCE_END = re.compile(r"[.!?…][’”\"')\]]*$")
 
 
 class AssemblyRetryableAdapterError(RuntimeError):
@@ -78,6 +89,7 @@ class FFmpegQualityTestConfig:
     ffmpeg_sha256: str
     ffprobe_sha256: str
     timeout_seconds: float = 300.0
+    edit: Literal["static", "motion"] = "static"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +120,8 @@ class AssemblyAdapterResult:
     video_codec: str
     audio_codec: str
     subtitles_burned: bool
+    # How the images were laid over the audio: "static" or "motion".
+    edit: str = "static"
 
 
 AssemblyAdapter = Callable[[AssemblyRequest, Path], AssemblyAdapterResult]
@@ -257,34 +271,67 @@ def build_ffmpeg_quality_test_adapter(
             workspace = Path(workspace_value)
             caption_name = "captions.ass"
             shutil.copyfile(request.caption_path, workspace / caption_name)
-            segment_duration = request.duration_seconds / Decimal(
-                len(request.visual_paths)
-            )
+            visual_count = len(request.visual_paths)
+            if config.edit == "motion":
+                try:
+                    caption_text = request.caption_path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as exc:
+                    raise AssemblyPermanentAdapterError(
+                        "CONTENT_ASSEMBLY_CAPTIONS_UNREADABLE"
+                    ) from exc
+                cuts = _motion_cuts(
+                    request.duration_seconds,
+                    visual_count,
+                    _caption_sentence_starts(caption_text),
+                )
+                fade = _motion_fade(request.duration_seconds, cuts)
+                segment_durations = _motion_segment_durations(
+                    request.duration_seconds,
+                    cuts,
+                    fade,
+                )
+                filter_graph = _ffmpeg_motion_filter_graph(
+                    segment_durations=segment_durations,
+                    cuts=cuts,
+                    fade=fade,
+                    width=request.width,
+                    height=request.height,
+                    caption_name=caption_name,
+                )
+            else:
+                segment_durations = (
+                    request.duration_seconds / Decimal(visual_count),
+                ) * visual_count
+                filter_graph = _ffmpeg_filter_graph(
+                    visual_count=visual_count,
+                    width=request.width,
+                    height=request.height,
+                    caption_name=caption_name,
+                )
             command = [str(ffmpeg), "-hide_banner", "-nostdin", "-loglevel", "error"]
-            for visual_path in request.visual_paths:
+            for visual_path, segment_duration in zip(
+                request.visual_paths,
+                segment_durations,
+                strict=True,
+            ):
                 command.extend(
                     [
                         "-loop",
                         "1",
                         "-framerate",
-                        "30",
+                        str(_FRAME_RATE),
                         "-t",
                         _ffmpeg_decimal(segment_duration),
                         "-i",
                         str(visual_path),
                     ]
                 )
-            audio_index = len(request.visual_paths)
+            audio_index = visual_count
             command.extend(["-i", str(request.audio_path)])
             command.extend(
                 [
                     "-filter_complex",
-                    _ffmpeg_filter_graph(
-                        visual_count=len(request.visual_paths),
-                        width=request.width,
-                        height=request.height,
-                        caption_name=caption_name,
-                    ),
+                    filter_graph,
                     "-map",
                     "[video_out]",
                     "-map",
@@ -334,6 +381,7 @@ def build_ffmpeg_quality_test_adapter(
             video_codec=probe[3],
             audio_codec=probe[4],
             subtitles_burned=True,
+            edit=config.edit,
         )
 
     return assemble
@@ -428,6 +476,160 @@ def _ffmpeg_filter_graph(
         inputs = "".join(f"[visual_{index}]" for index in range(visual_count))
         filters.append(f"{inputs}concat=n={visual_count}:v=1:a=0[video_base]")
     filters.append(f"[video_base]ass=filename={caption_name}[video_out]")
+    return ";".join(filters)
+
+
+def _caption_sentence_starts(caption_text: str) -> tuple[Decimal, ...]:
+    """Return the moments, in seconds, where a new sentence starts being spoken.
+
+    Word starts come from the karaoke tags of each caption event; an event
+    without them counts as one unit at its own start. Unparsable lines are
+    skipped, and an empty result simply leaves the cuts where they were.
+    """
+    units: list[tuple[Decimal, str]] = []
+    in_events = False
+    for line in caption_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_events = stripped.casefold() == "[events]"
+            continue
+        if not in_events or not stripped.startswith("Dialogue:"):
+            continue
+        fields = stripped[len("Dialogue:") :].split(",", 9)
+        if len(fields) < 10:
+            continue
+        match = _ASS_EVENT_TIME.match(fields[1].strip())
+        if match is None:
+            continue
+        hours, minutes, seconds, centiseconds = (int(part) for part in match.groups())
+        cursor = (
+            Decimal(hours * 3600 + minutes * 60 + seconds)
+            + Decimal(centiseconds) / Decimal(100)
+        )
+        words = _ASS_KARAOKE_WORD.findall(fields[9])
+        if not words:
+            units.append((cursor, _ASS_OVERRIDE.sub("", fields[9]).strip()))
+            continue
+        for word_centiseconds, text in words:
+            units.append((cursor, text.strip()))
+            cursor += Decimal(int(word_centiseconds)) / Decimal(100)
+    units.sort(key=lambda unit: unit[0])
+    return tuple(
+        following_start
+        for (_start, text), (following_start, _following) in zip(units, units[1:], strict=False)
+        if _SENTENCE_END.search(text)
+    )
+
+
+def _motion_cuts(
+    duration_seconds: Decimal,
+    visual_count: int,
+    sentence_starts: tuple[Decimal, ...],
+) -> tuple[Decimal, ...]:
+    """Place one cut per image change, at a sentence start when one is close.
+
+    Each cut begins at its equal-share position and moves to the nearest
+    sentence start within half a share, as long as every image keeps a minimum
+    time on screen. Otherwise it stays at the equal-share position.
+    """
+    share = duration_seconds / Decimal(visual_count)
+    cuts: list[Decimal] = []
+    previous = Decimal("0")
+    for index in range(1, visual_count):
+        ideal = share * Decimal(index)
+        remaining = visual_count - 1 - len(cuts)
+        candidates = [
+            ((moment - ideal).copy_abs(), moment)
+            for moment in sentence_starts
+            if moment - previous >= _MOTION_MIN_SEGMENT_SECONDS
+            and duration_seconds - moment >= _MOTION_MIN_SEGMENT_SECONDS * remaining
+        ]
+        chosen = ideal
+        if candidates:
+            distance, moment = min(candidates)
+            if distance <= share / 2:
+                chosen = moment
+        cuts.append(chosen)
+        previous = chosen
+    return tuple(cuts)
+
+
+def _motion_fade(duration_seconds: Decimal, cuts: tuple[Decimal, ...]) -> Decimal:
+    """Crossfade length: the configured one, or less when an image is on screen briefly."""
+    bounds = (Decimal("0"), *cuts, duration_seconds)
+    shortest = min(end - start for start, end in zip(bounds, bounds[1:], strict=False))
+    return max(Decimal("0"), min(_MOTION_FADE_SECONDS, shortest / 2))
+
+
+def _motion_segment_durations(
+    duration_seconds: Decimal,
+    cuts: tuple[Decimal, ...],
+    fade: Decimal,
+) -> tuple[Decimal, ...]:
+    """Length of each image input; neighbours overlap by half a fade around a cut."""
+    bounds = (Decimal("0"), *cuts, duration_seconds)
+    last = len(bounds) - 2
+    durations = []
+    for index, (start, end) in enumerate(zip(bounds, bounds[1:], strict=False)):
+        length = end - start
+        if index > 0:
+            length += fade / 2
+        if index < last:
+            length += fade / 2
+        durations.append(length)
+    return tuple(durations)
+
+
+def _ffmpeg_motion_filter_graph(
+    *,
+    segment_durations: tuple[Decimal, ...],
+    cuts: tuple[Decimal, ...],
+    fade: Decimal,
+    width: int,
+    height: int,
+    caption_name: str,
+) -> str:
+    if (
+        not segment_durations
+        or len(cuts) != len(segment_durations) - 1
+        or caption_name != "captions.ass"
+    ):
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_FFMPEG_FILTER_INVALID")
+    filters = []
+    for index, segment_duration in enumerate(segment_durations):
+        frames = max(1, int((segment_duration * _FRAME_RATE).to_integral_value()))
+        # Images alternate between zooming in and out and drift sideways in
+        # alternating directions. zoompan snaps its window to whole pixels and the
+        # picture trembles; perspective resamples a window with fractional corners.
+        if index % 2 == 0:
+            zoom = f"(1+{_MOTION_ZOOM}*on/{frames})"
+        else:
+            zoom = f"(1+{_MOTION_ZOOM}-{_MOTION_ZOOM}*on/{frames})"
+        direction = "+" if index % 4 < 2 else "-"
+        left = f"((W-W/{zoom})/2{direction}(W-W/{zoom})/2*0.6*on/{frames})"
+        top = f"((H-H/{zoom})/2)"
+        filters.append(
+            f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+            f"setsar=1,fps={_FRAME_RATE},format=gbrp,"
+            f"perspective=x0='{left}':y0='{top}':x1='{left}+W/{zoom}':y1='{top}'"
+            f":x2='{left}':y2='{top}+H/{zoom}':x3='{left}+W/{zoom}':y3='{top}+H/{zoom}'"
+            ":sense=source:interpolation=cubic:eval=frame,"
+            f"format=yuv420p[visual_{index}]"
+        )
+    current = "visual_0"
+    for index, cut in enumerate(cuts, start=1):
+        target = f"mixed_{index}"
+        if fade > 0:
+            filters.append(
+                f"[{current}][visual_{index}]xfade=transition=fade"
+                f":duration={_ffmpeg_decimal(fade)}"
+                f":offset={_ffmpeg_decimal(cut - fade / 2)}[{target}]"
+            )
+        else:
+            filters.append(f"[{current}][visual_{index}]concat=n=2:v=1:a=0[{target}]")
+        current = target
+    filters.append(f"[{current}]ass=filename={caption_name}[video_out]")
     return ";".join(filters)
 
 
@@ -574,6 +776,7 @@ async def execute_approved_assembly_step(
             "video_codec": bundle.result.video_codec,
             "audio_codec": bundle.result.audio_codec,
             "subtitles_burned": bundle.result.subtitles_burned,
+            "edit": bundle.result.edit,
             "render_seconds": str(bundle.render_seconds),
             "format": context.format,
         }
@@ -1013,6 +1216,8 @@ def _validate_adapter_result(
         raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_COMMERCIAL_RIGHTS_REQUIRED")
     if result.subtitles_burned is not True:
         raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SUBTITLES_REQUIRED")
+    if result.edit not in {"static", "motion"}:
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_INVALID_PROVENANCE")
     if result.video_codec.strip().casefold() != "h264":
         raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_H264_REQUIRED")
     if result.audio_codec.strip().casefold() != "aac":

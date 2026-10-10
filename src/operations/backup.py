@@ -784,6 +784,7 @@ def _safe_configuration(configuration: Settings) -> dict[str, Any]:
         },
         "content_assembly": {
             "backend": configuration.content_assembly_backend,
+            "edit": configuration.content_assembly_edit,
             "ffmpeg_expected_sha256": configuration.content_ffmpeg_expected_sha256,
             "ffprobe_expected_sha256": configuration.content_ffprobe_expected_sha256,
         },

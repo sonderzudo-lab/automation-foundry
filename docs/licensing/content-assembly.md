@@ -25,6 +25,33 @@ inventário.
   custo externo zero. O resultado continua sujeito a revisão humana e nunca é
   publicado automaticamente.
 
+## Edição
+
+`CONTENT_ASSEMBLY_EDIT` escolhe como as imagens são distribuídas sobre o áudio.
+Não introduz ferramenta, codec ou licença nova: usa apenas filtros do mesmo
+build FFmpeg fixado.
+
+- `static` (padrão): imagens paradas, corte seco e partes iguais
+  (`duração / quantidade`).
+- `motion`: zoom e deslocamento lentos em cada imagem, crossfade de 0,4 s
+  centrado em cada corte e cortes movidos para o início de uma frase. O início
+  das frases vem dos tempos por palavra das legendas A4 (tags de karaokê do
+  ASS); um corte só sai da posição de partes iguais quando há um início de frase
+  a até meia parte de distância e toda imagem continua com pelo menos 2,5 s na
+  tela. Sem tempos por palavra, os cortes ficam em partes iguais.
+
+O movimento usa o filtro `perspective` com cantos fracionários avaliados a cada
+quadro. O `zoompan` foi descartado: ele posiciona a janela em pixels inteiros e
+a imagem treme (oscilação de 34–38 % entre quadros consecutivos na run 5, contra
+cerca de 2 % com `perspective`).
+
+Validação de 2026-10-10: a run 5 foi refeita fora do pipeline pelo adapter real
+com `edit="motion"` (render de 20 s contra 7 s do `static`, arquivo de 12,8 MB
+contra 3,3 MB) e o proprietário aprovou o resultado assistindo ao vídeo. O teste
+opt-in `tests/integration/test_ffmpeg_assembly.py` cobre as duas edições com o
+binário fixado. Nenhuma run A1→A8 completa usou `motion` ainda, e o formato long
+não foi exercitado.
+
 O parser interno é um gate estrutural limitado. Ele não decodifica frames nem
 substitui `ffprobe`; somente um teste real opt-in poderá provar que o arquivo é
 reproduzível e que as legendas foram visualmente queimadas.

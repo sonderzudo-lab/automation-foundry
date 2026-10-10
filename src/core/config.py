@@ -115,6 +115,9 @@ class Settings(BaseSettings):
     )
     # A5 aceita adapters injetados em testes; o build FFmpeg local ainda não foi auditado.
     content_assembly_backend: Literal["disabled", "ffmpeg_quality_test"] = "disabled"
+    # "motion" adiciona zoom lento, crossfade e cortes no início das frases; "static"
+    # mantém imagens paradas em partes iguais.
+    content_assembly_edit: Literal["static", "motion"] = "static"
     content_ffmpeg_path: str = Field(default="ffmpeg", min_length=1, max_length=1000)
     content_ffprobe_path: str = Field(default="ffprobe", min_length=1, max_length=1000)
     content_ffmpeg_expected_sha256: str | None = None

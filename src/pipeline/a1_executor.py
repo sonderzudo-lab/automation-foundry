@@ -1183,6 +1183,7 @@ def _ffmpeg_quality_test_config() -> FFmpegQualityTestConfig | None:
             1.0,
             float(settings.celery_soft_time_limit_seconds - 15),
         ),
+        edit="motion" if getattr(settings, "content_assembly_edit", "static") == "motion" else "static",
     )
 
 

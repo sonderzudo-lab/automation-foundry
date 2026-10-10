@@ -196,6 +196,13 @@ def test_assembly_backend_remains_fail_closed_until_ffmpeg_audit() -> None:
         Settings(_env_file=None, content_assembly_backend="ffmpeg")
 
 
+def test_assembly_edit_defaults_to_static_and_accepts_only_known_edits() -> None:
+    assert Settings(_env_file=None).content_assembly_edit == "static"
+    assert Settings(_env_file=None, content_assembly_edit="motion").content_assembly_edit == "motion"
+    with pytest.raises(ValidationError, match="content_assembly_edit"):
+        Settings(_env_file=None, content_assembly_edit="zoompan")
+
+
 def test_ffmpeg_quality_test_requires_pinned_binary_hashes() -> None:
     digest = "a" * 64
     settings = Settings(

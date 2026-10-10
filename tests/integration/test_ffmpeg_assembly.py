@@ -83,3 +83,45 @@ Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\kf500}Vídeo local reproduz
     assert result.width == 1080 and result.height == 1920
     assert abs(result.duration_seconds - Decimal("5")) <= Decimal("0.50")
     assert result.subtitles_burned is True
+    assert result.edit == "static"
+
+    # Same inputs with two images and the motion edit: zoom, one crossfade and a
+    # cut placed by the caption word timings must still yield a valid MP4.
+    second_visual = tmp_path / "visual-2.png"
+    _write_png(second_visual, width=1080, height=1920)
+    captions.write_text(
+        captions.read_text(encoding="utf-8").replace(
+            "Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{\\kf500}Vídeo local reproduzível",
+            "Dialogue: 0,0:00:00.00,0:00:02.60,Default,,0,0,0,,{\\kf130}Vídeo {\\kf130}local.\n"
+            "Dialogue: 0,0:00:02.60,0:00:05.00,Default,,0,0,0,,{\\kf120}Em {\\kf120}movimento.",
+        ),
+        encoding="utf-8",
+    )
+    motion_destination = tmp_path / "playable-motion.mp4"
+    motion = build_ffmpeg_quality_test_adapter(
+        FFmpegQualityTestConfig(
+            ffmpeg_path=ffmpeg,
+            ffprobe_path=ffprobe,
+            ffmpeg_sha256=ffmpeg_hash,
+            ffprobe_sha256=ffprobe_hash,
+            timeout_seconds=120,
+            edit="motion",
+        )
+    )(
+        AssemblyRequest(
+            audio_path=audio,
+            visual_paths=(visual, second_visual),
+            caption_path=captions,
+            format="short",
+            width=1080,
+            height=1920,
+            duration_seconds=Decimal("5"),
+        ),
+        motion_destination,
+    )
+
+    assert motion_destination.stat().st_size > 1_000
+    assert motion.edit == "motion"
+    assert motion.video_codec == "h264" and motion.audio_codec == "aac"
+    assert motion.width == 1080 and motion.height == 1920
+    assert abs(motion.duration_seconds - Decimal("5")) <= Decimal("0.50")
