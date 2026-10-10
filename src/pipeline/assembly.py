@@ -207,6 +207,12 @@ def get_configured_assembly_adapter(
     return unavailable
 
 
+FFMPEG_REQUIRED_BUILD_FLAGS = (
+    "--enable-gpl", "--enable-version3", "--enable-static",
+    "--enable-libx264", "--enable-libass",
+)
+
+
 def build_ffmpeg_quality_test_adapter(
     config: FFmpegQualityTestConfig,
 ) -> AssemblyAdapter:
@@ -229,16 +235,9 @@ def build_ffmpeg_quality_test_adapter(
         retryable_code="CONTENT_ASSEMBLY_FFMPEG_INVENTORY_UNAVAILABLE",
         permanent_code="CONTENT_ASSEMBLY_FFMPEG_INVENTORY_INVALID",
     )
-    required_flags = (
-        "--enable-gpl",
-        "--enable-version3",
-        "--enable-static",
-        "--enable-libx264",
-        "--enable-libass",
-    )
     if (
         "ffmpeg version " not in version_output.casefold()
-        or any(flag not in version_output for flag in required_flags)
+        or any(flag not in version_output for flag in FFMPEG_REQUIRED_BUILD_FLAGS)
     ):
         raise AssemblyPermanentAdapterError(
             "CONTENT_ASSEMBLY_FFMPEG_BUILD_UNSUPPORTED"

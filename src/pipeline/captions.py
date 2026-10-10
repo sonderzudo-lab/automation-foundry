@@ -74,6 +74,13 @@ _FASTER_WHISPER_SNAPSHOT_FILES = {
         "c9074644d9d1205686f16d411564729461324b75",
     ),
 }
+
+
+def caption_snapshot_file_sizes() -> tuple[tuple[str, int], ...]:
+    """Metadata for light readiness checks; full integrity remains in the step."""
+    return tuple((name, metadata[0]) for name, metadata in _FASTER_WHISPER_SNAPSHOT_FILES.items())
+
+
 _SOURCE = "content-engine:a4"
 _RETENTION_DAYS = resolve_retention_days("caption_ass")
 _MAX_WORDS = 10_000

@@ -9,6 +9,9 @@
     <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="executar-{{ executor.slug }}-title" tabindex="-1">
       <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar">{{ ui.icon("x") }}</a>
       <header class="dialog-header"><h2 id="executar-{{ executor.slug }}-title">Executar · {{ executor.name }}</h2><p>Roda localmente; runs, steps e evidências ficam registrados no banco.</p></header>
+      {% if executor.slug == "content-engine" %}
+      <p><a class="btn btn-outline btn-sm" href="/automations/content-engine/readiness">{{ ui.icon("circle-check") }}Verificar preparação</a> <span class="hint">Abre a página de diagnóstico; nada é consultado até você confirmar lá. Não dispara uma run.</span></p>
+      {% endif %}
       <form class="form-stack" method="post" action="/automations/{{ executor.slug }}/runs">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="field">

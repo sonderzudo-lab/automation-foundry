@@ -54,6 +54,11 @@ _KNOWN_DETAILS: dict[str, tuple[str, str]] = {
         "Formulário grande demais",
         "O conteúdo enviado excede o limite aceito pelo painel.",
     ),
+    "readiness in progress": (
+        "Verificação em andamento",
+        "Outra consulta de preparação ainda está em curso. Aguarde alguns segundos e "
+        "consulte de novo.",
+    ),
 }
 _STATUS_FALLBACKS: dict[int, tuple[str, str]] = {
     400: (

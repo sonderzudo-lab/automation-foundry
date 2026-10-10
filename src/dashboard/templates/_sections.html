@@ -53,7 +53,7 @@
 {%- endmacro %}
 
 {# Cartão completo de automação (Automações). #}
-{% macro automation_card(automation, executor, summary, last_run) -%}
+{% macro automation_card(automation, executor, summary, last_run, csrf_token="") -%}
 <article class="card automation{{ ' is-killed' if automation.kill_switch_active }}" id="auto-{{ automation.slug }}" aria-labelledby="auto-title-{{ automation.slug }}">
   <div class="card-header">
     <div class="automation-title">
@@ -96,6 +96,12 @@
       {% endif %}
     {% else %}
       <span>Sem disparo manual</span>
+    {% endif %}
+    {% if automation.slug == "content-engine" and csrf_token %}
+      <form method="post" action="/automations/content-engine/readiness">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-outline btn-sm" type="submit">{{ ui.icon("circle-check") }}Verificar preparação</button>
+      </form>
     {% endif %}
   </div>
 </article>

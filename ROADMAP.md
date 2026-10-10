@@ -101,7 +101,7 @@ Objetivo: transformar a implementação existente em uma automação editorial s
   externa foi consultada. Analytics pós-publicação por API oficial, freshness do connector e
   atribuição de resultado real continuam pendentes; nenhuma publicação ou chamada externa foi
   adicionada.
-- [ ] Validar modelos, FFmpeg, Ollama e consumo de VRAM. O caminho short opt-in passou com Ollama, Kokoro/CUDA e FFmpeg reais na run 4; carga prolongada, formato long e limites sustentados de VRAM continuam `bloqueado local`.
+- [ ] Validar modelos, FFmpeg, Ollama e consumo de VRAM. O caminho short opt-in passou com Ollama, Kokoro/CUDA e FFmpeg reais na run 4; carga prolongada, formato long e limites sustentados de VRAM continuam `bloqueado local`. A ação "Verificar preparação" do dashboard (`/automations/content-engine/readiness`) consulta, somente leitura e a pedido do operador, Ollama, storage, narração, snapshot de legendas, FFmpeg/ffprobe e a configuração de importação visual dos backends habilitados; ela é consultiva, não altera disparo nem gates e não substitui as verificações dos steps. Foi exercitada nesta máquina contra os serviços locais reais (todas as dependências habilitadas responderam), mas CUDA, VRAM, carga de modelos e inferência não são consultados e permanecem `bloqueado local`.
 
 **Portão:** uma pauta manual gera um pacote de vídeo revisável; nada é publicado sem aprovação; falhas e custos aparecem no dashboard.
 

@@ -1503,10 +1503,11 @@ async def test_dashboard_home_renders_redacted_state_and_safe_controls(
     application_routes = [
         route for route in application.routes if isinstance(route, APIRoute)
     ]
-    assert len(application_routes) == 29
+    assert len(application_routes) == 31
     route_methods = [route.methods for route in application_routes]
-    assert route_methods.count({"GET"}) == 21
-    assert route_methods.count({"POST"}) == 8
+    # +1 GET and +1 POST: the readiness page and its explicit, read-only diagnostic run.
+    assert route_methods.count({"GET"}) == 22
+    assert route_methods.count({"POST"}) == 9
 
 
 async def test_health_page_renders_only_redacted_probe_projection(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import ipaddress
 import mimetypes
@@ -75,6 +76,7 @@ from src.pipeline.local_export import (
     LocalExportPackage,
 )
 from src.pipeline.narration_review import NarrationReview
+from src.pipeline.readiness import ReadinessReport, collect_content_readiness
 from src.pipeline.thumbnail_review import (
     THUMBNAIL_REVIEW_APPROVAL_ACTION,
     ThumbnailReview,
@@ -141,6 +143,7 @@ templates.env.filters["byte_size"] = format_byte_size
 HealthCollector = Callable[[AsyncSession], Awaitable[HealthReport]]
 RetentionCollector = Callable[[AsyncSession], Awaitable[RetentionInventory]]
 DispatchPublisher = Callable[[int, str, QueueClass], None]
+ReadinessCollector = Callable[[], Awaitable[ReadinessReport]]
 
 
 def _nav_from_snapshot(snapshot: DashboardSnapshot) -> NavSummary:
@@ -186,6 +189,7 @@ def create_app(
     health_collector: HealthCollector = collect_health_report,
     retention_collector: RetentionCollector = collect_retention_inventory,
     dispatch_publisher: DispatchPublisher = _publish_dispatch_message,
+    readiness_collector: ReadinessCollector = collect_content_readiness,
 ) -> FastAPI:
     """Create the loopback dashboard with a process-local CSRF token."""
     _pin_static_media_types()
@@ -198,6 +202,7 @@ def create_app(
         redoc_url=None,
         openapi_url=None,
     )
+    readiness_lock = asyncio.Lock()
     application.mount(
         "/static",
         StaticFiles(directory=str(_STATIC_DIRECTORY)),
@@ -357,6 +362,48 @@ def create_app(
                 "csrf_token": control_token,
                 "executors": list_automation_executors(),
                 "notice": _DASHBOARD_NOTICES.get(request.query_params.get("notice", "")),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/automations/content-engine/readiness", response_class=HTMLResponse)
+    async def content_readiness_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        # Opening the page never probes anything: the operator asks by posting the form.
+        return templates.TemplateResponse(
+            request=request,
+            name="content_readiness.html",
+            context={
+                "report": None,
+                "nav": await load_nav_summary(session),
+                "csrf_token": control_token,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.post("/automations/content-engine/readiness", response_class=HTMLResponse)
+    async def run_content_readiness(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        """Read-only diagnostic; POST + CSRF so a stray GET (prefetch, cross-site) can't start it."""
+        fields = await _parse_form_fields(request, maximum_fields=1)
+        submitted_token = _single_form_value(fields, "csrf_token", maximum_length=128)
+        if not _csrf_token_matches(submitted_token, control_token):
+            raise HTTPException(status_code=403, detail="invalid csrf token")
+        if readiness_lock.locked():
+            raise HTTPException(status_code=409, detail="readiness in progress")
+        async with readiness_lock:
+            report = await readiness_collector()
+        return templates.TemplateResponse(
+            request=request,
+            name="content_readiness.html",
+            context={
+                "report": report,
+                "nav": await load_nav_summary(session),
+                "csrf_token": control_token,
             },
             headers={"Cache-Control": "no-store"},
         )
