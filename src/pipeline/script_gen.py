@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
 import structlog
 from openai import APIConnectionError, APITimeoutError, OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from tenacity import (
     before_sleep_log,
     retry,
@@ -54,6 +55,15 @@ class ScriptResult(BaseModel):
     full_script: str  # Roteiro completo com formatação do modelo (para revisão humana)
     hook: str         # Abertura narrada: o início de full_script, já sem formatação
     narration: str    # Texto puro para TTS: sem emojis, markdown, stage directions
+    # Frases da narração com número, proporção ou apelo a estudo que a pauta não sustenta.
+    unsourced_claims: list[str] = Field(default_factory=list)
+
+
+class SourcedFact(BaseModel):
+    """Fato fornecido pelo operador na pauta, com a fonte que o sustenta."""
+
+    claim: str = Field(min_length=3, max_length=500)
+    source: str = Field(min_length=3, max_length=500)
 
 
 class EmptyResponseError(RuntimeError):
@@ -418,6 +428,86 @@ def _system_base(persona: str, fmt: Literal["short", "long"]) -> str:
     )
 
 
+def _facts_rule(facts: Sequence[SourcedFact]) -> str:
+    """Bloco anexado a todos os system prompts: só entra dado que o operador forneceu."""
+    if not facts:
+        return (
+            "\n\nFATOS – REGRA ABSOLUTA:\n"
+            "Você não recebeu fontes para esta pauta. NÃO cite números, percentuais, "
+            "proporções (como 'o dobro' ou 'três vezes mais'), estatísticas, estudos, "
+            "pesquisas, instituições ou especialistas. Explique o tema de forma "
+            "qualitativa, com exemplos do cotidiano."
+        )
+    listed = "\n".join(f"  • {fact.claim} (fonte: {fact.source})" for fact in facts)
+    return (
+        "\n\nFATOS – REGRA ABSOLUTA:\n"
+        "Os únicos números, estatísticas e estudos que você pode citar são os da lista "
+        "abaixo, sem alterar os valores. NÃO invente nenhum outro dado.\n"
+        f"{listed}"
+    )
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|\n+")
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+_NUMBER_WORDS: dict[str, str] = {
+    "um": "1", "uma": "1", "dois": "2", "duas": "2", "três": "3", "quatro": "4",
+    "cinco": "5", "seis": "6", "sete": "7", "oito": "8", "nove": "9", "dez": "10",
+}
+# Proporções por extenso: as duas afirmações inventadas na run 11 tinham esta forma.
+_PROPORTION_RE = re.compile(
+    r"\b(?:dobr[ao]m?|dobrar|triplo|triplicam?|metade|por cento|milh(?:ão|ões)|bilh(?:ão|ões)"
+    r"|(?:duas|três|quatro|cinco|seis|sete|oito|nove|dez|cem)\s+vezes\s+"
+    r"(?:mais|menos|maior|menor|melhor|pior))\b",
+    re.IGNORECASE,
+)
+_AUTHORITY_RE = re.compile(
+    r"\b(?:estudos?|pesquisas?|cientistas|pesquisadores|especialistas|a ciência|dados)\s+"
+    r"(?:já\s+)?(?:mostr|revel|indic|comprov|apont|diz|afirm|suger|confirm|prov|descobr)\w*"
+    r"|\b(?:segundo|de acordo com)\s+(?:\w+\s+){0,2}(?:estudos?|pesquisas?|cientistas"
+    r"|pesquisadores|especialistas|a ciência)\b",
+    re.IGNORECASE,
+)
+_MAX_UNSOURCED_CLAIMS = 20
+
+
+def find_unsourced_claims(
+    narration: str,
+    *,
+    topic: str,
+    facts: Sequence[SourcedFact],
+) -> list[str]:
+    """
+    Lista as frases da narração com dado que nem a pauta nem os fatos sustentam.
+
+    É uma heurística determinística para orientar a revisão humana, não uma
+    checagem de fatos: marca números ausentes da pauta e dos fatos, proporções
+    por extenso e, quando nenhum fato foi fornecido, apelos a estudos.
+    """
+    supported = " ".join([topic, *(fact.claim for fact in facts)]).casefold()
+    allowed_numbers = set(_NUMBER_RE.findall(supported))
+    allowed_numbers.update(
+        digit for word, digit in _NUMBER_WORDS.items() if re.search(rf"\b{word}\b", supported)
+    )
+    claims: list[str] = []
+    for raw in _SENTENCE_SPLIT_RE.split(narration):
+        sentence = raw.strip()
+        if not sentence or sentence in claims:
+            continue
+        unsupported_number = any(
+            number not in allowed_numbers for number in _NUMBER_RE.findall(sentence)
+        )
+        unsupported_proportion = any(
+            match.group(0).casefold() not in supported
+            for match in _PROPORTION_RE.finditer(sentence)
+        )
+        appeals_to_authority = not facts and _AUTHORITY_RE.search(sentence) is not None
+        if unsupported_number or unsupported_proportion or appeals_to_authority:
+            claims.append(sentence)
+        if len(claims) == _MAX_UNSOURCED_CLAIMS:
+            break
+    return claims
+
+
 # ── Prompts das 4 etapas ──────────────────────────────────────────────────────
 
 
@@ -537,9 +627,19 @@ def _prompts_full_script(
             "palavras faladas, sem contar a abertura. Não anote a contagem na resposta."
         )
         if previous_words is not None:
+            # Só o número recusado não bastou: o modelo devolveu o mesmo tamanho três vezes.
+            if previous_words < body_words[0]:
+                correction = (
+                    f"curta demais: escreva pelo menos {body_words[0] - previous_words} "
+                    "palavras a mais"
+                )
+            else:
+                correction = (
+                    f"longa demais: corte pelo menos {previous_words - body_words[1]} palavras"
+                )
             length_block += (
-                f" A tentativa anterior ficou com {previous_words} palavras e foi recusada; "
-                "ajuste o tamanho."
+                f" A tentativa anterior ficou com {previous_words} palavras e foi recusada "
+                f"por estar {correction}."
             )
 
     system = (
@@ -589,6 +689,7 @@ def generate_script(
     fmt: Literal["short", "long"],
     recent_openings: list[str] | None = None,
     *,
+    facts: Sequence[SourcedFact] = (),
     client: OpenAI | None = None,
 ) -> ScriptResult:
     """
@@ -599,26 +700,31 @@ def generate_script(
         persona: Identidade editorial do canal (tom, estilo, público-alvo).
         fmt: Formato — 'short' (até 60s) ou 'long' (10+ min).
         recent_openings: Aberturas usadas em vídeos recentes (anti-template).
+        facts: Fatos com fonte fornecidos na pauta; são os únicos dados citáveis.
         client: Cliente OpenAI injetável para testes. Se None, cria do settings.
 
     Returns:
         ScriptResult com angle, outline, full_script, hook e narration.
         O campo `narration` é o texto limpo para o TTS (sem markdown/emojis/think).
+        `unsourced_claims` lista as frases que a revisão humana precisa conferir.
     """
     if client is None:
         client = _make_client()
 
-    log.info("script_gen_start", topic=topic, fmt=fmt)
+    log.info("script_gen_start", topic=topic, fmt=fmt, facts=len(facts))
+    facts_rule = _facts_rule(facts)
 
     sys1, usr1 = _prompts_angle(topic, persona, fmt)
-    angle = _call_llm(client, system=sys1, user=usr1, step="angle")
+    angle = _call_llm(client, system=sys1 + facts_rule, user=usr1, step="angle")
 
     sys2, usr2 = _prompts_outline(topic, angle, persona, fmt)
-    outline = _call_llm(client, system=sys2, user=usr2, step="outline")
+    outline = _call_llm(client, system=sys2 + facts_rule, user=usr2, step="outline")
 
     sys3, usr3 = _prompts_hook(topic, angle, outline, persona, fmt, recent_openings)
     # O hook passa pela mesma limpeza da narração: o texto revisado é o texto falado.
-    hook = _extract_narration(_call_llm(client, system=sys3, user=usr3, step="hook"))
+    hook = _extract_narration(
+        _call_llm(client, system=sys3 + facts_rule, user=usr3, step="hook")
+    )
 
     # O prompt sozinho não segura o tamanho: a narração é contada e, fora da faixa,
     # só o restante do roteiro é refeito, com o tamanho recusado informado ao modelo.
@@ -642,7 +748,7 @@ def generate_script(
             previous_words=previous_words,
         )
         body = _drop_repeated_opening(
-            _call_llm(client, system=sys4, user=usr4, step="full_script"),
+            _call_llm(client, system=sys4 + facts_rule, user=usr4, step="full_script"),
             hook,
         )
         full_script = f"{hook}\n\n{body}"
@@ -668,12 +774,15 @@ def generate_script(
             f"no formato '{fmt}'"
         )
 
+    unsourced_claims = find_unsourced_claims(narration, topic=topic, facts=facts)
+
     log.info(
         "script_gen_done",
         topic=topic,
         fmt=fmt,
         narration_chars=len(narration),
         narration_words=words,
+        unsourced_claims=len(unsourced_claims),
     )
 
     return ScriptResult(
@@ -682,6 +791,7 @@ def generate_script(
         full_script=full_script,
         hook=hook,
         narration=narration,
+        unsourced_claims=unsourced_claims,
     )
 
 

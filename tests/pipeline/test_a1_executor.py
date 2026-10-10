@@ -23,13 +23,19 @@ from sqlalchemy.ext.asyncio import (
 from src.core.database import Base
 from src.pipeline import a1_executor
 from src.pipeline.a1_executor import (
+    ContentScriptInput,
     execute_content_script_run,
     finalize_content_script_approval,
     load_content_script_review,
     parse_content_script_form,
     prepare_content_script_run,
 )
-from src.pipeline.script_gen import EmptyResponseError, ScriptLengthError, ScriptResult
+from src.pipeline.script_gen import (
+    EmptyResponseError,
+    ScriptLengthError,
+    ScriptResult,
+    SourcedFact,
+)
 from src.platform.approval_service import approval_payload_digest, decide_approval
 from src.platform.control_service import request_run_cancellation
 from src.platform.models import (
@@ -201,6 +207,58 @@ async def test_a1_success_is_observable_idempotent_and_reviewable(
     assert ledger[0].entry_type == "cost"
     assert ledger[0].amount == Decimal("0")
     assert ledger[0].currency == "BRL"
+
+
+async def test_a1_passes_sourced_facts_and_records_unsourced_claims(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    fact = {"claim": "Adultos precisam de 7 horas de sono", "source": "https://example.test/sono"}
+    received: list[object] = []
+
+    def generate(
+        _topic: str,
+        _persona: str,
+        _fmt: str,
+        _recent_openings: list[str] | None,
+        *,
+        facts: tuple[SourcedFact, ...],
+    ) -> ScriptResult:
+        received.extend(facts)
+        return _generated_script().model_copy(
+            update={"unsourced_claims": ["Quem dorme pouco erra o dobro."]}
+        )
+
+    result = await execute_content_script_run(
+        session,
+        idempotency_key="content-a1-facts",
+        input_payload={**_input_payload(), "facts": [fact]},
+        script_generator=generate,
+        storage_root=tmp_path / "storage",
+    )
+
+    run = await session.get(Run, result.run_id)
+    step = await session.get(StepRun, result.step_run_id)
+    artifact = await session.get(Artifact, result.artifact_id)
+    assert run is not None and step is not None and artifact is not None
+    assert received == [SourcedFact(**fact)]
+    assert run.input_payload == {**_input_payload(), "facts": [fact]}
+    assert step.output_payload is not None
+    assert step.output_payload["unsourced_claims"] == 1
+    bundle = json.loads(
+        (tmp_path / "storage" / artifact.relative_path).read_text(encoding="utf-8")
+    )
+    assert bundle["facts"] == [fact]
+    assert bundle["result"]["unsourced_claims"] == ["Quem dorme pouco erra o dobro."]
+
+
+def test_a1_input_without_facts_keeps_the_payload_of_earlier_runs() -> None:
+    """Runs anteriores ao campo `facts` precisam continuar idempotentes."""
+    assert ContentScriptInput.model_validate(_input_payload()).as_payload() == _input_payload()
+    with pytest.raises(ValidationError):
+        ContentScriptInput.model_validate(
+            {**_input_payload(), "facts": [{"claim": "Número sem fonte", "source": ""}]}
+        )
 
 
 async def test_a1_failure_is_structured_retryable_and_has_no_artifact(

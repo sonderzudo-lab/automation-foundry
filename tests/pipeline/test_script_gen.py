@@ -33,10 +33,12 @@ from openai import APITimeoutError
 from src.pipeline.script_gen import (
     ScriptLengthError,
     ScriptResult,
+    SourcedFact,
     _call_llm,
     _count_words,
     _extract_narration,
     _strip_think_blocks,  # alias para sanitize_llm_output (compatibilidade)
+    find_unsourced_claims,
     generate_script,
     sanitize_llm_output,
     save_script,
@@ -305,6 +307,7 @@ def test_short_script_outside_the_range_is_rewritten_with_feedback() -> None:
 
     assert client.chat.completions.create.call_count == 5
     assert "A tentativa anterior ficou com 60 palavras" in _system_prompt(client, 4)
+    assert "curta demais: escreva pelo menos 39 palavras a mais" in _system_prompt(client, 4)
     assert result.hook == "hook"
     assert result.narration == f"hook\n\n{_FILLER}"
 
@@ -318,6 +321,7 @@ def test_short_script_still_outside_the_range_raises_after_three_attempts() -> N
         generate_script(topic="Sono", persona="Ciência", fmt="short", client=client)
 
     assert client.chat.completions.create.call_count == 6
+    assert "longa demais: corte pelo menos 51 palavras" in _system_prompt(client, 5)
 
 
 def test_long_script_has_no_verified_word_range_yet() -> None:
@@ -332,6 +336,109 @@ def test_long_script_has_no_verified_word_range_yet() -> None:
 
 def test_word_count_ignores_standalone_punctuation() -> None:
     assert _count_words("Ela disse — sem pressa — que 8 horas bastam.") == 8
+
+
+# ── Testes da regra de fatos com fonte ────────────────────────────────────────
+
+_FACT = SourcedFact(
+    claim="Adultos precisam de 7 a 9 horas de sono por noite",
+    source="https://example.test/diretriz-sono",
+)
+
+
+def test_all_four_system_prompts_forbid_data_when_no_facts_are_given() -> None:
+    """Sem fatos na pauta, toda etapa recebe a proibição de números e estudos."""
+    client = _client_with("ângulo", "outline", "hook", "roteiro")
+
+    generate_script(topic="Sono", persona="Ciência", fmt="long", client=client)
+
+    for index in range(4):
+        prompt = _system_prompt(client, index)
+        assert "FATOS – REGRA ABSOLUTA" in prompt
+        assert "Você não recebeu fontes" in prompt
+
+
+def test_all_four_system_prompts_list_the_sourced_facts() -> None:
+    """Com fatos, toda etapa recebe a lista com a fonte e a proibição de inventar outros."""
+    client = _client_with("ângulo", "outline", "hook", "roteiro")
+
+    generate_script(topic="Sono", persona="Ciência", fmt="long", facts=[_FACT], client=client)
+
+    for index in range(4):
+        prompt = _system_prompt(client, index)
+        assert "Adultos precisam de 7 a 9 horas de sono por noite" in prompt
+        assert "fonte: https://example.test/diretriz-sono" in prompt
+        assert "NÃO invente nenhum outro dado" in prompt
+        assert "Você não recebeu fontes" not in prompt
+
+
+def test_unsourced_claims_reproduce_the_invented_statements_of_run_11() -> None:
+    """As duas afirmações inventadas na run 11 eram proporções por extenso."""
+    narration = (
+        "Sacrificar uma hora de sono dobra a chance de cometer erros críticos. "
+        "Esse erro custa três vezes mais tempo para corrigir. "
+        "Dormir bem muda o seu dia."
+    )
+
+    claims = find_unsourced_claims(
+        narration,
+        topic="Por que cortar uma hora de sono custa mais do que parece",
+        facts=(),
+    )
+
+    assert claims == [
+        "Sacrificar uma hora de sono dobra a chance de cometer erros críticos.",
+        "Esse erro custa três vezes mais tempo para corrigir.",
+    ]
+
+
+def test_unsourced_claims_flag_numbers_and_studies_without_a_source() -> None:
+    narration = (
+        "O cansaço reduz até 30% da sua capacidade.\n\n"
+        "Estudos mostram que o cérebro precisa de pausa. "
+        "Segundo uma pesquisa recente, isso piora. "
+        "Cortar 1 hora de sono pesa no dia seguinte."
+    )
+
+    claims = find_unsourced_claims(narration, topic="Cortar uma hora de sono", facts=())
+
+    assert claims == [
+        "O cansaço reduz até 30% da sua capacidade.",
+        "Estudos mostram que o cérebro precisa de pausa.",
+        "Segundo uma pesquisa recente, isso piora.",
+    ]
+
+
+def test_unsourced_claims_accept_what_the_sourced_facts_support() -> None:
+    narration = (
+        "Adultos precisam de 7 a 9 horas de sono. "
+        "Estudos mostram isso há anos. "
+        "Quem dorme 5 horas rende a metade."
+    )
+
+    claims = find_unsourced_claims(narration, topic="Sono", facts=[_FACT])
+
+    assert claims == ["Quem dorme 5 horas rende a metade."]
+
+
+def test_unsourced_claims_ignore_idioms_that_only_look_like_proportions() -> None:
+    """Visto em geração real: "pense duas vezes" não é uma proporção."""
+    narration = "Pense duas vezes: o prejuízo não é só no sono."
+
+    assert find_unsourced_claims(narration, topic="Sono", facts=()) == []
+
+
+def test_generate_script_reports_unsourced_claims_in_the_result() -> None:
+    client = _client_with(
+        "ângulo",
+        "outline",
+        "Você dorme errado.",
+        "Estudos mostram que 80% das pessoas dormem mal. O resto é hábito.",
+    )
+
+    result = generate_script(topic="Sono", persona="Ciência", fmt="long", client=client)
+
+    assert result.unsourced_claims == ["Estudos mostram que 80% das pessoas dormem mal."]
 
 
 # ── Testes de retry em _call_llm ──────────────────────────────────────────────

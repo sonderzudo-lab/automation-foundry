@@ -55,6 +55,7 @@ from src.pipeline.script_gen import (
     EmptyResponseError,
     ScriptLengthError,
     ScriptResult,
+    SourcedFact,
     generate_script,
 )
 from src.pipeline.thumbnail_review import (
@@ -116,7 +117,9 @@ _SOURCE = "content-engine:a1"
 CONTENT_SCRIPT_APPROVAL_ACTION = "review_content_script_a1"
 _MAX_BUNDLE_BYTES = 5 * 1024 * 1024
 
-ScriptGenerator = Callable[[str, str, Literal["short", "long"], list[str] | None], ScriptResult]
+# Chamado como (topic, persona, format, recent_openings) e, quando a pauta traz
+# fatos, também com o argumento nomeado `facts`.
+ScriptGenerator = Callable[..., ScriptResult]
 
 
 class ContentScriptInput(BaseModel):
@@ -126,6 +129,18 @@ class ContentScriptInput(BaseModel):
     persona: str = Field(min_length=3, max_length=1_000)
     format: Literal["short", "long"]
     recent_openings: list[str] = Field(default_factory=list, max_length=10)
+    facts: list[SourcedFact] = Field(default_factory=list, max_length=10)
+
+    def as_payload(self) -> dict[str, object]:
+        """Return the JSON payload persisted on the run and on its step.
+
+        `facts` is left out when empty so runs created before the field existed
+        keep the exact payload their idempotency keys were recorded with.
+        """
+        payload = self.model_dump(mode="json")
+        if not self.facts:
+            del payload["facts"]
+        return payload
 
     @field_validator("topic", "persona")
     @classmethod
@@ -196,7 +211,7 @@ def parse_content_script_form(values: dict[str, str]) -> dict[str, object]:
             "recent_openings": openings.splitlines(),
         }
     )
-    return payload.model_dump(mode="json")
+    return payload.as_payload()
 
 
 async def prepare_content_script_run(
@@ -225,7 +240,7 @@ async def prepare_content_script_run(
         automation=automation,
         idempotency_key=idempotency_key,
         trigger="retry" if retry_of_run_id is not None else trigger,
-        input_payload=input_data.model_dump(mode="json"),
+        input_payload=input_data.as_payload(),
         retry_of_run_id=retry_of_run_id,
         retry_requested_by=retry_requested_by,
         retry_reason=retry_reason,
@@ -260,7 +275,7 @@ async def execute_content_script_run(
         retry_reason=retry_reason,
         experiment_id=experiment_id,
         trigger=trigger,
-        input_payload=input_data.model_dump(mode="json"),
+        input_payload=input_data.as_payload(),
     )
     run = creation.run
     root = Path(settings.storage_root) if storage_root is None else storage_root
@@ -315,10 +330,13 @@ async def execute_content_script_run(
             )
         await transition_run(session, run, RunStatus.RUNNING, note="Content Engine A1 started")
 
-    generator = script_generator or generate_script
+    generator: ScriptGenerator = script_generator or generate_script
     artifact_path = _artifact_path(root, run_id=_persisted_id(run.id, "run"))
 
     async def generate_operation(_context: TaskAttemptContext) -> dict[str, object]:
+        # `facts` só é passado quando a pauta os traz: geradores injetados que não
+        # conhecem o argumento continuam válidos para as demais runs.
+        keyword_arguments = {"facts": tuple(input_data.facts)} if input_data.facts else {}
         try:
             generated = await asyncio.to_thread(
                 generator,
@@ -326,6 +344,7 @@ async def execute_content_script_run(
                 input_data.persona,
                 input_data.format,
                 input_data.recent_openings or None,
+                **keyword_arguments,
             )
         except (APITimeoutError, APIConnectionError, EmptyResponseError) as exc:
             raise RetryableTaskError("CONTENT_LLM_UNAVAILABLE") from exc
@@ -348,6 +367,7 @@ async def execute_content_script_run(
             "model": settings.ollama_model,
             "full_script_characters": len(generated.full_script),
             "narration_characters": len(generated.narration),
+            "unsourced_claims": len(generated.unsourced_claims),
         }
 
     task_result = await execute_task_step(
@@ -358,7 +378,7 @@ async def execute_content_script_run(
             queue=QueueClass.GPU,
             ordinal=1,
             idempotency_key=step_key,
-            input_payload=input_data.model_dump(mode="json"),
+            input_payload=input_data.as_payload(),
         ),
         policy=RetryPolicy(
             max_attempts=1,
@@ -1357,6 +1377,7 @@ def _write_script_bundle(
         "persona": input_data.persona,
         "format": input_data.format,
         "model": model,
+        "facts": [fact.model_dump(mode="json") for fact in input_data.facts],
         "result": result.model_dump(mode="json"),
     }
     try:
