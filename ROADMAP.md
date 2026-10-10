@@ -109,6 +109,12 @@ Objetivo: transformar a implementação existente em uma automação editorial s
 
 Objetivo: deixar o sistema rodar no computador principal com recuperação previsível.
 
+Evidência operacional de 2026-10-09: storage e modelos Ollama migrados para o D: com cópias
+verificadas por SHA-256 e origens preservadas. Os wrappers Windows agora resolvem `STORAGE_ROOT`
+pelo mesmo parser da aplicação; reinício pela tarefa, inventário, export local e saúde passaram.
+Docker, novo backup agendado no destino e reboot real continuam pendentes, conforme
+`docs/operations/storage-migration.md`.
+
 - [x] Definir startup e shutdown seguros no Windows. O supervisor singleton executa preflight e migrations, inicia a topologia fixa em processos ocultos, usa shutdown cooperativo por eventos nomeados e Job Object como fallback, protege o status contra reutilizacao de PID e para somente os servicos Compose que iniciou, sem remover volumes. O ciclo completo passou em Windows real com PostgreSQL persistente, Redis, dashboard, Beat e três workers; stop/start cooperativo em idle preservou os serviços Compose não pertencentes ao supervisor.
 - [x] Implementar health checks locais redigidos e com timeout limitado. O probe real dos três workers no Windows mantém o timeout interno do Celery e uma margem externa limitada para o overhead do inspect; duas observações saudáveis resolveram automaticamente o alerta durável criado pelo falso timeout anterior.
 - [x] Transformar degradações persistentes de health em alertas locais deduplicados. Duas observações degradadas abrem ou atualizam o alerta e duas saudáveis o resolvem; `skip` não altera o tratamento. Estado e eventos ficam no PostgreSQL, a task roda na fila `io` e não envia notificações externas.

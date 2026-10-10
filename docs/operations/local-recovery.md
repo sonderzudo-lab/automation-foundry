@@ -47,8 +47,15 @@ Comportamento:
 - Se o runtime já estiver ligado, não faz nada.
 - Um `automation-foundry-runtime stop` encerra o supervisor com código 0 e a tarefa **não** o
   religa. Para voltar, faça login de novo ou rode `Start-ScheduledTask -TaskName AutomationFoundryRuntime`.
-- O registro fica em `storage/runtime/logs/autostart.log`; os logs de cada serviço continuam na
+- O registro fica em `<STORAGE_ROOT>/runtime/logs/autostart.log`; os logs de cada serviço continuam na
   mesma pasta.
+
+Os scripts de autostart e backup resolvem `STORAGE_ROOT` pelo mesmo `Settings` da aplicação:
+ambiente não vazio tem precedência sobre `.env`, e o default é `./storage`. Caminhos relativos
+são resolvidos na raiz do repositório, inclusive quando o script é chamado de outro diretório.
+Logs, trava de backup e destino padrão dos bundles acompanham essa raiz; `-Destination` mantém
+seu override explícito. Falha de configuração interrompe o script sem expor valores sensíveis.
+Para trocar de disco, consulte [a migração de storage](storage-migration.md).
 
 Limites conhecidos: a tarefa depende do login do usuário (com a sessão encerrada, nada roda), uma
 janela pode piscar no início por causa do PowerShell oculto, e suspensão ou hibernação do

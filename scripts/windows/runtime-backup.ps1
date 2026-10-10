@@ -35,11 +35,13 @@ $ErrorActionPreference = 'Stop'
 $TaskName = 'AutomationFoundryBackup'
 $RuntimeTaskName = 'AutomationFoundryRuntime'
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+. (Join-Path $PSScriptRoot 'storage-paths.ps1')
+$StorageRoot = Get-FoundryStorageRoot -RepositoryRoot $RepositoryRoot
 $Runtime = Join-Path $RepositoryRoot '.venv\Scripts\automation-foundry-runtime.exe'
 $Cli = Join-Path $RepositoryRoot '.venv\Scripts\automation-foundry.exe'
-$LogFile = Join-Path $RepositoryRoot 'storage\runtime\logs\backup.log'
-$LockFile = Join-Path $RepositoryRoot 'storage\runtime\backup.lock'
-$DefaultBundleRoot = Join-Path $RepositoryRoot 'storage\backups'
+$LogFile = Join-Path $StorageRoot 'runtime\logs\backup.log'
+$LockFile = Join-Path $StorageRoot 'runtime\backup.lock'
+$DefaultBundleRoot = Join-Path $StorageRoot 'backups'
 $MinimumFreeGigabytes = 5
 $AlertKey = 'backup-failed'
 $AlertAutomation = 'platform-health'
@@ -259,9 +261,14 @@ function Invoke-Status {
     }
 }
 
-switch ($Action) {
-    'install' { Invoke-Install }
-    'uninstall' { Invoke-Uninstall }
-    'status' { Invoke-Status }
-    'run' { Invoke-Run }
+Push-Location -LiteralPath $RepositoryRoot
+try {
+    switch ($Action) {
+        'install' { Invoke-Install }
+        'uninstall' { Invoke-Uninstall }
+        'status' { Invoke-Status }
+        'run' { Invoke-Run }
+    }
+} finally {
+    Pop-Location
 }

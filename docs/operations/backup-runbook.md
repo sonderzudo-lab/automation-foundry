@@ -1,9 +1,13 @@
 # Runbook de backup e restauração
 
 **Status:** a rotina semanal de backup está implementada e instalada desde 2026-10-09; a restauração
-continua sendo um procedimento manual e deliberado. As quatro decisões do proprietário (seção 7)
-seguem em aberto e a rotina usa os padrões mais seguros: destino local, nada é apagado e os pesos de
-modelo continuam nos bundles.
+continua sendo um procedimento manual e deliberado. O storage e o destino padrão dos bundles
+foram transferidos para o D: em 2026-10-09; nada foi apagado e os pesos do modelo de legendas
+continuam nos bundles. Demais decisões de retenção e cópia externa permanecem na seção 7.
+
+Neste guia, `storage/` significa a raiz configurada por `STORAGE_ROOT`, atualmente
+`D:/automation-foundry/storage`. Os wrappers Windows usam essa mesma configuração para logs,
+trava e verificação de espaço. Consulte [a migração](storage-migration.md) para validação e retorno.
 
 ## 1. O que o backup cobre
 
@@ -25,7 +29,7 @@ Fonte: `src/operations/backup.py`. Cada bundle é uma pasta em `storage/backups/
 - **A tarefa do Agendador** (`AutomationFoundryRuntime`): reinstale com
   `scripts\windows\runtime-autostart.ps1 install`.
 
-## 2. Estado atual (medido em 2026-10-09)
+## 2. Medição anterior à migração (2026-10-09)
 
 | Item | Valor |
 |---|---|
@@ -46,8 +50,9 @@ Fonte: `src/operations/backup.py`. Cada bundle é uma pasta em `storage/backups/
 2. **Cada backup é completo e inclui os pesos de modelo.** `storage/models` não é excluído, então
    cada bundle teria cerca de 500 MB, quase todo de arquivos que mal comprimem e que são
    reproduzíveis a partir do snapshot fixado.
-3. **O mesmo disco.** O destino padrão é `storage/backups`, no `C:`. Uma falha do disco leva dados e
-   backups juntos. `--destination` aceita outro diretório (por exemplo, um disco externo).
+3. **O mesmo disco dos artefatos.** O destino padrão é `<STORAGE_ROOT>/backups`, agora no `D:`.
+   Uma falha desse disco leva artefatos e backups juntos. `--destination` aceita outro diretório
+   (por exemplo, um disco externo).
 4. **A restauração só entra em storage vazio e limpa o banco.** `restore-backup` exige que não haja
    arquivos de artefato em `storage/` e roda `pg_restore --clean --if-exists` no banco configurado.
 5. **`restore-backup` não serve para ensaio.** Ele sempre age no serviço `postgres` do Compose deste
@@ -112,7 +117,7 @@ O que a tarefa faz, na ordem:
 6. Em falha, abre o alerta `Backup semanal falhou` (erro, automação `platform-health`); no próximo
    backup bem-sucedido o alerta é resolvido sozinho.
 
-O registro fica em `storage/runtime/logs/backup.log`. A tarefa **nunca apaga bundles**. Se o PC
+O registro fica em `<STORAGE_ROOT>/runtime/logs/backup.log`. A tarefa **nunca apaga bundles**. Se o PC
 estiver desligado no domingo, ela roda na próxima oportunidade; a tolerância de 12 h do brief
 semanal cobre uma parada de 1 minuto na segunda-feira.
 
@@ -165,8 +170,8 @@ própria e não toca o `automation-foundry-postgres`.
 ## 7. Decisões que só o proprietário pode tomar
 
 1. **Frequência e horário.** Semanal, domingo 22:00 (Brasília), é só uma sugestão.
-2. **Destino fora do disco do sistema.** Um disco externo resolve a falha do `C:` sem efeito
-   externo. Enviar o bundle para a nuvem é uma ação externa com conteúdo privado (artefatos,
+2. **Cópia adicional independente.** O destino padrão já está no `D:` junto dos artefatos;
+   uma cópia em outro disco ainda protege contra falha desse volume. Enviar o bundle para a nuvem é uma ação externa com conteúdo privado (artefatos,
    banco): exigiria criptografia e a sua autorização explícita, e não está proposto aqui.
 3. **Retenção.** Sem rotação, 52 backups de cerca de 500 MB somam perto de 26 GB por ano. Apagar
    antigos exige autorização; a proposta é **manter todos** até você decidir uma política.
@@ -177,7 +182,9 @@ própria e não toca o `automation-foundry-postgres`.
 
 ## 8. O que ainda não foi validado
 
-- Um destino **fora do disco do sistema**: o bundle de 09/10 está em `storage/backups`, no mesmo `C:`.
+- A criação de um novo bundle pela tarefa semanal depois da migração para o `D:`. A cópia do
+  bundle `20261009T224802Z-1dc5fcc4` no novo disco passou pela verificação independente; nenhum
+  backup adicional foi criado durante a migração.
 - `restore-backup` de ponta a ponta num ambiente novo, por desenho só possível numa recuperação real.
 - O primeiro disparo no horário agendado (domingo 11/10, 22:00) e o comportamento da tarefa de
   autostart se o PC ligar durante um backup atrasado.

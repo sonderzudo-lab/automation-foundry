@@ -26,9 +26,11 @@ $ErrorActionPreference = 'Stop'
 
 $TaskName = 'AutomationFoundryRuntime'
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+. (Join-Path $PSScriptRoot 'storage-paths.ps1')
+$StorageRoot = Get-FoundryStorageRoot -RepositoryRoot $RepositoryRoot
 $Runtime = Join-Path $RepositoryRoot '.venv\Scripts\automation-foundry-runtime.exe'
-$LogFile = Join-Path $RepositoryRoot 'storage\runtime\logs\autostart.log'
-$BackupLock = Join-Path $RepositoryRoot 'storage\runtime\backup.lock'
+$LogFile = Join-Path $StorageRoot 'runtime\logs\autostart.log'
+$BackupLock = Join-Path $StorageRoot 'runtime\backup.lock'
 $BackupWaitSeconds = 1800
 $DockerWaitSeconds = 600
 $MaxStartAttempts = 5
@@ -126,9 +128,14 @@ function Invoke-Status {
     if (Test-Path $Runtime) { & $Runtime status }
 }
 
-switch ($Action) {
-    'install' { Invoke-Install }
-    'uninstall' { Invoke-Uninstall }
-    'status' { Invoke-Status }
-    'run' { Invoke-Run }
+Push-Location -LiteralPath $RepositoryRoot
+try {
+    switch ($Action) {
+        'install' { Invoke-Install }
+        'uninstall' { Invoke-Uninstall }
+        'status' { Invoke-Status }
+        'run' { Invoke-Run }
+    }
+} finally {
+    Pop-Location
 }
