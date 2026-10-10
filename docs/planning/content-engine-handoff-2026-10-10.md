@@ -5,6 +5,28 @@ agente que o leia. Ele descreve o que foi decidido, o que foi feito e verificado
 **não** foi verificado e o próximo passo. Nada aqui substitui `AGENTS.md`, `ARQUITETURA.md`,
 `ROADMAP.md` e a skill `.agents/skills/build-content-engine/SKILL.md`: leia-os primeiro.
 
+## Atualização de 2026-10-10, depois da passagem
+
+Este documento continua sendo o plano de trabalho. O que mudou desde que foi escrito:
+
+- **Passo 1 concluído.** A run 12 falhou em A3 (`CONTENT_VISUALS_COUNT_MISMATCH`: 8 imagens
+  exigidas, 5 no manifesto). Depois de duas correções, a run 13 atravessou A1→A8 com o
+  conjunto novo: narração Qwen3 de 45,46 s, 6 imagens, legendas com 97,6 % de
+  correspondência, edição `motion`, alinhamento v2 em `pass`, quatro gates aprovados, nada
+  publicado. Vídeo: `D:\automation-foundry\storage\content-engine\run-13\assembly\video.mp4`.
+  As imagens eram de outro tema; vale como teste técnico.
+- **Commits novos:** `cd4684d` (o gate A2 recusa a aprovação enquanto o manifesto não
+  serve para A3), `33412ae` (o manifesto define a quantidade de imagens dentro de uma faixa
+  de 4 a 10 s por imagem), `2ffecc8` (roadmap com a run 13).
+- **Manifesto de imagens:** `imports/content-visuals/manifest.json` voltou a declarar 6
+  imagens (cobre narrações de 24 a 60 s); o de 5 ficou guardado na mesma pasta.
+- **Passo 3, parte documental, concluída.** FLUX.2 klein 4B, Z-Image Turbo e Qwen-Image
+  foram auditados em `docs/licensing/content-visuals.md`. Nenhum divulga os dados de treino,
+  então a D4 mantém os três fora de conteúdo monetizado. Nada foi baixado.
+- **Ainda pendente do proprietário:** a nota dele nos cinco itens da D1 para o vídeo da
+  run 13 e a decisão escrita do passo 2 (riscos de licença da voz).
+- Suíte: 842 passam, 13 pulados, mais as três falhas de instância única de sempre.
+
 ## Como trabalhar com o proprietário
 
 - Ele não é técnico em mídia/ML. Explique em linguagem simples, recomende uma opção e peça
@@ -115,12 +137,13 @@ primeiro vídeo monetizado. Até lá o backend é `quality-test-only`.
 
 ## Próximos passos, em ordem
 
-1. Pedir ao proprietário que dispare um short pelo painel (estilo "Rotação automática",
-   estrutura "Lista de itens") e acompanhar os gates A1, A2, A7, A8. Diagnosticar o que
-   falhar; é a primeira run real com tudo junto.
+1. **Feito (run 13).** Pedir ao proprietário que dispare um short pelo painel (estilo
+   "Rotação automática", estrutura "Lista de itens") e acompanhar os gates A1, A2, A7, A8.
+   Falta só a nota dele no vídeo.
 2. Registrar por escrito a decisão dele sobre os riscos de licença da voz e, só então,
    discutir tirar o escopo `quality-test-only`.
-3. Auditoria de licença de imagem (itens que reprovaram o FLUX.1 em
+3. **Parte documental feita; resultado: nenhum aprovado sob a D4.** Auditoria de licença
+   de imagem (itens que reprovaram o FLUX.1 em
    `docs/licensing/content-visuals.md`): candidatos FLUX.2 klein 4B, Z-Image Turbo,
    Qwen-Image. Lembrar a D4: ele não aceitou o risco de dataset. Teste de geração só fora
    do pipeline, porque o A3 exige `commercial_use=True` por arquivo.
