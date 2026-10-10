@@ -1017,6 +1017,18 @@ def test_extract_narration_removes_bracket_labels_and_word_count_notes() -> None
     )
 
 
+def test_extract_narration_drops_hashtags_instead_of_narrating_them() -> None:
+    """Na run 5 a linha de hashtags perdeu só o "#" e foi lida pela voz."""
+    text = (
+        "Zerar essa dívida muda o seu dia.\n\n"
+        "#produtividade #foco #gestãotempo\n"
+        "Siga para mais #dicas de foco."
+    )
+    assert _extract_narration(text) == (
+        "Zerar essa dívida muda o seu dia.\n\nSiga para mais de foco."
+    )
+
+
 def test_extract_narration_keeps_spoken_parentheses_about_words() -> None:
     """Só a anotação de contagem some; um parêntese falado comum permanece."""
     text = "Ela repetiu (sem pressa) as mesmas palavras."

@@ -275,6 +275,8 @@ _TIMING_ANNOTATION_RE = re.compile(
 
 # Rótulos entre colchetes ([10-40 segundos], [Desenvolvimento]) e a contagem que o
 # modelo anota ao receber uma faixa de tamanho: (100 palavras), (Total: ~120 palavras).
+# Hashtags no fim do roteiro: sem isto o "#" some e as palavras são narradas.
+_HASHTAG_RE = re.compile(r"(?<!\w)#\w+")
 _BRACKET_LABEL_RE = re.compile(r"\[[^\]\n]{0,60}\]")
 _WORD_COUNT_NOTE_RE = re.compile(r"\([^)\n]{0,20}\d+\s+palavras[^)\n]{0,20}\)", re.IGNORECASE)
 
@@ -420,6 +422,7 @@ def _extract_narration(text: str) -> str:
         line = _TIMING_ANNOTATION_RE.sub("", line)
         line = _BRACKET_LABEL_RE.sub("", line)
         line = _WORD_COUNT_NOTE_RE.sub("", line)
+        line = _HASHTAG_RE.sub("", line)
 
         # 7. Remove emojis
         line = _EMOJI_RE.sub("", line)
