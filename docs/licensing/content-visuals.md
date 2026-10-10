@@ -268,6 +268,33 @@ compatível com a RTX 3090. Mesmo assim ele só poderia entrar como
 qualquer teste de geração precisa de autorização para o download e deve
 acontecer fora do pipeline, porque A3 exige `commercial_use=True` por arquivo.
 
+### Teste de geração fora do pipeline (2026-10-10)
+
+Com autorização do proprietário para o download, o FLUX.2 klein 4B foi baixado
+na revisão auditada (somente o layout Diffusers, 15,98 GB) para
+`D:\automation-foundry\labs\img-flux2-klein\`, em ambiente virtual separado
+(Python 3.11, `torch 2.6.0+cu124`, `diffusers 0.41.0`, `transformers 5.19.0`,
+instalados do PyPI). Os quatro hashes LFS listados acima conferiram. A geração
+rodou com `HF_HUB_OFFLINE=1` e `local_files_only=True`.
+
+- Seis imagens para a narração da run 13, com prompts escritos à mão em inglês
+  a partir do plano de imagens, 4 passos, `guidance_scale=1.0`, seeds fixas,
+  geradas em 1088×1920 e recortadas para 1080×1920.
+- RTX 3090 com `enable_model_cpu_offload()`: carga em 7,8 s, de 22 a 29 s por
+  imagem, pico de 8,3 GB de VRAM alocada pelo PyTorch, 151 s no total.
+- As imagens correspondem aos trechos do roteiro e não trazem texto nem
+  logotipos; uma delas mostra uma mão. A avaliação de qualidade é do
+  proprietário e ainda não foi registrada.
+- A narração da run 13 foi remontada fora do pipeline com essas imagens e com
+  as legendas por frase, para comparação.
+
+Isso não muda a decisão acima: o teste mede qualidade e custo, não licença. As
+imagens geradas não entram em `imports/content-visuals/`, não têm
+`commercial_use` declarado e não podem ser usadas em vídeo monetizado enquanto
+a D4 valer. Não foi verificado se o pipeline `diffusers` aplica os filtros e o
+watermark do código de referência, nem o comportamento com prompts em
+português, pessoas ou marcas.
+
 Fontes primárias consultadas em 2026-10-10:
 
 - <https://huggingface.co/black-forest-labs/FLUX.2-klein-4B> (card,
