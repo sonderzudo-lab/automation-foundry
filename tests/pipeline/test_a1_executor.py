@@ -31,6 +31,8 @@ from src.pipeline.a1_executor import (
     prepare_content_script_run,
 )
 from src.pipeline.script_gen import (
+    OPENING_STYLE_LABELS,
+    OPENING_STYLES,
     EmptyResponseError,
     ScriptLengthError,
     ScriptResult,
@@ -285,6 +287,61 @@ async def test_a1_passes_sourced_facts_and_records_unsourced_claims(
     )
     assert review.facts == (SourcedFact(**fact),)
     assert review.unsourced_claims == ("Quem dorme pouco erra o dobro.",)
+
+
+async def test_a1_rotates_the_automatic_opening_style_and_shows_what_was_asked(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    received: list[dict[str, object]] = []
+
+    def generate(*_args: object, **options: object) -> ScriptResult:
+        received.append(options)
+        return _generated_script().model_copy(
+            update={
+                "opening_style": options["opening_style"],
+                "opening_style_met": False,
+                "structure": options["structure"],
+            }
+        )
+
+    results = [
+        await execute_content_script_run(
+            session,
+            idempotency_key=f"content-a1-variety-{index}",
+            input_payload={**_input_payload(), "opening_style": "auto", "structure": "list"},
+            script_generator=generate,
+            storage_root=tmp_path / "storage",
+        )
+        for index in range(2)
+    ]
+
+    styles = [options["opening_style"] for options in received]
+    assert all(style in OPENING_STYLES for style in styles)
+    # Runs consecutivas recebem estilos diferentes, e cada run guarda o que recebeu.
+    assert styles[0] != styles[1]
+    assert all(options["structure"] == "list" for options in received)
+    assert all("facts" not in options for options in received)
+    run = await session.get(Run, results[0].run_id)
+    step = await session.get(StepRun, results[0].step_run_id)
+    approval = await session.get(Approval, results[0].approval_id)
+    assert run is not None and step is not None and approval is not None
+    assert run.input_payload == {
+        **_input_payload(),
+        "opening_style": "auto",
+        "structure": "list",
+    }
+    assert step.output_payload is not None
+    assert step.output_payload["opening_style"] == styles[0]
+    assert step.output_payload["structure"] == "list"
+    review = await load_content_script_review(
+        session,
+        approval=approval,
+        storage_root=tmp_path / "storage",
+    )
+    assert review.opening_style == OPENING_STYLE_LABELS[styles[0]]  # type: ignore[index]
+    assert review.opening_style_met is False
+    assert review.structure == "Lista de itens"
 
 
 def test_a1_input_without_facts_keeps_the_payload_of_earlier_runs() -> None:

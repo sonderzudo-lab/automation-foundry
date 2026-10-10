@@ -24,6 +24,7 @@ from src.pipeline.a1_executor import (
     parse_content_script_form,
     prepare_content_script_run,
 )
+from src.pipeline.script_gen import OPENING_STYLE_LABELS, STRUCTURE_LABELS
 from src.platform.example_run import execute_example_run, prepare_example_run
 from src.platform.models import Approval, Automation, QueueClass, Run
 from src.platform.run_service import RunCreationResult
@@ -146,6 +147,25 @@ _EXECUTORS = {
                 "textarea",
                 False,
                 6_000,
+            ),
+            ManualInputField(
+                "opening_style",
+                "Estilo da abertura",
+                "select",
+                False,
+                20,
+                (
+                    ("auto", "Rotação automática entre os estilos"),
+                    *OPENING_STYLE_LABELS.items(),
+                ),
+            ),
+            ManualInputField(
+                "structure",
+                "Estrutura do roteiro",
+                "select",
+                False,
+                20,
+                tuple(STRUCTURE_LABELS.items()),
             ),
         ),
         parse_manual_input=parse_content_script_form,

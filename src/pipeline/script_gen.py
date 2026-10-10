@@ -58,6 +58,11 @@ class ScriptResult(BaseModel):
     # Frases da narração com número, proporção ou apelo a estudo que a pauta não sustenta.
     # None significa que a verificação não rodou, como nos bundles anteriores a ela.
     unsourced_claims: list[str] | None = None
+    # Estilo de abertura e estrutura pedidos para esta geração; None quando não houve pedido.
+    opening_style: str | None = None
+    # False quando o hook final não seguiu o estilo mesmo depois das novas tentativas.
+    opening_style_met: bool | None = None
+    structure: str | None = None
 
 
 class SourcedFact(BaseModel):
@@ -79,6 +84,120 @@ class ScriptLengthError(RuntimeError):
 # O formato long ainda não atravessou uma run real e segue sem faixa verificada.
 _NARRATION_WORD_RANGE: dict[str, tuple[int, int]] = {"short": (100, 150)}
 _LENGTH_ATTEMPTS = 3
+
+
+# ── Variedade: estilo de abertura e estrutura ─────────────────────────────────
+
+OpeningStyle = Literal["question", "contrarian", "scene", "mistake", "promise"]
+Structure = Literal["direct", "myth_fact", "list", "story"]
+
+# A ordem define a rotação automática feita pelo executor.
+OPENING_STYLES: tuple[OpeningStyle, ...] = (
+    "contrarian",
+    "scene",
+    "mistake",
+    "promise",
+    "question",
+)
+OPENING_STYLE_LABELS: dict[OpeningStyle, str] = {
+    "question": "Pergunta ao espectador",
+    "contrarian": "Afirmação contra o senso comum",
+    "scene": "Cena do cotidiano",
+    "mistake": "Erro comum",
+    "promise": "Promessa do vídeo",
+}
+STRUCTURE_LABELS: dict[Structure, str] = {
+    "direct": "Direto: gancho, desenvolvimento e fecho",
+    "myth_fact": "Mito vs. fato",
+    "list": "Lista de itens",
+    "story": "História curta",
+}
+
+_OPENING_STYLE_RULES: dict[OpeningStyle, str] = {
+    "question": (
+        "Abra com uma pergunta direta ao espectador sobre uma situação que ele reconhece."
+    ),
+    "contrarian": (
+        "Abra com uma afirmação que contraria uma crença comum sobre o tema. "
+        "Não faça pergunta."
+    ),
+    "scene": (
+        "Abra descrevendo uma cena concreta e curta do cotidiano, como se a câmera já "
+        "estivesse nela. Não faça pergunta e não comece com 'Você'."
+    ),
+    "mistake": (
+        "Abra apontando um erro comum que as pessoas cometem sobre o tema e sinalize "
+        "que existe um jeito melhor. Não faça pergunta."
+    ),
+    "promise": (
+        "Abra dizendo o que o espectador vai conseguir fazer ao final do vídeo, sem "
+        "exagero e sem números. Não faça pergunta."
+    ),
+}
+_OPENING_ATTEMPTS = 3
+
+_STRUCTURE_OUTLINE: dict[Structure, dict[str, str]] = {
+    "direct": {
+        "short": "Crie 3 blocos curtos: gancho, desenvolvimento rápido e call-to-action.",
+        "long": "Crie 3–5 seções com títulos e 2–3 pontos-chave por seção.",
+    },
+    "myth_fact": {
+        "short": (
+            "Crie 3 blocos curtos: o mito em que muita gente acredita, por que ele engana "
+            "e o fato, com uma ação prática."
+        ),
+        "long": (
+            "Crie 3–5 seções, cada uma com um mito comum, por que ele engana e o fato "
+            "correspondente; feche com uma ação prática."
+        ),
+    },
+    "list": {
+        "short": "Crie exatamente 3 itens curtos e paralelos, um por bloco, e um fecho.",
+        "long": (
+            "Crie uma lista de 5 itens, um por seção, com 2–3 pontos-chave cada, "
+            "e uma conclusão."
+        ),
+    },
+    "story": {
+        "short": (
+            "Crie 3 blocos curtos de uma história ilustrativa: personagem e situação, "
+            "a virada e a lição prática."
+        ),
+        "long": (
+            "Crie 3–5 seções de uma história ilustrativa: personagem e situação, "
+            "complicação, virada e lições práticas."
+        ),
+    },
+}
+_STRUCTURE_BODY: dict[Structure, str] = {
+    "direct": "",
+    "myth_fact": " Deixe claro na fala o que é o mito e o que é o fato.",
+    "list": " Anuncie a lista e marque cada item na fala (primeiro, segundo, terceiro).",
+    "story": (
+        " A história é ilustrativa: use um personagem genérico, nunca uma pessoa real, "
+        "e não a apresente como caso documentado."
+    ),
+}
+# Quantidade de itens que a própria estrutura pede; não é um dado sem fonte.
+_STRUCTURE_SUPPORTED_NUMBERS: dict[Structure, dict[str, str]] = {
+    "list": {"short": "3 três", "long": "5 cinco"},
+}
+
+
+def _opening_style_problem(hook: str, style: OpeningStyle) -> str | None:
+    """Motivo determinístico pelo qual o hook não seguiu o estilo, ou None se seguiu."""
+    if style == "question":
+        return None if "?" in hook else "não faz uma pergunta"
+    if "?" in hook:
+        return "contém uma pergunta"
+    if style == "scene" and hook.casefold().startswith("você"):
+        return "começa com 'Você'"
+    return None
+
+
+def _opening_style_met(hook: str, style: OpeningStyle) -> bool:
+    """Verificação determinística mínima de que o hook seguiu o estilo pedido."""
+    return _opening_style_problem(hook, style) is None
 
 
 # ── Constante de idioma ───────────────────────────────────────────────────────
@@ -476,6 +595,7 @@ def find_unsourced_claims(
     *,
     topic: str,
     facts: Sequence[SourcedFact],
+    also_supported: str = "",
 ) -> list[str]:
     """
     Lista as frases da narração com dado que nem a pauta nem os fatos sustentam.
@@ -483,8 +603,12 @@ def find_unsourced_claims(
     É uma heurística determinística para orientar a revisão humana, não uma
     checagem de fatos: marca números ausentes da pauta e dos fatos, proporções
     por extenso e, quando nenhum fato foi fornecido, apelos a estudos.
+    also_supported traz números que o próprio pedido introduz, como a quantidade
+    de itens de uma lista.
     """
-    supported = " ".join([topic, *(fact.claim for fact in facts)]).casefold()
+    supported = " ".join(
+        [topic, also_supported, *(fact.claim for fact in facts)]
+    ).casefold()
     allowed_numbers = set(_NUMBER_RE.findall(supported))
     allowed_numbers.update(
         digit for word, digit in _NUMBER_WORDS.items() if re.search(rf"\b{word}\b", supported)
@@ -536,12 +660,10 @@ def _prompts_outline(
     angle: str,
     persona: str,
     fmt: Literal["short", "long"],
+    structure: Structure = "direct",
 ) -> tuple[str, str]:
     """Etapa 2: outline estruturado com base no ângulo."""
-    if fmt == "long":
-        structure_hint = "Crie 3–5 seções com títulos e 2–3 pontos-chave por seção."
-    else:
-        structure_hint = "Crie 3 blocos curtos: gancho, desenvolvimento rápido e call-to-action."
+    structure_hint = _STRUCTURE_OUTLINE[structure][fmt]
 
     system = (
         f"{_system_base(persona, fmt)}\n\n"
@@ -569,13 +691,28 @@ def _prompts_hook(
     persona: str,
     fmt: Literal["short", "long"],
     recent_openings: list[str] | None,
+    *,
+    opening_style: OpeningStyle | None = None,
+    refused: tuple[str, str] | None = None,
 ) -> tuple[str, str]:
     """
     Etapa 3: hook — a abertura que será narrada antes do restante do roteiro.
 
     Se recent_openings for fornecido, o system prompt instrui o modelo a
     NÃO repetir nenhuma dessas aberturas (variação anti-template).
+    opening_style pede um tipo de abertura; refused traz o hook recusado na
+    tentativa anterior e o motivo.
     """
+    style_block = ""
+    if opening_style is not None:
+        style_block = f"\n\nESTILO DA ABERTURA – OBRIGATÓRIO:\n{_OPENING_STYLE_RULES[opening_style]}"
+        if refused is not None:
+            # Só "não seguiu o estilo" não bastou: o modelo repetiu a pergunta três vezes.
+            style_block += (
+                f" A tentativa anterior foi recusada porque {refused[1]}: «{refused[0]}». "
+                "Escreva uma abertura diferente dessa."
+            )
+
     openings_block = ""
     if recent_openings:
         listed = "\n".join(f"  • {o}" for o in recent_openings)
@@ -593,6 +730,7 @@ def _prompts_hook(
         f"assistir até o fim. Tamanho: {_HOOK_LENGTH[fmt]}.\n"
         "Este texto será narrado exatamente como você escrever: responda APENAS com o "
         "texto falado, sem emojis, rótulos, aspas em volta ou comentários extras."
+        f"{style_block}"
         f"{openings_block}"
     )
     user = (
@@ -612,6 +750,7 @@ def _prompts_full_script(
     persona: str,
     fmt: Literal["short", "long"],
     *,
+    structure: Structure = "direct",
     body_words: tuple[int, int] | None = None,
     previous_words: int | None = None,
 ) -> tuple[str, str]:
@@ -651,6 +790,7 @@ def _prompts_full_script(
         "Inclua falas naturais, transições e linguagem coloquial PT-BR. "
         "Escreva APENAS o texto falado — sem didascálias de câmera ou stage directions, "
         "sem rótulos de seção, marcações de tempo ou aspas em volta do texto."
+        f"{_STRUCTURE_BODY[structure]}"
         f"{length_block}"
     )
     user = (
@@ -691,6 +831,8 @@ def generate_script(
     recent_openings: list[str] | None = None,
     *,
     facts: Sequence[SourcedFact] = (),
+    opening_style: OpeningStyle | None = None,
+    structure: Structure | None = None,
     client: OpenAI | None = None,
 ) -> ScriptResult:
     """
@@ -702,6 +844,8 @@ def generate_script(
         fmt: Formato — 'short' (até 60s) ou 'long' (10+ min).
         recent_openings: Aberturas usadas em vídeos recentes (anti-template).
         facts: Fatos com fonte fornecidos na pauta; são os únicos dados citáveis.
+        opening_style: Tipo de abertura pedido para o hook; None não pede nenhum.
+        structure: Estrutura do roteiro; None usa a estrutura direta.
         client: Cliente OpenAI injetável para testes. Se None, cria do settings.
 
     Returns:
@@ -718,14 +862,38 @@ def generate_script(
     sys1, usr1 = _prompts_angle(topic, persona, fmt)
     angle = _call_llm(client, system=sys1 + facts_rule, user=usr1, step="angle")
 
-    sys2, usr2 = _prompts_outline(topic, angle, persona, fmt)
+    script_structure: Structure = structure or "direct"
+    sys2, usr2 = _prompts_outline(topic, angle, persona, fmt, script_structure)
     outline = _call_llm(client, system=sys2 + facts_rule, user=usr2, step="outline")
 
-    sys3, usr3 = _prompts_hook(topic, angle, outline, persona, fmt, recent_openings)
-    # O hook passa pela mesma limpeza da narração: o texto revisado é o texto falado.
-    hook = _extract_narration(
-        _call_llm(client, system=sys3 + facts_rule, user=usr3, step="hook")
-    )
+    # Um hook fora do estilo pedido é refeito; se continuar fora, segue marcado para
+    # a revisão humana em vez de derrubar a run.
+    opening_style_met: bool | None = None
+    refused: tuple[str, str] | None = None
+    for attempt in range(1, _OPENING_ATTEMPTS + 1):
+        sys3, usr3 = _prompts_hook(
+            topic,
+            angle,
+            outline,
+            persona,
+            fmt,
+            recent_openings,
+            opening_style=opening_style,
+            refused=refused,
+        )
+        # O hook passa pela mesma limpeza da narração: o texto revisado é o texto falado.
+        # Aspas em volta do hook inteiro são do modelo, não da fala.
+        hook = _extract_narration(
+            _call_llm(client, system=sys3 + facts_rule, user=usr3, step="hook")
+        ).strip("\"“”")
+        if opening_style is None:
+            break
+        problem = _opening_style_problem(hook, opening_style)
+        opening_style_met = problem is None
+        if problem is None:
+            break
+        log.warning("script_opening_style_missed", style=opening_style, attempt=attempt)
+        refused = (hook, problem)
 
     # O prompt sozinho não segura o tamanho: a narração é contada e, fora da faixa,
     # só o restante do roteiro é refeito, com o tamanho recusado informado ao modelo.
@@ -745,6 +913,7 @@ def generate_script(
             hook,
             persona,
             fmt,
+            structure=script_structure,
             body_words=body_range,
             previous_words=previous_words,
         )
@@ -775,7 +944,12 @@ def generate_script(
             f"no formato '{fmt}'"
         )
 
-    unsourced_claims = find_unsourced_claims(narration, topic=topic, facts=facts)
+    unsourced_claims = find_unsourced_claims(
+        narration,
+        topic=topic,
+        facts=facts,
+        also_supported=_STRUCTURE_SUPPORTED_NUMBERS.get(script_structure, {}).get(fmt, ""),
+    )
 
     log.info(
         "script_gen_done",
@@ -793,6 +967,9 @@ def generate_script(
         hook=hook,
         narration=narration,
         unsourced_claims=unsourced_claims,
+        opening_style=opening_style,
+        opening_style_met=opening_style_met,
+        structure=structure,
     )
 
 

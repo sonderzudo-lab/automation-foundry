@@ -37,6 +37,7 @@ from src.pipeline.script_gen import (
     _call_llm,
     _count_words,
     _extract_narration,
+    _opening_style_met,
     _strip_think_blocks,  # alias para sanitize_llm_output (compatibilidade)
     find_unsourced_claims,
     generate_script,
@@ -336,6 +337,155 @@ def test_long_script_has_no_verified_word_range_yet() -> None:
 
 def test_word_count_ignores_standalone_punctuation() -> None:
     assert _count_words("Ela disse — sem pressa — que 8 horas bastam.") == 8
+
+
+# ── Testes de variedade: estilo de abertura e estrutura ───────────────────────
+
+
+def test_without_a_requested_style_the_hook_prompt_stays_unchanged() -> None:
+    client = _client_with("ângulo", "outline", "Você já dormiu mal?", "roteiro")
+
+    result = generate_script(topic="Sono", persona="Ciência", fmt="long", client=client)
+
+    assert "ESTILO DA ABERTURA" not in _system_prompt(client, 2)
+    assert result.opening_style is None
+    assert result.opening_style_met is None
+    assert result.structure is None
+
+
+def test_requested_opening_style_reaches_the_hook_prompt_and_the_result() -> None:
+    client = _client_with("ângulo", "outline", "Dormir menos não rende mais.", "roteiro")
+
+    result = generate_script(
+        topic="Sono",
+        persona="Ciência",
+        fmt="long",
+        opening_style="contrarian",
+        client=client,
+    )
+
+    assert client.chat.completions.create.call_count == 4
+    assert "ESTILO DA ABERTURA – OBRIGATÓRIO" in _system_prompt(client, 2)
+    assert "contraria uma crença comum" in _system_prompt(client, 2)
+    assert result.opening_style == "contrarian"
+    assert result.opening_style_met is True
+
+
+def test_hook_outside_the_requested_style_is_rewritten_with_feedback() -> None:
+    """Um estilo sem pergunta recusa o hook interrogativo e pede outro."""
+    client = _client_with(
+        "ângulo",
+        "outline",
+        "Você já dormiu mal?",
+        "São seis da manhã e o despertador toca pela terceira vez.",
+        "roteiro",
+    )
+
+    result = generate_script(
+        topic="Sono",
+        persona="Ciência",
+        fmt="long",
+        opening_style="scene",
+        client=client,
+    )
+
+    assert client.chat.completions.create.call_count == 5
+    assert "tentativa anterior foi recusada" not in _system_prompt(client, 2)
+    assert (
+        "A tentativa anterior foi recusada porque contém uma pergunta: «Você já dormiu mal?»"
+        in _system_prompt(client, 3)
+    )
+    assert result.hook == "São seis da manhã e o despertador toca pela terceira vez."
+    assert result.opening_style_met is True
+
+
+def test_hook_that_never_follows_the_style_is_kept_and_flagged() -> None:
+    """Três recusas não derrubam a geração: o resultado segue marcado para a revisão."""
+    client = _client_with(
+        "ângulo",
+        "outline",
+        "Você dorme bem?",
+        "Você acorda cansado?",
+        "Você sabe por quê?",
+        "roteiro",
+    )
+
+    result = generate_script(
+        topic="Sono",
+        persona="Ciência",
+        fmt="long",
+        opening_style="mistake",
+        client=client,
+    )
+
+    assert client.chat.completions.create.call_count == 6
+    assert result.hook == "Você sabe por quê?"
+    assert result.opening_style_met is False
+
+
+@pytest.mark.parametrize(
+    ("style", "hook", "expected"),
+    [
+        ("question", "Você dorme bem?", True),
+        ("question", "Dormir bem muda o dia.", False),
+        ("contrarian", "Dormir menos não rende mais.", True),
+        ("contrarian", "Dormir menos rende mais?", False),
+        ("scene", "O despertador toca e ninguém levanta.", True),
+        ("scene", "Você ouve o despertador e não levanta.", False),
+        ("mistake", "Você compensa o sono com café, e é aí que erra.", True),
+    ],
+)
+def test_opening_style_check_is_deterministic(style: str, hook: str, expected: bool) -> None:
+    assert _opening_style_met(hook, style) is expected  # type: ignore[arg-type]
+
+
+def test_quotes_wrapped_around_the_whole_hook_are_not_narrated() -> None:
+    """Visto em geração real: o modelo devolveu o hook inteiro entre aspas."""
+    client = _client_with("ângulo", "outline", "\"Dormir menos não rende mais.\"", "roteiro")
+
+    result = generate_script(topic="Sono", persona="Ciência", fmt="long", client=client)
+
+    assert result.hook == "Dormir menos não rende mais."
+    assert result.narration.startswith("Dormir menos não rende mais.")
+
+
+def test_structure_changes_the_outline_and_the_script_prompts() -> None:
+    client = _client_with("ângulo", "outline", "hook", _FILLER)
+
+    result = generate_script(
+        topic="Sono",
+        persona="Ciência",
+        fmt="short",
+        structure="list",
+        client=client,
+    )
+
+    assert "exatamente 3 itens" in _system_prompt(client, 1)
+    assert "marque cada item na fala" in _system_prompt(client, 3)
+    assert result.structure == "list"
+
+
+def test_default_structure_keeps_the_original_outline_instruction() -> None:
+    client = _client_with("ângulo", "outline", "hook", _FILLER)
+
+    generate_script(topic="Sono", persona="Ciência", fmt="short", client=client)
+
+    assert "gancho, desenvolvimento rápido e call-to-action" in _system_prompt(client, 1)
+
+
+def test_the_item_count_of_a_list_is_not_an_unsourced_claim() -> None:
+    body = f"Aqui vão 3 hábitos simples. E 80% das pessoas ignoram todos. {_FILLER}"
+    client = _client_with("ângulo", "outline", "hook", body)
+
+    result = generate_script(
+        topic="Sono",
+        persona="Ciência",
+        fmt="short",
+        structure="list",
+        client=client,
+    )
+
+    assert result.unsourced_claims == ["E 80% das pessoas ignoram todos."]
 
 
 # ── Testes da regra de fatos com fonte ────────────────────────────────────────

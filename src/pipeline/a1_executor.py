@@ -6,11 +6,11 @@ import asyncio
 import hashlib
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from openai import APIConnectionError, APITimeoutError
@@ -52,10 +52,15 @@ from src.pipeline.narration_review import (
     request_narration_approval,
 )
 from src.pipeline.script_gen import (
+    OPENING_STYLE_LABELS,
+    OPENING_STYLES,
+    STRUCTURE_LABELS,
     EmptyResponseError,
+    OpeningStyle,
     ScriptLengthError,
     ScriptResult,
     SourcedFact,
+    Structure,
     generate_script,
 )
 from src.pipeline.thumbnail_review import (
@@ -130,16 +135,23 @@ class ContentScriptInput(BaseModel):
     format: Literal["short", "long"]
     recent_openings: list[str] = Field(default_factory=list, max_length=10)
     facts: list[SourcedFact] = Field(default_factory=list, max_length=10)
+    # "auto" rotates the opening style by run; None asks for no particular style.
+    opening_style: Literal["auto"] | OpeningStyle | None = None
+    structure: Structure | None = None
 
     def as_payload(self) -> dict[str, object]:
         """Return the JSON payload persisted on the run and on its step.
 
-        `facts` is left out when empty so runs created before the field existed
-        keep the exact payload their idempotency keys were recorded with.
+        Fields added after the first runs are left out when unset, so runs
+        created before they existed keep the exact payload their idempotency
+        keys were recorded with.
         """
         payload = self.model_dump(mode="json")
         if not self.facts:
             del payload["facts"]
+        for optional in ("opening_style", "structure"):
+            if payload[optional] is None:
+                del payload[optional]
         return payload
 
     @field_validator("topic", "persona")
@@ -200,11 +212,23 @@ class ContentScriptReview:
     # None means the bundle predates the check, which is not the same as no finding.
     facts: tuple[SourcedFact, ...] = ()
     unsourced_claims: tuple[str, ...] | None = None
+    # Operator-facing labels of what was asked for this script; None when nothing was.
+    opening_style: str | None = None
+    opening_style_met: bool | None = None
+    structure: str | None = None
 
 
 def parse_content_script_form(values: dict[str, str]) -> dict[str, object]:
     """Normalize dashboard fields through the same typed A1 input boundary."""
-    expected = {"topic", "persona", "format", "recent_openings", "facts"}
+    expected = {
+        "topic",
+        "persona",
+        "format",
+        "recent_openings",
+        "facts",
+        "opening_style",
+        "structure",
+    }
     if set(values) - expected:
         raise ValueError("unsupported content script input field")
     openings = values.get("recent_openings", "")
@@ -224,6 +248,8 @@ def parse_content_script_form(values: dict[str, str]) -> dict[str, object]:
             "format": values.get("format"),
             "recent_openings": openings.splitlines(),
             "facts": facts,
+            "opening_style": values.get("opening_style") or None,
+            "structure": values.get("structure") or None,
         }
     )
     return payload.as_payload()
@@ -349,9 +375,18 @@ async def execute_content_script_run(
     artifact_path = _artifact_path(root, run_id=_persisted_id(run.id, "run"))
 
     async def generate_operation(_context: TaskAttemptContext) -> dict[str, object]:
-        # `facts` só é passado quando a pauta os traz: geradores injetados que não
-        # conhecem o argumento continuam válidos para as demais runs.
-        keyword_arguments = {"facts": tuple(input_data.facts)} if input_data.facts else {}
+        # Só vai ao gerador o que a pauta traz: geradores injetados que não conhecem
+        # esses argumentos continuam válidos para as demais runs.
+        keyword_arguments: dict[str, object] = {}
+        if input_data.facts:
+            keyword_arguments["facts"] = tuple(input_data.facts)
+        if input_data.opening_style is not None:
+            keyword_arguments["opening_style"] = _resolve_opening_style(
+                input_data.opening_style,
+                run_id=_persisted_id(run.id, "run"),
+            )
+        if input_data.structure is not None:
+            keyword_arguments["structure"] = input_data.structure
         try:
             generated = await asyncio.to_thread(
                 generator,
@@ -383,6 +418,9 @@ async def execute_content_script_run(
             "full_script_characters": len(generated.full_script),
             "narration_characters": len(generated.narration),
             "unsourced_claims": len(generated.unsourced_claims or []),
+            "opening_style": generated.opening_style,
+            "opening_style_met": generated.opening_style_met,
+            "structure": generated.structure,
         }
 
     task_result = await execute_task_step(
@@ -932,6 +970,9 @@ async def load_content_script_review(
         unsourced_claims=(
             None if result.unsourced_claims is None else tuple(result.unsourced_claims)
         ),
+        opening_style=_known_label(OPENING_STYLE_LABELS, result.opening_style),
+        opening_style_met=result.opening_style_met,
+        structure=_known_label(STRUCTURE_LABELS, result.structure),
     )
 
 
@@ -1371,6 +1412,22 @@ def _load_verified_script_bundle(
     except (UnicodeError, ValueError, TypeError) as exc:
         raise ContentScriptRunNotRunnableError("A1 script bundle is invalid") from exc
     return result
+
+
+def _known_label(labels: Mapping[Any, str], value: str | None) -> str | None:
+    """Operator-facing label of a known value; other text from the bundle renders nothing."""
+    return None if value is None else labels.get(value)
+
+
+def _resolve_opening_style(
+    requested: Literal["auto"] | OpeningStyle,
+    *,
+    run_id: int,
+) -> OpeningStyle:
+    """Turn "auto" into one concrete style, stable for the run and rotating across runs."""
+    if requested != "auto":
+        return requested
+    return OPENING_STYLES[run_id % len(OPENING_STYLES)]
 
 
 def _validate_script_result(result: ScriptResult) -> None:
