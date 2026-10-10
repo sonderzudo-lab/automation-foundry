@@ -617,6 +617,34 @@ def test_extract_narration_removes_emojis() -> None:
     assert "isso é incrível" in result
 
 
+@pytest.mark.parametrize(
+    ("dirty", "expected"),
+    [
+        ("Atenção ⚠️ ao sono.", "Atenção ao sono."),
+        ("Dormir bem️", "Dormir bem"),
+        ("Feito no Brasil \U0001f1e7\U0001f1f7 com calma.", "Feito no Brasil com calma."),
+        (
+            "A família \U0001f468‍\U0001f469‍\U0001f467 dorme cedo.",
+            "A família dorme cedo.",
+        ),
+        ("Passo 1️⃣ respire.", "Passo 1 respire."),
+        ("Nota \U0001f170️ máxima.", "Nota máxima."),
+    ],
+)
+def test_extract_narration_removes_invisible_emoji_components(
+    dirty: str,
+    expected: str,
+) -> None:
+    """Seletores de variação, joiners, keycaps e bandeiras não podem sobrar no TTS."""
+    assert _extract_narration(dirty) == expected
+
+
+def test_extract_narration_preserves_portuguese_punctuation() -> None:
+    """Travessão, aspas curvas e reticências ficam fora das faixas removidas."""
+    text = "Ela disse — sem pressa — “durma bem”… e saiu."
+    assert _extract_narration(text) == text
+
+
 def test_extract_narration_removes_bold_markdown() -> None:
     """**texto** deve virar 'texto' (asteriscos removidos, conteúdo mantido)."""
     text = "Isso é **muito importante** para entender."

@@ -89,8 +89,13 @@ _THINK_RE = _THINK_COMPLETE_RE
 # Emojis — cobre os principais blocos Unicode
 _EMOJI_RE = re.compile(
     "["
+    "\U0001F000-\U0001F2FF"   # Peças de jogo, letras em caixa e indicadores regionais (bandeiras)
     "\U0001F300-\U0001F9FF"   # Emoticons, misc symbols, transport, flags, etc.
     "\U0001FA00-\U0001FAFF"   # Símbolos e pictogramas recentes
+    "\U000E0020-\U000E007F"   # Tags invisíveis de bandeiras regionais
+    "\U0000FE00-\U0000FE0F"   # Seletores de variação (o U+FE0F que sobra de "⚠️")
+    "\U0000200D"              # Zero-width joiner de sequências compostas
+    "\U000020E3"              # Keycap combinante de "1️⃣"
     "\U00002600-\U000026FF"   # Símbolos miscelâneos (☀️☔etc)
     "\U00002700-\U000027BF"   # Dingbats
     "\U00002B00-\U00002BFF"   # Símbolos e setas miscelâneos
