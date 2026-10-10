@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.pipeline.tts import TTS_STEP_NAME
-from src.pipeline.visuals import visual_count_bounds
+from src.pipeline.visuals import VisualPlanSlot, plan_visual_slots, visual_count_bounds
 from src.platform.approval_service import approval_payload_digest, request_approval
 from src.platform.models import (
     Approval,
@@ -129,6 +129,9 @@ class NarrationReview:
     visual_plan_problem_code: str | None = None
     visual_plan_problem: str | None = None
     declared_visual_count: int | None = None
+    # Approximate stretch of narration behind each image, to guide the choice.
+    narration: str = ""
+    visual_plan: tuple[VisualPlanSlot, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +151,7 @@ class _VerifiedNarrationEvidence:
     maximum_visual_count: int
     visual_width: int
     visual_height: int
+    narration: str
 
 
 async def request_narration_approval(
@@ -245,6 +249,12 @@ async def load_narration_review(
         visual_width=evidence.visual_width,
         visual_height=evidence.visual_height,
         audio_path=evidence.audio_path,
+        narration=evidence.narration,
+        visual_plan=plan_visual_slots(
+            evidence.narration,
+            duration_seconds=Decimal(evidence.duration_seconds),
+            count=evidence.required_visual_count,
+        ),
     )
 
 
@@ -322,6 +332,7 @@ async def _verify_evidence(
             raise NarrationReviewGateError("A1 script bundle is invalid")
         result = script_payload.get("result")
         full_script = result.get("full_script") if isinstance(result, dict) else None
+        narration = result.get("narration") if isinstance(result, dict) else None
         format_value = script_payload.get("format")
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise NarrationReviewGateError("A1 script bundle is unreadable") from exc
@@ -395,6 +406,7 @@ async def _verify_evidence(
         maximum_visual_count=bounds.maximum,
         visual_width=width,
         visual_height=height,
+        narration=narration if isinstance(narration, str) else "",
     )
 
 

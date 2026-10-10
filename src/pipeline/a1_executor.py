@@ -87,6 +87,7 @@ from src.pipeline.visuals import (
     execute_approved_visual_step,
     get_configured_visual_adapter,
     inspect_local_asset_manifest,
+    plan_visual_slots,
 )
 from src.platform.approval_service import approval_payload_digest, request_approval
 from src.platform.artifact_service import ArtifactStorageError, register_local_artifact
@@ -1186,8 +1187,24 @@ def _with_visual_plan_status(review: NarrationReview) -> NarrationReview:
             maximum=review.maximum_visual_count,
         ),
     )
+    visual_plan = review.visual_plan
+    if status.ready and status.declared_count is not None:
+        # Re-plan for the count the manifest declares and name each image.
+        visual_plan = tuple(
+            replace(slot, file_name=file_name)
+            for slot, file_name in zip(
+                plan_visual_slots(
+                    review.narration,
+                    duration_seconds=Decimal(review.duration_seconds),
+                    count=status.declared_count,
+                ),
+                status.relative_paths,
+                strict=False,
+            )
+        )
     return replace(
         review,
+        visual_plan=visual_plan,
         visual_plan_checked=True,
         visual_plan_problem_code=status.problem_code,
         visual_plan_problem=(

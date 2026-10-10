@@ -88,6 +88,13 @@ recusado, a aprovação pelo painel não é registrada e a revisão continua abe
 para o operador terminar o manifesto. Dimensões e validade do PNG continuam
 sendo conferidas apenas por A3.
 
+A mesma página mostra um plano de imagens: o trecho aproximado da narração que
+cada imagem vai cobrir, na ordem do manifesto, com o nome do arquivo declarado
+quando o manifesto está pronto. A ordem dos itens no manifesto é a ordem em que
+as imagens aparecem no vídeo. Os tempos do plano supõem ritmo de fala constante
+e servem só para escolher e ordenar as imagens; os cortes finais são definidos
+na montagem a partir dos tempos reais das legendas.
+
 ## Candidatos ainda bloqueados
 
 | Candidato | Evidência primária | Decisão atual |

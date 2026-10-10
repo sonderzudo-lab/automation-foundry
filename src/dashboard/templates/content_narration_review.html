@@ -51,4 +51,16 @@
     {% endif %}
   </div>
 </section>
+{% if review.visual_plan %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Plano de imagens</h2><p class="card-description">Trecho aproximado da narração que cada imagem vai cobrir, na ordem do manifesto. Os tempos são estimativas; os cortes finais seguem o início das frases.</p></div>
+  <div class="card-content">
+    <ol class="text-sm" style="display:grid;gap:.5rem;padding-left:1.25rem">
+      {% for slot in review.visual_plan %}
+      <li><strong>{{ slot.start_seconds }}–{{ slot.end_seconds }} s</strong>{% if slot.file_name %} · <code>{{ slot.file_name }}</code>{% endif %}<br>{{ slot.text }}</li>
+      {% endfor %}
+    </ol>
+  </div>
+</section>
+{% endif %}
 {% endblock %}

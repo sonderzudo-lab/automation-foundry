@@ -35,6 +35,7 @@ from src.pipeline.visuals import (
     execute_approved_visual_step,
     get_configured_visual_adapter,
     inspect_local_asset_manifest,
+    plan_visual_slots,
     visual_count_bounds,
 )
 from src.platform.approval_service import decide_approval
@@ -371,6 +372,8 @@ def test_manifest_inspection_reports_what_a3_would_reject_without_copying(
         bounds=VisualCountBounds(minimum=1, default=3, maximum=4),
     )
     assert ranged.ready is True and ranged.declared_count == 2
+    assert ranged.relative_paths == ("first.png", "second.png")
+    assert short.relative_paths == ()
     assert sorted(path.name for path in import_root.iterdir()) == before
 
     sources[1].write_bytes(sources[1].read_bytes() + b"changed")
@@ -401,6 +404,42 @@ def test_visual_count_bounds_keep_each_visual_between_four_and_ten_seconds(
     assert bounds.accepts(bounds.default)
     assert not bounds.accepts(bounds.minimum - 1)
     assert not bounds.accepts(bounds.maximum + 1)
+
+
+def test_visual_plan_cuts_at_sentence_starts_and_covers_the_narration() -> None:
+    narration = (
+        "Primeiro, separa só os itens que você vai usar. O resto, põe em outro "
+        "lugar. Segundo, deixa um cantinho pra coisas soltas. Terceiro, abre um "
+        "caderno e deixa à mão."
+    )
+    slots = plan_visual_slots(narration, duration_seconds=Decimal("12"), count=3)
+
+    assert [slot.index for slot in slots] == [1, 2, 3]
+    assert " ".join(slot.text for slot in slots) == narration
+    # Thirty words in three shares: the ideal cuts at words 10 and 20 move to the
+    # nearest sentence starts, words 9 ("O resto") and 22 ("Terceiro").
+    assert [slot.text.split()[0] for slot in slots] == ["Primeiro,", "O", "Terceiro,"]
+    assert all(slot.text.endswith(".") for slot in slots)
+    assert slots[0].start_seconds == Decimal("0.0")
+    assert slots[-1].end_seconds == Decimal("12.0")
+    assert all(
+        earlier.end_seconds == later.start_seconds
+        for earlier, later in zip(slots, slots[1:], strict=False)
+    )
+    assert all(slot.file_name is None for slot in slots)
+
+
+def test_visual_plan_handles_text_without_sentence_breaks_and_small_inputs() -> None:
+    slots = plan_visual_slots(
+        "uma duas tres quatro cinco seis",
+        duration_seconds=Decimal("6"),
+        count=3,
+    )
+
+    assert [slot.text for slot in slots] == ["uma duas", "tres quatro", "cinco seis"]
+    assert len(plan_visual_slots("so duas", duration_seconds=Decimal("6"), count=5)) == 2
+    assert plan_visual_slots("", duration_seconds=Decimal("6"), count=3) == ()
+    assert plan_visual_slots("texto", duration_seconds=Decimal("0"), count=1) == ()
 
 
 def test_local_asset_count_follows_the_manifest_only_inside_the_bounds(

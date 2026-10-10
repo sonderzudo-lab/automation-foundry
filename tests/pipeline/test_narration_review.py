@@ -331,6 +331,14 @@ async def test_a2_approval_is_refused_until_the_visual_manifest_matches(
     )
     assert isinstance(ready, NarrationReview)
     assert ready.visual_plan_checked is True and ready.visual_plan_problem is None
+    # While the manifest was refused the plan used the default count; once it is
+    # ready the plan follows the declared images, in manifest order.
+    assert len(review.visual_plan) == required
+    assert all(slot.file_name is None for slot in review.visual_plan)
+    assert [slot.file_name for slot in ready.visual_plan] == [
+        f"rehearsal-{index:03d}.png" for index in range(1, accepted_maximum + 1)
+    ]
+    assert " ".join(slot.text for slot in ready.visual_plan) == rehearsal_script().narration
     await decide_approval(
         session,
         approval=approval,

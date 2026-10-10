@@ -3611,6 +3611,8 @@ async def test_dashboard_narration_review_streams_only_verified_audio(
     assert media.content == audio_path.read_bytes()
     assert wrong_gate.status_code == 404
     assert "Manifesto conferido agora" in review.text
+    assert "Plano de imagens" in review.text
+    assert "rehearsal-001.png" in review.text
 
     write_synthetic_visual_import(
         import_root,

@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import time
@@ -58,6 +59,7 @@ _IMAGE_RETENTION_DAYS = resolve_retention_days("visual_image")
 _SECONDS_PER_VISUAL = Decimal("6")
 _MIN_SECONDS_PER_VISUAL = Decimal("4")
 _MAX_SECONDS_PER_VISUAL = Decimal("10")
+_SENTENCE_END = re.compile(r"[.!?…][’”\"')\]]*$")
 LOCAL_ASSETS_QUALITY_TEST_BACKEND = "local_assets_quality_test"
 _MAX_VISUALS = 60
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
@@ -256,6 +258,70 @@ def visual_count_bounds(duration_seconds: Decimal, *, word_count: int) -> Visual
     return VisualCountBounds(minimum=minimum, default=default, maximum=maximum)
 
 
+@dataclass(frozen=True, slots=True)
+class VisualPlanSlot:
+    """The stretch of narration one visual is expected to cover."""
+
+    index: int
+    start_seconds: Decimal
+    end_seconds: Decimal
+    text: str
+    file_name: str | None = None
+
+
+def plan_visual_slots(
+    narration: str,
+    *,
+    duration_seconds: Decimal,
+    count: int,
+) -> tuple[VisualPlanSlot, ...]:
+    """Estimate which stretch of the narration each visual will cover.
+
+    It mirrors the motion edit: even shares, with each cut moved to a sentence
+    start when one lies within half a share. The speech rate is assumed
+    constant, so the times are a guide for choosing images, not the final cuts.
+    """
+    words = narration.split()
+    if not words or count < 1 or duration_seconds <= 0:
+        return ()
+    count = min(count, len(words))
+    share = Decimal(len(words)) / Decimal(count)
+    sentence_starts = [
+        index + 1
+        for index, word in enumerate(words[:-1])
+        if _SENTENCE_END.search(word)
+    ]
+    cuts: list[int] = []
+    previous = 0
+    for position in range(1, count):
+        ideal = share * position
+        latest = len(words) - (count - position)
+        nearby = [
+            start
+            for start in sentence_starts
+            if previous < start <= latest and abs(Decimal(start) - ideal) <= share / 2
+        ]
+        cut = (
+            min(nearby, key=lambda start: abs(Decimal(start) - ideal))
+            if nearby
+            else int(ideal.to_integral_value())
+        )
+        cut = min(max(cut, previous + 1), latest)
+        cuts.append(cut)
+        previous = cut
+    edges = [0, *cuts, len(words)]
+    per_word = duration_seconds / Decimal(len(words))
+    return tuple(
+        VisualPlanSlot(
+            index=index + 1,
+            start_seconds=(per_word * edges[index]).quantize(Decimal("0.1")),
+            end_seconds=(per_word * edges[index + 1]).quantize(Decimal("0.1")),
+            text=" ".join(words[edges[index] : edges[index + 1]]),
+        )
+        for index in range(count)
+    )
+
+
 def build_local_asset_count_resolver(
     *,
     import_root: Path,
@@ -285,6 +351,8 @@ class LocalAssetManifestStatus:
     bounds: VisualCountBounds
     declared_count: int | None
     problem_code: str | None
+    # Declared image paths in manifest order; filled only when the manifest is ready.
+    relative_paths: tuple[str, ...] = ()
 
     @property
     def ready(self) -> bool:
@@ -329,6 +397,9 @@ def inspect_local_asset_manifest(
         bounds=bounds,
         declared_count=declared_count,
         problem_code=None,
+        relative_paths=tuple(
+            _manifest_text(entry, "relative_path", max_length=500) for entry in entries
+        ),
     )
 
 
