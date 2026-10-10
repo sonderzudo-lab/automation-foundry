@@ -3607,6 +3607,38 @@ async def test_dashboard_narration_review_streams_only_verified_audio(
     assert media.headers["x-content-type-options"] == "nosniff"
     assert media.content == audio_path.read_bytes()
     assert wrong_gate.status_code == 404
+    assert "Manifesto conferido agora" in review.text
+
+    write_synthetic_visual_import(
+        import_root,
+        count=expected_visual_count() + 1,
+        width=1080,
+        height=1920,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        unready_review = await client.get(f"/approvals/{narration_approval_id}/review")
+        refused = await client.post(
+            f"/approvals/{narration_approval_id}/approve",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "approve-approval",
+                "actor": "local-owner",
+                "reason": "áudio aprovado antes das imagens",
+            },
+        )
+    async with session_factory() as session:
+        still_open = await session.get(Approval, narration_approval_id)
+        assert still_open is not None
+        assert still_open.status == ApprovalStatus.PENDING.value
+
+    assert unready_review.status_code == 200
+    assert "O manifesto ainda não está pronto" in unready_review.text
+    assert "CONTENT_VISUALS_COUNT_MISMATCH" in unready_review.text
+    assert refused.status_code == 409
+    assert "CONTENT_VISUALS_COUNT_MISMATCH" in refused.json()["detail"]
 
     audio_path.write_bytes(audio_path.read_bytes() + b"tampered")
     async with AsyncClient(

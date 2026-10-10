@@ -31,6 +31,7 @@ from src.pipeline.visuals import (
     VisualRetryableAdapterError,
     execute_approved_visual_step,
     get_configured_visual_adapter,
+    inspect_local_asset_manifest,
 )
 from src.platform.approval_service import decide_approval
 from src.platform.models import (
@@ -325,6 +326,44 @@ def test_local_asset_adapter_rejects_unlicensed_or_changed_input(
         match="CONTENT_VISUALS_LOCAL_ASSET_HASH_MISMATCH",
     ):
         adapter(request, destination)
+
+
+def test_manifest_inspection_reports_what_a3_would_reject_without_copying(
+    tmp_path: Path,
+) -> None:
+    import_root = tmp_path / "imports"
+    import_root.mkdir()
+    sources = [import_root / "first.png", import_root / "second.png"]
+    for source in sources:
+        _write_png(source, width=1080, height=1920)
+    manifest = import_root / "manifest.json"
+
+    def inspect(expected_count: int) -> visuals.LocalAssetManifestStatus:
+        return inspect_local_asset_manifest(
+            import_root=import_root,
+            manifest_path=Path("manifest.json"),
+            expected_count=expected_count,
+        )
+
+    missing = inspect(2)
+    assert missing.ready is False
+    assert missing.problem_code == "CONTENT_VISUALS_MANIFEST_UNAVAILABLE"
+    assert missing.declared_count is None
+
+    _write_local_asset_manifest(manifest, sources)
+    before = sorted(path.name for path in import_root.iterdir())
+    ready = inspect(2)
+    short = inspect(3)
+    assert ready.ready is True and ready.declared_count == 2
+    assert short.problem_code == "CONTENT_VISUALS_COUNT_MISMATCH"
+    assert (short.expected_count, short.declared_count) == (3, 2)
+    assert sorted(path.name for path in import_root.iterdir()) == before
+
+    sources[1].write_bytes(sources[1].read_bytes() + b"changed")
+    assert inspect(2).problem_code == "CONTENT_VISUALS_LOCAL_ASSET_HASH_MISMATCH"
+
+    _write_local_asset_manifest(manifest, sources, commercial_use=False)
+    assert inspect(2).problem_code == "CONTENT_VISUALS_COMMERCIAL_USE_BLOCKED"
 
 
 def test_local_asset_adapter_contains_manifest_and_asset_paths(tmp_path: Path) -> None:

@@ -56,6 +56,7 @@ _SOURCE = "content-engine:a3"
 _MANIFEST_RETENTION_DAYS = resolve_retention_days("visual_manifest")
 _IMAGE_RETENTION_DAYS = resolve_retention_days("visual_image")
 _SECONDS_PER_VISUAL = Decimal("6")
+LOCAL_ASSETS_QUALITY_TEST_BACKEND = "local_assets_quality_test"
 _MAX_VISUALS = 60
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
 _MAX_IMAGE_PIXELS = 4096 * 4096
@@ -156,7 +157,7 @@ def get_configured_visual_adapter(
 ) -> VisualAdapter:
     """Return the explicitly configured visual adapter or fail closed."""
     normalized = backend.strip().casefold()
-    if normalized == "local_assets_quality_test":
+    if normalized == LOCAL_ASSETS_QUALITY_TEST_BACKEND:
         if import_root is None or manifest_path is None:
             raise VisualPermanentAdapterError("CONTENT_VISUALS_IMPORT_CONFIG_REQUIRED")
         return build_local_asset_adapter(
@@ -184,15 +185,7 @@ def build_local_asset_adapter(
     manifest_path: Path,
 ) -> VisualAdapter:
     """Import operator-selected PNGs from a contained, hash-pinned manifest."""
-    root = import_root.resolve()
-    if root == Path(root.anchor):
-        raise VisualPermanentAdapterError("CONTENT_VISUALS_IMPORT_ROOT_UNSAFE")
-    manifest = manifest_path if manifest_path.is_absolute() else root / manifest_path
-    manifest = manifest.resolve()
-    try:
-        manifest.relative_to(root)
-    except ValueError as exc:
-        raise VisualPermanentAdapterError("CONTENT_VISUALS_MANIFEST_OUTSIDE_IMPORT_ROOT") from exc
+    root, manifest = _resolve_local_asset_manifest(import_root, manifest_path)
 
     def import_assets(
         requests: tuple[VisualRequest, ...],
@@ -226,12 +219,75 @@ def build_local_asset_adapter(
     return import_assets
 
 
-def _load_local_asset_manifest(
-    manifest_path: Path,
+@dataclass(frozen=True, slots=True)
+class LocalAssetManifestStatus:
+    """Whether the operator manifest can satisfy one A3 import right now."""
+
+    expected_count: int
+    declared_count: int | None
+    problem_code: str | None
+
+    @property
+    def ready(self) -> bool:
+        return self.problem_code is None
+
+
+def inspect_local_asset_manifest(
     *,
-    root: Path,
+    import_root: Path,
+    manifest_path: Path,
     expected_count: int,
-) -> tuple[dict[str, object], ...]:
+) -> LocalAssetManifestStatus:
+    """Run the A3 import checks against the manifest without copying anything.
+
+    The result carries the same error code the import would raise, so a gate
+    can refuse to continue before the run reaches a permanent A3 failure.
+    Image dimensions are still validated only by the A3 step itself.
+    """
+    declared_count: int | None = None
+    try:
+        root, manifest = _resolve_local_asset_manifest(import_root, manifest_path)
+        declared_count = len(_read_local_asset_manifest(manifest))
+        entries = _load_local_asset_manifest(
+            manifest,
+            root=root,
+            expected_count=expected_count,
+        )
+        for entry in entries:
+            _verify_pinned_local_asset(
+                _local_asset_source_path(root, entry),
+                expected_sha256=_manifest_sha256(entry),
+            )
+    except VisualPermanentAdapterError as exc:
+        return LocalAssetManifestStatus(
+            expected_count=expected_count,
+            declared_count=declared_count,
+            problem_code=str(exc),
+        )
+    return LocalAssetManifestStatus(
+        expected_count=expected_count,
+        declared_count=declared_count,
+        problem_code=None,
+    )
+
+
+def _resolve_local_asset_manifest(
+    import_root: Path,
+    manifest_path: Path,
+) -> tuple[Path, Path]:
+    root = import_root.resolve()
+    if root == Path(root.anchor):
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_IMPORT_ROOT_UNSAFE")
+    manifest = manifest_path if manifest_path.is_absolute() else root / manifest_path
+    manifest = manifest.resolve()
+    try:
+        manifest.relative_to(root)
+    except ValueError as exc:
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_MANIFEST_OUTSIDE_IMPORT_ROOT") from exc
+    return root, manifest
+
+
+def _read_local_asset_manifest(manifest_path: Path) -> list[object]:
     try:
         if (
             not manifest_path.is_file()
@@ -248,6 +304,16 @@ def _load_local_asset_manifest(
     assets = payload.get("assets")
     if payload.get("schema_version") != 1 or not isinstance(assets, list):
         raise VisualPermanentAdapterError("CONTENT_VISUALS_MANIFEST_INVALID")
+    return assets
+
+
+def _load_local_asset_manifest(
+    manifest_path: Path,
+    *,
+    root: Path,
+    expected_count: int,
+) -> tuple[dict[str, object], ...]:
+    assets = _read_local_asset_manifest(manifest_path)
     if len(assets) != expected_count:
         raise VisualPermanentAdapterError("CONTENT_VISUALS_COUNT_MISMATCH")
     entries: list[dict[str, object]] = []
@@ -322,6 +388,22 @@ def _manifest_source_type(
     if value not in {"generated", "stock", "owned"}:
         raise VisualPermanentAdapterError("CONTENT_VISUALS_INVALID_SOURCE_TYPE")
     return value
+
+
+def _verify_pinned_local_asset(source: Path, *, expected_sha256: str) -> None:
+    digest = hashlib.sha256()
+    size_bytes = 0
+    try:
+        with source.open("rb") as source_handle:
+            while chunk := source_handle.read(1024 * 1024):
+                size_bytes += len(chunk)
+                if size_bytes > _MAX_IMAGE_BYTES:
+                    raise VisualPermanentAdapterError("CONTENT_VISUALS_INVALID_IMAGE_SIZE")
+                digest.update(chunk)
+    except OSError as exc:
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_IMAGE_UNAVAILABLE") from exc
+    if size_bytes < 1 or digest.hexdigest() != expected_sha256:
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_LOCAL_ASSET_HASH_MISMATCH")
 
 
 def _copy_pinned_local_asset(

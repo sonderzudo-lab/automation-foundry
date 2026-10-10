@@ -41,6 +41,51 @@ class NarrationReviewGateError(ValueError):
     """Raised when A2 review evidence cannot be trusted."""
 
 
+class NarrationVisualsNotReadyError(NarrationReviewGateError):
+    """Raised when approving A2 would send the run into a known A3 failure."""
+
+    def __init__(
+        self,
+        *,
+        problem_code: str,
+        required_count: int,
+        declared_count: int | None,
+    ) -> None:
+        super().__init__(f"A3 visual assets are not ready: {problem_code}")
+        self.problem_code = problem_code
+        self.required_count = required_count
+        self.declared_count = declared_count
+
+
+_VISUAL_PLAN_PROBLEMS = {
+    "CONTENT_VISUALS_MANIFEST_UNAVAILABLE": "o manifesto não foi encontrado",
+    "CONTENT_VISUALS_MANIFEST_INVALID": "o manifesto não segue o formato esperado",
+    "CONTENT_VISUALS_COMMERCIAL_USE_BLOCKED": (
+        "há imagem sem uso comercial declarado"
+    ),
+    "CONTENT_VISUALS_DUPLICATE_LOCAL_ASSET": "há imagem ou origem repetida no manifesto",
+    "CONTENT_VISUALS_IMAGE_UNAVAILABLE": "há imagem declarada que não existe na pasta",
+    "CONTENT_VISUALS_LOCAL_ASSET_HASH_MISMATCH": (
+        "há imagem cujo arquivo não confere com o SHA-256 declarado"
+    ),
+}
+
+
+def describe_visual_plan_problem(
+    problem_code: str,
+    *,
+    required_count: int,
+    declared_count: int | None,
+) -> str:
+    """Explain to the operator why the A3 manifest cannot be imported yet."""
+    if problem_code == "CONTENT_VISUALS_COUNT_MISMATCH" and declared_count is not None:
+        return (
+            f"o manifesto declara {declared_count} imagens e esta narração "
+            f"exige exatamente {required_count}"
+        )
+    return _VISUAL_PLAN_PROBLEMS.get(problem_code, "o manifesto foi recusado")
+
+
 @dataclass(frozen=True, slots=True)
 class NarrationReviewRequestResult:
     """Observable result of opening or replaying the A2 review gate."""
@@ -74,6 +119,11 @@ class NarrationReview:
     visual_width: int
     visual_height: int
     audio_path: Path
+    # Filled only when the configured visual backend can be inspected up front.
+    visual_plan_checked: bool = False
+    visual_plan_problem_code: str | None = None
+    visual_plan_problem: str | None = None
+    declared_visual_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

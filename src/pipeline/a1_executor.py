@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -47,6 +47,8 @@ from src.pipeline.local_export import LocalExportPackage, load_local_export_pack
 from src.pipeline.narration_review import (
     NARRATION_REVIEW_APPROVAL_ACTION,
     NarrationReview,
+    NarrationVisualsNotReadyError,
+    describe_visual_plan_problem,
     finalize_narration_approval,
     load_narration_review,
     request_narration_approval,
@@ -78,9 +80,11 @@ from src.pipeline.tts import (
     get_configured_tts_synthesizer,
 )
 from src.pipeline.visuals import (
+    LOCAL_ASSETS_QUALITY_TEST_BACKEND,
     VisualAdapter,
     execute_approved_visual_step,
     get_configured_visual_adapter,
+    inspect_local_asset_manifest,
 )
 from src.platform.approval_service import approval_payload_digest, request_approval
 from src.platform.artifact_service import ArtifactStorageError, register_local_artifact
@@ -665,24 +669,8 @@ async def execute_content_script_run(
                     visual_adapter
                     or get_configured_visual_adapter(
                         _visuals_backend(),
-                        import_root=Path(
-                            str(
-                                getattr(
-                                    settings,
-                                    "content_visual_import_root",
-                                    "./imports/content-visuals",
-                                )
-                            )
-                        ),
-                        manifest_path=Path(
-                            str(
-                                getattr(
-                                    settings,
-                                    "content_visual_manifest_path",
-                                    "manifest.json",
-                                )
-                            )
-                        ),
+                        import_root=_visual_import_root(),
+                        manifest_path=_visual_manifest_path(),
                     )
                 ),
                 queue=_visuals_queue(),
@@ -892,10 +880,12 @@ async def load_content_approval_review(
     """Route one Content Engine approval to its own verified review projection."""
     root = Path(settings.storage_root) if storage_root is None else storage_root
     if approval.action == NARRATION_REVIEW_APPROVAL_ACTION:
-        return await load_narration_review(
-            session,
-            approval=approval,
-            storage_root=root,
+        return _with_visual_plan_status(
+            await load_narration_review(
+                session,
+                approval=approval,
+                storage_root=root,
+            )
         )
     if approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
         return await load_thumbnail_review(
@@ -990,11 +980,28 @@ async def finalize_content_script_approval(
     """Verify approval and report whether the durable dispatch must continue."""
     root = Path(settings.storage_root) if storage_root is None else storage_root
     if approval.action == NARRATION_REVIEW_APPROVAL_ACTION:
-        return await finalize_narration_approval(
+        continuation_required = await finalize_narration_approval(
             session,
             approval=approval,
             storage_root=root,
         )
+        if continuation_required:
+            # Refusing here rolls the decision back, so the gate stays open
+            # while the operator finishes the manifest.
+            narration_review = _with_visual_plan_status(
+                await load_narration_review(
+                    session,
+                    approval=approval,
+                    storage_root=root,
+                )
+            )
+            if narration_review.visual_plan_problem_code is not None:
+                raise NarrationVisualsNotReadyError(
+                    problem_code=narration_review.visual_plan_problem_code,
+                    required_count=narration_review.required_visual_count,
+                    declared_count=narration_review.declared_visual_count,
+                )
+        return continuation_required
     if approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
         return await finalize_thumbnail_approval(
             session,
@@ -1142,6 +1149,42 @@ def _visuals_backend() -> str:
 
 def _visuals_enabled() -> bool:
     return _visuals_backend() != "disabled"
+
+
+def _visual_import_root() -> Path:
+    return Path(
+        str(getattr(settings, "content_visual_import_root", "./imports/content-visuals"))
+    )
+
+
+def _visual_manifest_path() -> Path:
+    return Path(str(getattr(settings, "content_visual_manifest_path", "manifest.json")))
+
+
+def _with_visual_plan_status(review: NarrationReview) -> NarrationReview:
+    """Attach the manifest readiness when the visual backend is operator-supplied."""
+    if _visuals_backend() != LOCAL_ASSETS_QUALITY_TEST_BACKEND:
+        return review
+    status = inspect_local_asset_manifest(
+        import_root=_visual_import_root(),
+        manifest_path=_visual_manifest_path(),
+        expected_count=review.required_visual_count,
+    )
+    return replace(
+        review,
+        visual_plan_checked=True,
+        visual_plan_problem_code=status.problem_code,
+        visual_plan_problem=(
+            None
+            if status.problem_code is None
+            else describe_visual_plan_problem(
+                status.problem_code,
+                required_count=status.expected_count,
+                declared_count=status.declared_count,
+            )
+        ),
+        declared_visual_count=status.declared_count,
+    )
 
 
 def _visuals_queue() -> QueueClass:

@@ -75,7 +75,10 @@ from src.pipeline.local_export import (
     LocalExportNotAvailableError,
     LocalExportPackage,
 )
-from src.pipeline.narration_review import NarrationReview
+from src.pipeline.narration_review import (
+    NarrationReview,
+    NarrationVisualsNotReadyError,
+)
 from src.pipeline.readiness import ReadinessReport, collect_content_readiness
 from src.pipeline.thumbnail_review import (
     THUMBNAIL_REVIEW_APPROVAL_ACTION,
@@ -1181,6 +1184,16 @@ def create_app(
         except (IdempotencyConflictError, InvalidRunTransitionError) as exc:
             await session.rollback()
             raise HTTPException(status_code=409, detail="approval cannot be approved") from exc
+        except NarrationVisualsNotReadyError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "approval not recorded; A3 visual manifest is not ready: "
+                    f"{exc.problem_code} (declared={exc.declared_count}, "
+                    f"required={exc.required_count})"
+                ),
+            ) from exc
         except ValueError as exc:
             await session.rollback()
             raise HTTPException(status_code=400, detail="invalid approval decision") from exc

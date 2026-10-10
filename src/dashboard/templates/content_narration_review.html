@@ -38,6 +38,13 @@
   <div class="card-content">
     <p class="text-sm">Após a aprovação, o pipeline exigirá exatamente <strong>{{ review.required_visual_count }} PNGs</strong> de <strong>{{ review.visual_width }}x{{ review.visual_height }}</strong> para o formato {{ "Short" if review.format == "short" else "Longo" }}.</p>
     <p class="text-sm muted" style="margin-top:.5rem">Cada imagem ainda precisa de manifesto local com direitos, uso comercial e SHA-256 próprios.</p>
+    {% if review.visual_plan_checked %}
+      {% if review.visual_plan_problem %}
+    <p class="text-sm" style="margin-top:.5rem"><strong>O manifesto ainda não está pronto:</strong> {{ review.visual_plan_problem }} (<code>{{ review.visual_plan_problem_code }}</code>). Enquanto isso, aprovar será recusado e esta revisão continua aberta.</p>
+      {% else %}
+    <p class="text-sm" style="margin-top:.5rem">Manifesto conferido agora: {{ review.declared_visual_count }} imagens declaradas, com uso comercial e SHA-256 válidos.</p>
+      {% endif %}
+    {% endif %}
   </div>
 </section>
 {% endblock %}

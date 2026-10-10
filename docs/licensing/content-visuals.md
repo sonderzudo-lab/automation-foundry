@@ -74,6 +74,14 @@ campos extras/ausentes, `commercial_use` diferente de `true`, duplicatas, hash
 divergente, PNG inválido ou dimensões incorretas. Os arquivos de importação não
 são alterados; A3 copia os bytes conferidos para seu diretório de artifacts.
 
+A quantidade só é conhecida depois que a narração existe. Com o gate A2
+habilitado, a página de revisão da narração informa a quantidade exigida e
+confere o manifesto naquele momento: quantidade, campos, uso comercial,
+existência dos arquivos e SHA-256, sem copiar nada. Enquanto o import seria
+recusado, a aprovação pelo painel não é registrada e a revisão continua aberta
+para o operador terminar o manifesto. Dimensões e validade do PNG continuam
+sendo conferidas apenas por A3.
+
 ## Candidatos ainda bloqueados
 
 | Candidato | Evidência primária | Decisão atual |
