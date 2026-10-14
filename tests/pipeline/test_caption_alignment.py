@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import (
 from src.core.database import Base
 from src.pipeline.a1_executor import execute_content_script_run
 from src.pipeline.caption_alignment import (
+    REASON_BLOCK_ONSET_OFFSET,
     REASON_CAPTIONS_OVER_SILENCE,
     REASON_END_OFFSET,
     REASON_EVENTS_BEYOND_AUDIO,
@@ -153,8 +154,98 @@ def test_measurement_flags_captions_that_span_silence(tmp_path: Path) -> None:
     assert measurement.status == STATUS_WARNING
     assert REASON_CAPTIONS_OVER_SILENCE in measurement.reasons
     assert measurement.caption_block_count == 1
-    assert measurement.max_block_onset_offset_seconds is None
+    assert measurement.max_block_onset_offset_seconds == Decimal("0.000000")
     assert measurement.caption_outside_speech_ratio > Decimal("0.25")
+
+
+def test_measurement_pairs_blocks_with_the_nearest_speech_resumption(
+    tmp_path: Path,
+) -> None:
+    # Shape of a real narration: the captions split at two 0.28 s pauses that the
+    # speech segmentation merges, and the speech splits at two longer pauses the
+    # captions run through. Both sides end up with three pieces that do not
+    # correspond by position.
+    audio_path = tmp_path / "audio.wav"
+    _write_wav(
+        audio_path,
+        duration_seconds=25.7,
+        bursts=(
+            (0.2, 6.44),
+            (6.72, 10.54),
+            (10.88, 20.16),
+            (20.44, 21.02),
+            (21.44, 25.4),
+        ),
+    )
+
+    measurement = measure_caption_alignment(
+        audio_path=audio_path,
+        caption_text=_ass(
+            (
+                ("0:00:00.00", "0:00:06.28"),
+                ("0:00:06.70", "0:00:20.06"),
+                ("0:00:20.44", "0:00:25.68"),
+            )
+        ),
+        parameters=_parameters(),
+    )
+
+    assert measurement.speech_segment_count == 3
+    assert measurement.caption_block_count == 3
+    assert measurement.status == STATUS_PASS
+    assert measurement.reasons == ()
+    assert measurement.max_block_onset_offset_seconds is not None
+    assert measurement.max_block_onset_offset_seconds <= Decimal("0.25")
+
+
+def test_measurement_flags_a_block_that_opens_in_the_middle_of_speech(
+    tmp_path: Path,
+) -> None:
+    # Three speech segments against two caption blocks: the counts differ, and
+    # the second block still has to be compared with the audio. The captions
+    # leave 1.5 s of speech uncovered before it, so it is not a continuation.
+    audio_path = tmp_path / "audio.wav"
+    _write_wav(
+        audio_path,
+        duration_seconds=12.0,
+        bursts=((0.0, 5.0), (5.6, 9.0), (9.6, 12.0)),
+    )
+
+    measurement = measure_caption_alignment(
+        audio_path=audio_path,
+        caption_text=_ass(
+            (("0:00:00.00", "0:00:01.50"), ("0:00:03.00", "0:00:12.00"))
+        ),
+        parameters=_parameters(),
+    )
+
+    assert measurement.speech_segment_count == 3
+    assert measurement.caption_block_count == 2
+    assert measurement.status == STATUS_WARNING
+    assert REASON_BLOCK_ONSET_OFFSET in measurement.reasons
+    assert measurement.max_block_onset_offset_seconds is not None
+    assert measurement.max_block_onset_offset_seconds >= Decimal("2.5")
+
+
+def test_measurement_accepts_a_block_that_continues_the_same_sentence(
+    tmp_path: Path,
+) -> None:
+    # Run 16: a caption split at a comma the narrator barely paused on. The second
+    # block opens 0.36 s after the first, while speech is still going on.
+    audio_path = tmp_path / "audio.wav"
+    _write_wav(audio_path, duration_seconds=6.0, bursts=((0.0, 6.0),))
+
+    measurement = measure_caption_alignment(
+        audio_path=audio_path,
+        caption_text=_ass(
+            (("0:00:00.00", "0:00:02.80"), ("0:00:03.16", "0:00:06.00"))
+        ),
+        parameters=_parameters(),
+    )
+
+    assert measurement.caption_block_count == 2
+    assert measurement.status == STATUS_PASS
+    assert measurement.max_block_onset_offset_seconds == Decimal("0")
 
 
 def test_measurement_flags_shifted_captions(tmp_path: Path) -> None:
@@ -659,6 +750,7 @@ async def test_report_projection_is_absent_verified_and_allowlisted(
     ("mutation", "expected"),
     [
         ({"schema_version": 2}, "CAPTION_ALIGNMENT_REPORT_UNVERIFIED"),
+        ({"algorithm": "unknown-algorithm-v9"}, "CAPTION_ALIGNMENT_REPORT_UNVERIFIED"),
         ({"published": True}, "CAPTION_ALIGNMENT_REPORT_UNVERIFIED"),
         ({"run_id": 9_999}, "CAPTION_ALIGNMENT_REPORT_UNVERIFIED"),
         ({"parameters_digest": "not-a-digest"}, "CAPTION_ALIGNMENT_REPORT_UNVERIFIED"),
@@ -707,6 +799,49 @@ async def test_report_projection_fails_closed_on_tampered_content(
         )
 
     assert error.value.code == expected
+
+
+async def test_report_projection_still_reads_reports_of_the_previous_algorithm(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    run = await _run_with_captions(
+        session,
+        tmp_path,
+        idempotency_key="alignment-previous-algorithm",
+        duration_seconds=5.0,
+        bursts=((0.0, 5.0),),
+    )
+    assert run.id is not None
+    result = await evaluate_caption_alignment(
+        session,
+        run_id=run.id,
+        storage_root=tmp_path,
+        parameters=_parameters(),
+    )
+    report = await session.get(Artifact, result.report_artifact_id)
+    assert report is not None
+    report_path = tmp_path / report.relative_path
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["algorithm"] == "rms-window-energy-vs-ass-events-v3"
+    payload["algorithm"] = "rms-window-energy-vs-ass-events-v1"
+    del payload["parameters"]["onset_pause_seconds"]
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    report_path.write_bytes(encoded)
+    report.sha256 = hashlib.sha256(encoded).hexdigest()
+    report.size_bytes = len(encoded)
+    await session.flush()
+
+    view = await load_caption_alignment_report(
+        session,
+        run_id=run.id,
+        storage_root=tmp_path,
+    )
+
+    assert view is not None
+    assert view.status == STATUS_PASS
 
 
 async def test_report_projection_rejects_a_rewritten_file(

@@ -72,16 +72,45 @@ class Settings(BaseSettings):
 
     # Kokoro permanece apenas em modo de teste local até a qualidade PT-BR e o
     # risco residual de proveniência por voz serem aceitos explicitamente.
-    content_tts_backend: Literal["disabled", "kokoro_quality_test"] = "disabled"
+    content_tts_backend: Literal[
+        "disabled",
+        "kokoro_quality_test",
+        "qwen3_tts_clone_quality_test",
+    ] = "disabled"
     content_tts_voice_id: str = Field(default="pf_dora", min_length=1, max_length=100)
     content_tts_language_code: str = Field(default="p", min_length=1, max_length=20)
+    # Qwen3-TTS roda em um ambiente virtual separado e clona uma gravação de referência
+    # do proprietário (ou de locutor com autorização escrita), com a transcrição dela.
+    content_tts_qwen3_python_path: str | None = Field(default=None, max_length=1000)
+    content_tts_qwen3_model_dir: str | None = Field(default=None, max_length=1000)
+    content_tts_reference_audio_path: str | None = Field(default=None, max_length=1000)
+    content_tts_reference_text_path: str | None = Field(default=None, max_length=1000)
     # Quando habilitado, A2 pausa para audição humana antes de A3/A4/A5.
     content_narration_review_enabled: bool = False
-    # FLUX.1 permanece bloqueado. O único modo opt-in importa PNGs escolhidos
+    # FLUX.1 permanece bloqueado. "local_assets_quality_test" importa PNGs escolhidos
     # pelo operador e exige manifesto de direitos + SHA-256 por arquivo.
-    content_visual_backend: Literal["disabled", "local_assets_quality_test"] = (
-        "disabled"
+    # "flux2_klein_quality_test" gera as imagens localmente como teste de qualidade:
+    # cada arquivo sai sem uso comercial declarado e o vídeo fica marcado como não
+    # monetizável. Exige o gate humano de imagens e os dois caminhos abaixo.
+    content_visual_backend: Literal[
+        "disabled",
+        "local_assets_quality_test",
+        "flux2_klein_quality_test",
+    ] = "disabled"
+    # O FLUX.2 klein roda em um ambiente virtual separado, a partir de uma pasta
+    # local do modelo conferida por inventário SHA-256 antes de cada inferência.
+    content_visual_flux2_python_path: str | None = Field(default=None, max_length=1000)
+    content_visual_flux2_model_dir: str | None = Field(default=None, max_length=1000)
+    # Quando habilitado, A3 pausa para conferência humana das imagens antes de A4/A5.
+    content_visual_review_enabled: bool = False
+    # Disparo rápido: sorteia uma pauta desta lista (uma por linha) e usa a persona
+    # padrão; o formulário completo continua disponível.
+    content_quick_topics_path: str = Field(
+        default="./imports/content-pautas.txt",
+        min_length=1,
+        max_length=1000,
     )
+    content_default_persona: str | None = Field(default=None, max_length=1_000)
     content_visual_import_root: str = Field(
         default="./imports/content-visuals",
         min_length=1,
@@ -115,6 +144,9 @@ class Settings(BaseSettings):
     )
     # A5 aceita adapters injetados em testes; o build FFmpeg local ainda não foi auditado.
     content_assembly_backend: Literal["disabled", "ffmpeg_quality_test"] = "disabled"
+    # "motion" adiciona zoom lento, crossfade e cortes no início das frases; "static"
+    # mantém imagens paradas em partes iguais.
+    content_assembly_edit: Literal["static", "motion"] = "static"
     content_ffmpeg_path: str = Field(default="ffmpeg", min_length=1, max_length=1000)
     content_ffprobe_path: str = Field(default="ffprobe", min_length=1, max_length=1000)
     content_ffmpeg_expected_sha256: str | None = None
@@ -245,6 +277,28 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _qwen3_clone_quality_test_must_name_its_local_files(self) -> Settings:
+        if self.content_tts_backend != "qwen3_tts_clone_quality_test":
+            return self
+        if self.content_tts_language_code != "pt":
+            raise ValueError("Qwen3-TTS clone quality test requires language code 'pt'")
+        if self.content_tts_voice_id in {"pf_dora", "pm_alex", "pm_santa"}:
+            raise ValueError(
+                "Qwen3-TTS clone quality test requires a voice ID that names the reference "
+                "recording, not a Kokoro voice"
+            )
+        for field in (
+            "content_tts_qwen3_python_path",
+            "content_tts_qwen3_model_dir",
+            "content_tts_reference_audio_path",
+            "content_tts_reference_text_path",
+        ):
+            value = getattr(self, field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field} is required by the Qwen3-TTS clone quality test")
+        return self
+
+    @model_validator(mode="after")
     def _narration_review_requires_tts(self) -> Settings:
         if not self.content_narration_review_enabled:
             return self
@@ -278,6 +332,35 @@ class Settings(BaseSettings):
             or not self.content_caption_model_path.strip()
         ):
             raise ValueError("faster-whisper quality test requires a local model path")
+        return self
+
+    @model_validator(mode="after")
+    def _visual_review_requires_the_stages_it_guards(self) -> Settings:
+        if not self.content_visual_review_enabled:
+            return self
+        if (
+            self.content_visual_backend == "disabled"
+            or self.content_caption_backend == "disabled"
+            or self.content_assembly_backend == "disabled"
+        ):
+            raise ValueError(
+                "A3 visual review requires A3 visuals, A4 captions and A5 assembly"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _flux2_klein_quality_test_requires_review_and_local_paths(self) -> Settings:
+        if self.content_visual_backend != "flux2_klein_quality_test":
+            return self
+        if not self.content_visual_review_enabled:
+            raise ValueError("generated visuals require the A3 visual review gate")
+        for field in (
+            "content_visual_flux2_python_path",
+            "content_visual_flux2_model_dir",
+        ):
+            value = getattr(self, field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field} is required by the FLUX.2 klein quality test")
         return self
 
     @model_validator(mode="after")

@@ -8,6 +8,7 @@ import struct
 import wave
 import zlib
 from collections.abc import AsyncGenerator
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,11 +27,16 @@ from src.pipeline.script_gen import ScriptResult
 from src.pipeline.tts import TTSAdapterResult, execute_approved_tts_step
 from src.pipeline.visuals import (
     VisualAssetResult,
+    VisualCountBounds,
     VisualPermanentAdapterError,
     VisualRequest,
     VisualRetryableAdapterError,
+    build_local_asset_count_resolver,
     execute_approved_visual_step,
     get_configured_visual_adapter,
+    inspect_local_asset_manifest,
+    plan_visual_slots,
+    visual_count_bounds,
 )
 from src.platform.approval_service import decide_approval
 from src.platform.models import (
@@ -162,8 +168,8 @@ def _png_chunk(kind: bytes, data: bytes) -> bytes:
     )
 
 
-def _write_png(path: Path, *, width: int, height: int) -> None:
-    row = b"\x00" + (b"\x22\x44\x66" * width)
+def _write_png(path: Path, *, width: int, height: int, shade: int = 0x22) -> None:
+    row = b"\x00" + (bytes((shade, 0x44, 0x66)) * width)
     encoded = (
         b"\x89PNG\r\n\x1a\n"
         + _png_chunk(
@@ -325,6 +331,137 @@ def test_local_asset_adapter_rejects_unlicensed_or_changed_input(
         match="CONTENT_VISUALS_LOCAL_ASSET_HASH_MISMATCH",
     ):
         adapter(request, destination)
+
+
+def test_manifest_inspection_reports_what_a3_would_reject_without_copying(
+    tmp_path: Path,
+) -> None:
+    import_root = tmp_path / "imports"
+    import_root.mkdir()
+    sources = [import_root / "first.png", import_root / "second.png"]
+    for source in sources:
+        _write_png(source, width=1080, height=1920)
+    manifest = import_root / "manifest.json"
+
+    def inspect(expected_count: int) -> visuals.LocalAssetManifestStatus:
+        return inspect_local_asset_manifest(
+            import_root=import_root,
+            manifest_path=Path("manifest.json"),
+            bounds=VisualCountBounds(
+                minimum=expected_count,
+                default=expected_count,
+                maximum=expected_count,
+            ),
+        )
+
+    missing = inspect(2)
+    assert missing.ready is False
+    assert missing.problem_code == "CONTENT_VISUALS_MANIFEST_UNAVAILABLE"
+    assert missing.declared_count is None
+
+    _write_local_asset_manifest(manifest, sources)
+    before = sorted(path.name for path in import_root.iterdir())
+    ready = inspect(2)
+    short = inspect(3)
+    assert ready.ready is True and ready.declared_count == 2
+    assert short.problem_code == "CONTENT_VISUALS_COUNT_MISMATCH"
+    assert (short.bounds.minimum, short.declared_count) == (3, 2)
+    ranged = inspect_local_asset_manifest(
+        import_root=import_root,
+        manifest_path=Path("manifest.json"),
+        bounds=VisualCountBounds(minimum=1, default=3, maximum=4),
+    )
+    assert ranged.ready is True and ranged.declared_count == 2
+    assert ranged.relative_paths == ("first.png", "second.png")
+    assert short.relative_paths == ()
+    assert sorted(path.name for path in import_root.iterdir()) == before
+
+    sources[1].write_bytes(sources[1].read_bytes() + b"changed")
+    assert inspect(2).problem_code == "CONTENT_VISUALS_LOCAL_ASSET_HASH_MISMATCH"
+
+    _write_local_asset_manifest(manifest, sources, commercial_use=False)
+    assert inspect(2).problem_code == "CONTENT_VISUALS_COMMERCIAL_USE_BLOCKED"
+
+
+@pytest.mark.parametrize(
+    ("duration", "word_count", "expected"),
+    [
+        ("45.43", 115, (5, 8, 11)),
+        ("12", 40, (2, 2, 3)),
+        ("3", 40, (1, 1, 1)),
+        ("45.43", 6, (5, 6, 6)),
+        ("900", 2000, (60, 60, 60)),
+    ],
+)
+def test_visual_count_bounds_keep_each_visual_between_four_and_ten_seconds(
+    duration: str,
+    word_count: int,
+    expected: tuple[int, int, int],
+) -> None:
+    bounds = visual_count_bounds(Decimal(duration), word_count=word_count)
+
+    assert (bounds.minimum, bounds.default, bounds.maximum) == expected
+    assert bounds.accepts(bounds.default)
+    assert not bounds.accepts(bounds.minimum - 1)
+    assert not bounds.accepts(bounds.maximum + 1)
+
+
+def test_visual_plan_cuts_at_sentence_starts_and_covers_the_narration() -> None:
+    narration = (
+        "Primeiro, separa só os itens que você vai usar. O resto, põe em outro "
+        "lugar. Segundo, deixa um cantinho pra coisas soltas. Terceiro, abre um "
+        "caderno e deixa à mão."
+    )
+    slots = plan_visual_slots(narration, duration_seconds=Decimal("12"), count=3)
+
+    assert [slot.index for slot in slots] == [1, 2, 3]
+    assert " ".join(slot.text for slot in slots) == narration
+    # Thirty words in three shares: the ideal cuts at words 10 and 20 move to the
+    # nearest sentence starts, words 9 ("O resto") and 22 ("Terceiro").
+    assert [slot.text.split()[0] for slot in slots] == ["Primeiro,", "O", "Terceiro,"]
+    assert all(slot.text.endswith(".") for slot in slots)
+    assert slots[0].start_seconds == Decimal("0.0")
+    assert slots[-1].end_seconds == Decimal("12.0")
+    assert all(
+        earlier.end_seconds == later.start_seconds
+        for earlier, later in zip(slots, slots[1:], strict=False)
+    )
+    assert all(slot.file_name is None for slot in slots)
+
+
+def test_visual_plan_handles_text_without_sentence_breaks_and_small_inputs() -> None:
+    slots = plan_visual_slots(
+        "uma duas tres quatro cinco seis",
+        duration_seconds=Decimal("6"),
+        count=3,
+    )
+
+    assert [slot.text for slot in slots] == ["uma duas", "tres quatro", "cinco seis"]
+    assert len(plan_visual_slots("so duas", duration_seconds=Decimal("6"), count=5)) == 2
+    assert plan_visual_slots("", duration_seconds=Decimal("6"), count=3) == ()
+    assert plan_visual_slots("texto", duration_seconds=Decimal("0"), count=1) == ()
+
+
+def test_local_asset_count_follows_the_manifest_only_inside_the_bounds(
+    tmp_path: Path,
+) -> None:
+    import_root = tmp_path / "imports"
+    import_root.mkdir()
+    sources = [import_root / f"image-{index}.png" for index in range(1, 8)]
+    for source in sources:
+        _write_png(source, width=1080, height=1920)
+    manifest = import_root / "manifest.json"
+    resolve = build_local_asset_count_resolver(
+        import_root=import_root,
+        manifest_path=Path("manifest.json"),
+    )
+    bounds = VisualCountBounds(minimum=5, default=8, maximum=11)
+
+    assert resolve(bounds) == 8
+    _write_local_asset_manifest(manifest, sources)
+    assert resolve(bounds) == 7
+    _write_local_asset_manifest(manifest, sources[:4])
+    assert resolve(bounds) == 8
 
 
 def test_local_asset_adapter_contains_manifest_and_asset_paths(tmp_path: Path) -> None:

@@ -1,0 +1,72 @@
+{% extends "review_base.html" %}
+{% import "_macros.html" as ui %}
+{% set review_effect = "Aprovar fica vinculado ao manifesto e ao SHA-256 de cada imagem e apenas libera legendas e montagem locais; não publica, envia nem gasta. Rejeitar cancela a run." %}
+{% block title %}Revisão A3 #{{ review.approval_id }} · Automation Foundry{% endblock %}
+{% block review_title %}Revisão humana das imagens A3{% endblock %}
+{% block review_kicker %}{{ review.images|length }} imagens{% if review.round_number %} · rodada {{ review.round_number }}{% endif %} · run #{{ review.run_id }}{% endblock %}
+{% block review_verify %}O manifesto e cada PNG foram lidos do storage local e validados contra o tamanho e o SHA-256 registrados. A aprovação fica vinculada a este conjunto exato.{% endblock %}
+{% block review_hashes %}<span>Manifesto: {{ ui.hash_chip(review.manifest_sha256, "SHA-256 do manifesto") }}</span>{% endblock %}
+{% block review_body %}
+{% if review.usage_scope %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Teste de qualidade, não monetizável</h2></div>
+  <div class="card-content"><p class="text-sm">Estas imagens foram geradas localmente e não têm uso comercial declarado. O vídeo montado com elas carrega a mesma marcação até o export local.</p></div>
+</section>
+{% endif %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">O que conferir</h2></div>
+  <div class="card-content">
+    <ul class="text-sm" style="display:grid;gap:.25rem;padding-left:1.25rem">
+      <li>A imagem combina com o trecho narrado abaixo dela?</li>
+      <li>Aparece alguma pessoa real reconhecível, marca ou logotipo?</li>
+      <li>Há texto, número, gráfico, documento ou tela legível?</li>
+      <li>Há defeito visível, como mãos ou objetos deformados?</li>
+    </ul>
+    <p class="text-sm muted" style="margin-top:.5rem">A checagem automática só filtra palavras da descrição; estes pontos dependem do seu olhar.</p>
+  </div>
+</section>
+{% if review.requested_redo %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Ajustes pedidos nesta rodada</h2><p class="card-description">Estas imagens foram refeitas na rodada seguinte.</p></div>
+  <div class="card-content"><ul class="text-sm" style="padding-left:1.25rem">{% for index, note in review.requested_redo %}<li>Imagem {{ index }}: {{ note }}</li>{% endfor %}</ul></div>
+</section>
+{% endif %}
+{% set can_send_back = approval_status == "pending" and review.can_redo %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Imagens e trechos</h2><p class="card-description">Na ordem em que aparecem no vídeo, {{ review.width }}x{{ review.height }}.{% if can_send_back %} Para refazer uma imagem, marque "Refazer" e diga o que ficou ruim; as outras ficam como estão.{% endif %}</p></div>
+  <div class="card-content">
+    <div class="thumb-grid" role="list" aria-label="Imagens A3">
+      {% for image in review.images %}
+      <div class="card thumb" role="listitem">
+        <a href="/approvals/{{ review.approval_id }}/visuals/{{ image.artifact_id }}"><img class="thumb-art" src="/approvals/{{ review.approval_id }}/visuals/{{ image.artifact_id }}" alt="Imagem {{ image.index }} da run #{{ review.run_id }}"></a>
+        <span class="thumb-body"><strong>Imagem {{ image.index }}</strong>
+          {% if image.narration_text %}<span class="text-sm">{{ image.narration_text }}</span>{% else %}<span class="muted text-sm">Trecho da narração não registrado neste manifesto.</span>{% endif %}
+          {% if image.revision_note %}<span class="text-sm">Refeita a partir do seu pedido: «{{ image.revision_note }}»</span>{% endif %}
+          {% if image.generation_prompt %}<details class="text-sm muted"><summary>Descrição usada para gerar</summary>{{ image.generation_prompt }}</details>{% endif %}
+          {% if can_send_back %}
+          <label class="check-row text-sm"><input class="checkbox" type="checkbox" name="redo" value="{{ image.index }}" form="form-redo"> Refazer esta imagem</label>
+          <textarea class="textarea" name="note_{{ image.index }}" form="form-redo" maxlength="250" rows="2" aria-label="O que mudar na imagem {{ image.index }}" placeholder="O que ficou ruim e como você quer"></textarea>
+          {% endif %}
+          <span class="muted text-sm"><abbr title="{{ image.size_bytes }} bytes">{{ image.size_bytes|byte_size }}</abbr></span>
+          <span class="hash-wrap">{{ ui.hash_chip(image.sha256, "SHA-256 da imagem " ~ image.index) }}</span></span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% if can_send_back %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Refazer imagens marcadas</h2><p class="card-description">Gera uma nova rodada só com as imagens marcadas, a partir dos seus comentários, e reabre esta revisão. Até 7 imagens por rodada; não há limite de rodadas. Cada imagem refeita leva cerca de 20 segundos.</p></div>
+  <div class="card-content">
+    <form id="form-redo" method="post" action="/approvals/{{ review.approval_id }}/visual-redo">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn" type="submit" name="confirmation" value="redo-visuals">{{ ui.icon("rotate-cw") }}Refazer imagens marcadas</button>
+    </form>
+  </div>
+</section>
+{% endif %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Proveniência</h2></div>
+  <div class="card-content"><ul class="text-sm" style="padding-left:1.25rem">{% for license in review.licenses %}<li>{{ license }}</li>{% endfor %}</ul></div>
+</section>
+{% endblock %}

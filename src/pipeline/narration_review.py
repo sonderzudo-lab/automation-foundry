@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import wave
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -19,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.pipeline.tts import TTS_STEP_NAME
+from src.pipeline.visuals import VisualPlanSlot, plan_visual_slots, visual_count_bounds
 from src.platform.approval_service import approval_payload_digest, request_approval
 from src.platform.models import (
     Approval,
@@ -33,12 +33,60 @@ NARRATION_REVIEW_APPROVAL_ACTION = "review_content_narration_a2"
 _SCRIPT_APPROVAL_ACTION = "review_content_script_a1"
 _MAX_AUDIO_BYTES = 1024 * 1024 * 1024
 _MAX_SCRIPT_BYTES = 5 * 1024 * 1024
-_MAX_VISUALS = 60
-_SECONDS_PER_VISUAL = Decimal("6")
 
 
 class NarrationReviewGateError(ValueError):
     """Raised when A2 review evidence cannot be trusted."""
+
+
+class NarrationVisualsNotReadyError(NarrationReviewGateError):
+    """Raised when approving A2 would send the run into a known A3 failure."""
+
+    def __init__(
+        self,
+        *,
+        problem_code: str,
+        minimum_count: int,
+        maximum_count: int,
+        declared_count: int | None,
+    ) -> None:
+        super().__init__(f"A3 visual assets are not ready: {problem_code}")
+        self.problem_code = problem_code
+        self.minimum_count = minimum_count
+        self.maximum_count = maximum_count
+        self.declared_count = declared_count
+
+
+_VISUAL_PLAN_PROBLEMS = {
+    "CONTENT_VISUALS_MANIFEST_UNAVAILABLE": "o manifesto não foi encontrado",
+    "CONTENT_VISUALS_MANIFEST_INVALID": "o manifesto não segue o formato esperado",
+    "CONTENT_VISUALS_COMMERCIAL_USE_BLOCKED": (
+        "há imagem sem uso comercial declarado"
+    ),
+    "CONTENT_VISUALS_DUPLICATE_LOCAL_ASSET": "há imagem ou origem repetida no manifesto",
+    "CONTENT_VISUALS_IMAGE_UNAVAILABLE": "há imagem declarada que não existe na pasta",
+    "CONTENT_VISUALS_LOCAL_ASSET_HASH_MISMATCH": (
+        "há imagem cujo arquivo não confere com o SHA-256 declarado"
+    ),
+}
+
+
+def describe_visual_plan_problem(
+    problem_code: str,
+    *,
+    minimum_count: int,
+    maximum_count: int,
+    declared_count: int | None,
+) -> str:
+    """Explain to the operator why the A3 manifest cannot be imported yet."""
+    if problem_code == "CONTENT_VISUALS_COUNT_MISMATCH" and declared_count is not None:
+        accepted = (
+            f"exige exatamente {minimum_count}"
+            if minimum_count == maximum_count
+            else f"aceita de {minimum_count} a {maximum_count}"
+        )
+        return f"o manifesto declara {declared_count} imagens e esta narração {accepted}"
+    return _VISUAL_PLAN_PROBLEMS.get(problem_code, "o manifesto foi recusado")
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,9 +119,19 @@ class NarrationReview:
     license_id: str
     format: str
     required_visual_count: int
+    minimum_visual_count: int
+    maximum_visual_count: int
     visual_width: int
     visual_height: int
     audio_path: Path
+    # Filled only when the configured visual backend can be inspected up front.
+    visual_plan_checked: bool = False
+    visual_plan_problem_code: str | None = None
+    visual_plan_problem: str | None = None
+    declared_visual_count: int | None = None
+    # Approximate stretch of narration behind each image, to guide the choice.
+    narration: str = ""
+    visual_plan: tuple[VisualPlanSlot, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,8 +147,11 @@ class _VerifiedNarrationEvidence:
     license_id: str
     format: str
     required_visual_count: int
+    minimum_visual_count: int
+    maximum_visual_count: int
     visual_width: int
     visual_height: int
+    narration: str
 
 
 async def request_narration_approval(
@@ -183,9 +244,17 @@ async def load_narration_review(
         license_id=evidence.license_id,
         format=evidence.format,
         required_visual_count=evidence.required_visual_count,
+        minimum_visual_count=evidence.minimum_visual_count,
+        maximum_visual_count=evidence.maximum_visual_count,
         visual_width=evidence.visual_width,
         visual_height=evidence.visual_height,
         audio_path=evidence.audio_path,
+        narration=evidence.narration,
+        visual_plan=plan_visual_slots(
+            evidence.narration,
+            duration_seconds=Decimal(evidence.duration_seconds),
+            count=evidence.required_visual_count,
+        ),
     )
 
 
@@ -263,6 +332,7 @@ async def _verify_evidence(
             raise NarrationReviewGateError("A1 script bundle is invalid")
         result = script_payload.get("result")
         full_script = result.get("full_script") if isinstance(result, dict) else None
+        narration = result.get("narration") if isinstance(result, dict) else None
         format_value = script_payload.get("format")
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise NarrationReviewGateError("A1 script bundle is unreadable") from exc
@@ -318,12 +388,7 @@ async def _verify_evidence(
     model_id = _text_output(output, "model_id")
     license_id = _text_output(output, "license_id")
 
-    word_count = len(full_script.split())
-    desired_visuals = max(
-        1,
-        min(_MAX_VISUALS, math.ceil(duration / _SECONDS_PER_VISUAL)),
-    )
-    visual_count = min(desired_visuals, word_count)
+    bounds = visual_count_bounds(duration, word_count=len(full_script.split()))
     width, height = (1080, 1920) if format_value == "short" else (1920, 1080)
     return _VerifiedNarrationEvidence(
         audio=audio_artifact,
@@ -336,9 +401,12 @@ async def _verify_evidence(
         model_id=model_id,
         license_id=license_id,
         format=format_value,
-        required_visual_count=visual_count,
+        required_visual_count=bounds.default,
+        minimum_visual_count=bounds.minimum,
+        maximum_visual_count=bounds.maximum,
         visual_width=width,
         visual_height=height,
+        narration=narration if isinstance(narration, str) else "",
     )
 
 
@@ -423,6 +491,18 @@ def _approval_input(
 
 
 def _review_payload(evidence: _VerifiedNarrationEvidence) -> dict[str, str]:
+    size = f"{evidence.visual_width}x{evidence.visual_height}"
+    if evidence.minimum_visual_count == evidence.maximum_visual_count:
+        visual_plan = (
+            f"Preparar exatamente {evidence.required_visual_count} PNGs de "
+            f"{size} antes de aprovar."
+        )
+    else:
+        visual_plan = (
+            f"Preparar de {evidence.minimum_visual_count} a "
+            f"{evidence.maximum_visual_count} PNGs de {size} antes de aprovar; "
+            f"{evidence.required_visual_count} mantém uma imagem a cada seis segundos."
+        )
     return {
         "audio": (
             f"Narração #{evidence.audio.id} · {evidence.duration_seconds} s · "
@@ -430,10 +510,7 @@ def _review_payload(evidence: _VerifiedNarrationEvidence) -> dict[str, str]:
         ),
         "voice": f"{evidence.voice_id} · {evidence.backend}",
         "format": "Short" if evidence.format == "short" else "Longo",
-        "visual_plan": (
-            f"Preparar exatamente {evidence.required_visual_count} PNGs de "
-            f"{evidence.visual_width}x{evidence.visual_height} antes de aprovar."
-        ),
+        "visual_plan": visual_plan,
         "provenance": evidence.license_id,
         "audio_sha256": evidence.audio.sha256,
         "publication": "Nenhum upload, envio ou gasto é executado por esta aprovação.",

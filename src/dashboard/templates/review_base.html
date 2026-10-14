@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{#
+  Base das páginas de revisão de approval (decisão irreversível).
+  A filha define: review_title, review_kicker, review_verify (texto da integridade), review_hashes
+  (lista de (rótulo, hash)), review_effect (efeito real da aprovação) e review_body (evidências).
+  O painel de decisão (approval_decision_controls.html) fica à direita e é somente leitura depois da decisão.
+#}
+{% set active_page = "approvals" %}
+
+{% block breadcrumb %}
+<li><a href="/runs/{{ review.run_id }}">Run #{{ review.run_id }}</a></li>
+<li><span aria-current="page">Approval #{{ review.approval_id }}</span></li>
+{% endblock %}
+
+{% block content %}
+  {% set status_labels = {"pending": ("clock", "Pendente"), "approved": ("circle-check", "Aprovada"), "rejected": ("circle-x", "Rejeitada")} %}
+  {% set entry = status_labels.get(approval_status, ("circle", approval_status)) %}
+  <header class="page-header">
+    <div>
+      <a class="back-link" href="/runs/{{ review.run_id }}">{{ ui.icon("arrow-left") }}Voltar à run #{{ review.run_id }}</a>
+      <div class="title-row" style="margin-top:.5rem"><h1>{% block review_title %}{% endblock %}</h1>{{ ui.badge(approval_status if approval_status in status_labels else "neutral", entry[0], entry[1]) }}</div>
+      <p>Approval #{{ review.approval_id }} · {% block review_kicker %}{% endblock %}</p>
+    </div>
+  </header>
+
+  {% if approval_status != "pending" %}
+  <div class="readonly-banner">{{ ui.icon("lock") }}Página somente leitura: a decisão já foi registrada e não pode ser alterada.</div>
+  {% endif %}
+
+  <div class="review-layout">
+    <div class="review-content">
+      <div class="verify-strip">
+        <span class="alert-icon">{{ ui.icon("shield-check") }}</span>
+        <div>
+          <p><strong>Integridade verificada.</strong> {% block review_verify %}{% endblock %}</p>
+          <div class="hashes">
+            {% block review_hashes %}{% endblock %}
+          </div>
+        </div>
+      </div>
+      {% block review_body %}{% endblock %}
+    </div>
+    {% block review_decision %}
+      {% with effect=review_effect|default("Nada é publicado, enviado ou gasto.") %}{% include "approval_decision_controls.html" %}{% endwith %}
+    {% endblock %}
+  </div>
+{% endblock %}

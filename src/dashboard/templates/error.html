@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+
+{# Página de recusa exibida quando um navegador recebe 4xx/5xx do painel. Contexto: error (ErrorPage). #}
+{% block title %}{{ error.title }} · Automation Foundry{% endblock %}
+{% block breadcrumb %}<li><span aria-current="page">Erro {{ error.status_code }}</span></li>{% endblock %}
+
+{% block content %}
+  <header class="page-header">
+    <div>
+      <div class="title-row"><h1>{{ error.title }}</h1>{{ ui.badge("secondary", "info", "HTTP " ~ error.status_code) }}</div>
+    </div>
+  </header>
+
+  <div class="alert {{ 'alert-destructive' if error.status_code >= 500 else 'alert-warning' }}" role="alert">
+    <span class="alert-icon">{{ ui.icon("triangle-alert") }}</span>
+    <div class="alert-body">
+      <p class="alert-title">{{ error.title }}</p>
+      <p class="alert-description">{{ error.message }}</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-footer">
+      <a class="btn btn-outline" href="{{ error.back_url or '/' }}">{{ ui.icon("arrow-left") }}{{ "Voltar à página anterior" if error.back_url else "Voltar à visão geral" }}</a>
+      {% if error.back_url %}<a class="btn btn-ghost" href="/">Visão geral</a>{% endif %}
+      {% if error.status_code == 503 %}<a class="btn btn-ghost" href="/health">{{ ui.icon("activity") }}Saúde operacional</a>{% endif %}
+    </div>
+  </div>
+
+  {% if error.code %}
+  <p class="muted">Código de diagnóstico: <code>{{ error.code }}</code></p>
+  {% endif %}
+{% endblock %}

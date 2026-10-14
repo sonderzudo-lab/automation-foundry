@@ -14,10 +14,13 @@ from src.pipeline import a1_executor
 from src.pipeline.a1_executor import (
     execute_content_script_run,
     finalize_content_script_approval,
+    load_content_approval_review,
 )
 from src.pipeline.narration_review import (
     NARRATION_REVIEW_APPROVAL_ACTION,
+    NarrationReview,
     NarrationReviewGateError,
+    NarrationVisualsNotReadyError,
     load_narration_review,
 )
 from src.pipeline.tts import TTS_STEP_NAME
@@ -248,3 +251,135 @@ async def test_a2_review_rejects_tampered_audio_and_honors_rejection(
     )
     assert run.status == RunStatus.CANCELLED.value
     assert approval.status == ApprovalStatus.REJECTED.value
+
+
+async def test_a2_approval_is_refused_until_the_visual_manifest_matches(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, _, approval, storage_root = await _open_narration_gate(
+        session,
+        tmp_path,
+        monkeypatch,
+        idempotency_key="content-a2-manifest-short",
+    )
+    import_root = tmp_path / "imports" / "content-visuals"
+    # Twelve seconds of narration accept two or three visuals.
+    required = expected_visual_count()
+    accepted_maximum = required + 1
+    write_synthetic_visual_import(
+        import_root,
+        count=accepted_maximum + 1,
+        width=1080,
+        height=1920,
+    )
+    await session.commit()
+
+    review = await load_content_approval_review(
+        session,
+        approval=approval,
+        storage_root=storage_root,
+    )
+    assert isinstance(review, NarrationReview)
+    assert review.visual_plan_checked is True
+    assert review.visual_plan_problem_code == "CONTENT_VISUALS_COUNT_MISMATCH"
+    assert (review.minimum_visual_count, review.maximum_visual_count) == (
+        required,
+        accepted_maximum,
+    )
+    assert review.declared_visual_count == accepted_maximum + 1
+    assert review.visual_plan_problem is not None
+    assert f"declara {accepted_maximum + 1} imagens" in review.visual_plan_problem
+    assert f"aceita de {required} a {accepted_maximum}" in review.visual_plan_problem
+
+    await decide_approval(
+        session,
+        approval=approval,
+        decision=ApprovalStatus.APPROVED,
+        actor="local-owner",
+        reason="áudio aprovado antes de preparar as imagens",
+    )
+    with pytest.raises(NarrationVisualsNotReadyError) as refused:
+        await finalize_content_script_approval(
+            session,
+            approval=approval,
+            storage_root=storage_root,
+        )
+    assert refused.value.problem_code == "CONTENT_VISUALS_COUNT_MISMATCH"
+    assert (
+        refused.value.minimum_count,
+        refused.value.maximum_count,
+        refused.value.declared_count,
+    ) == (required, accepted_maximum, accepted_maximum + 1)
+    await session.rollback()
+    await session.refresh(approval)
+    await session.refresh(run)
+    assert approval.status == ApprovalStatus.PENDING.value
+    assert run.status == RunStatus.AWAITING_APPROVAL.value
+
+    write_synthetic_visual_import(
+        import_root,
+        count=accepted_maximum,
+        width=1080,
+        height=1920,
+    )
+    ready = await load_content_approval_review(
+        session,
+        approval=approval,
+        storage_root=storage_root,
+    )
+    assert isinstance(ready, NarrationReview)
+    assert ready.visual_plan_checked is True and ready.visual_plan_problem is None
+    # While the manifest was refused the plan used the default count; once it is
+    # ready the plan follows the declared images, in manifest order.
+    assert len(review.visual_plan) == required
+    assert all(slot.file_name is None for slot in review.visual_plan)
+    assert [slot.file_name for slot in ready.visual_plan] == [
+        f"rehearsal-{index:03d}.png" for index in range(1, accepted_maximum + 1)
+    ]
+    assert " ".join(slot.text for slot in ready.visual_plan) == rehearsal_script().narration
+    await decide_approval(
+        session,
+        approval=approval,
+        decision=ApprovalStatus.APPROVED,
+        actor="local-owner",
+        reason="áudio aprovado com as imagens prontas",
+    )
+    assert await finalize_content_script_approval(
+        session,
+        approval=approval,
+        storage_root=storage_root,
+    ) is True
+
+    await execute_content_script_run(
+        session,
+        idempotency_key="content-a2-manifest-short",
+        input_payload=rehearsal_input_payload(),
+        script_generator=lambda *_args: pytest.fail("A1 must replay"),
+        tts_synthesizer=lambda *_args: pytest.fail("A2 must replay"),
+        storage_root=storage_root,
+    )
+    # The manifest shrinks after A3; a replay must keep the published count.
+    write_synthetic_visual_import(import_root, count=required, width=1080, height=1920)
+    replayed = await execute_content_script_run(
+        session,
+        idempotency_key="content-a2-manifest-short",
+        input_payload=rehearsal_input_payload(),
+        script_generator=lambda *_args: pytest.fail("A1 must replay"),
+        tts_synthesizer=lambda *_args: pytest.fail("A2 must replay"),
+        storage_root=storage_root,
+    )
+    visual_artifacts = list(
+        (
+            await session.scalars(
+                select(Artifact).where(
+                    Artifact.run_id == run.id,
+                    Artifact.artifact_type == "visual_image",
+                )
+            )
+        ).all()
+    )
+    assert len(visual_artifacts) == accepted_maximum
+    assert replayed.replayed is True
+    assert run.status == RunStatus.SUCCEEDED.value

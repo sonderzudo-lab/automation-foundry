@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import ipaddress
 import mimetypes
+import random
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -23,9 +31,30 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from src.briefs.executor import OperationsBriefReview
+from src.core.config import settings
 from src.core.database import get_session
+from src.dashboard.errors import describe_error, safe_back_url, wants_html
+from src.dashboard.formatting import (
+    format_byte_size,
+    format_duration_seconds,
+    format_exact_decimal,
+    format_relative_label,
+    format_utc_label,
+)
+from src.dashboard.listings import (
+    NavAutomation,
+    NavSummary,
+    load_approval_history,
+    load_nav_summary,
+    load_resolved_alerts,
+    load_run_list,
+    valid_run_status,
+)
 from src.dashboard.service import (
+    DashboardSnapshot,
     load_connector_summaries,
     load_dashboard_snapshot,
     load_run_detail,
@@ -49,11 +78,28 @@ from src.pipeline.local_export import (
     LocalExportNotAvailableError,
     LocalExportPackage,
 )
-from src.pipeline.narration_review import NarrationReview
+from src.pipeline.narration_review import (
+    NarrationReview,
+    NarrationVisualsNotReadyError,
+)
+from src.pipeline.quick_run import (
+    QuickRunStatus,
+    QuickRunUnavailableError,
+    choose_quick_run,
+    generated_idempotency_key,
+    load_topics,
+    quick_run_status,
+)
+from src.pipeline.readiness import ReadinessReport, collect_content_readiness
 from src.pipeline.thumbnail_review import (
     THUMBNAIL_REVIEW_APPROVAL_ACTION,
     ThumbnailReview,
     thumbnail_decision_payload,
+)
+from src.pipeline.visual_review import (
+    VisualReview,
+    VisualReviewGateError,
+    redo_decision_payload,
 )
 from src.platform.approval_service import decide_approval
 from src.platform.control_service import (
@@ -95,10 +141,16 @@ from src.platform.schedule_service import (
 _REVIEW_TEMPLATES: dict[type, str] = {
     ContentScriptReview: "content_script_review.html",
     NarrationReview: "content_narration_review.html",
+    VisualReview: "content_visual_review.html",
     FinalVideoReview: "content_final_video_review.html",
     ThumbnailReview: "content_thumbnail_review.html",
+    OperationsBriefReview: "operations_brief_review.html",
 }
 _DASHBOARD_NOTICES = {
+    "quick-run-unavailable": (
+        "A run aleatória não foi disparada: confira a lista de pautas "
+        "(CONTENT_QUICK_TOPICS_PATH) e a persona padrão (CONTENT_DEFAULT_PERSONA)."
+    ),
     "schedule-change-blocked": (
         "O schedule não foi habilitado. Verifique se o módulo está ativo, "
         "sem kill switch e possui executor local registrado."
@@ -107,9 +159,38 @@ _DASHBOARD_NOTICES = {
 _TEMPLATE_DIRECTORY = Path(__file__).resolve().parent / "templates"
 _STATIC_DIRECTORY = Path(__file__).resolve().parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATE_DIRECTORY))
+templates.env.filters["exact_decimal"] = format_exact_decimal
+templates.env.filters["utc_label"] = format_utc_label
+templates.env.filters["age_label"] = format_relative_label
+templates.env.filters["duration_label"] = format_duration_seconds
+templates.env.filters["byte_size"] = format_byte_size
+
+
+def _static_version(file_name: str) -> str:
+    """Change an asset's URL whenever the file changes, so no browser keeps a stale copy."""
+    try:
+        return format((_STATIC_DIRECTORY / file_name).stat().st_mtime_ns, "x")
+    except OSError:
+        return "0"
+
+
+templates.env.globals["static_version"] = _static_version
 HealthCollector = Callable[[AsyncSession], Awaitable[HealthReport]]
 RetentionCollector = Callable[[AsyncSession], Awaitable[RetentionInventory]]
 DispatchPublisher = Callable[[int, str, QueueClass], None]
+ReadinessCollector = Callable[[], Awaitable[ReadinessReport]]
+
+
+def _nav_from_snapshot(snapshot: DashboardSnapshot) -> NavSummary:
+    """Reuse the counters of an already loaded snapshot instead of asking again."""
+    return NavSummary(
+        pending_approvals=len(snapshot.pending_approvals),
+        active_alerts=len(snapshot.active_alerts),
+        automations=tuple(
+            NavAutomation(slug=automation.slug, name=automation.name)
+            for automation in snapshot.automations
+        ),
+    )
 
 
 def _csrf_token_matches(submitted: str, expected: str) -> bool:
@@ -143,6 +224,7 @@ def create_app(
     health_collector: HealthCollector = collect_health_report,
     retention_collector: RetentionCollector = collect_retention_inventory,
     dispatch_publisher: DispatchPublisher = _publish_dispatch_message,
+    readiness_collector: ReadinessCollector = collect_content_readiness,
 ) -> FastAPI:
     """Create the loopback dashboard with a process-local CSRF token."""
     _pin_static_media_types()
@@ -155,6 +237,7 @@ def create_app(
         redoc_url=None,
         openapi_url=None,
     )
+    readiness_lock = asyncio.Lock()
     application.mount(
         "/static",
         StaticFiles(directory=str(_STATIC_DIRECTORY)),
@@ -170,6 +253,41 @@ def create_app(
             return PlainTextResponse("invalid host", status_code=400)
         return await call_next(request)
 
+    def _error_page(
+        request: Request,
+        status_code: int,
+        detail: object,
+        headers: Mapping[str, str] | None = None,
+    ) -> Response:
+        back_url = safe_back_url(
+            request.headers.get("referer"),
+            host=request.url.netloc,
+            current_path=request.url.path,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="error.html",
+            context={"error": describe_error(status_code, detail, back_url=back_url)},
+            status_code=status_code,
+            headers={**(headers or {}), "Cache-Control": "no-store"},
+        )
+
+    async def _http_exception(request: Request, exc: Exception) -> Response:
+        assert isinstance(exc, StarletteHTTPException)
+        if not wants_html(request.headers.get("accept")):
+            return await http_exception_handler(request, exc)
+        return _error_page(request, exc.status_code, exc.detail, exc.headers)
+
+    async def _validation_exception(request: Request, exc: Exception) -> Response:
+        assert isinstance(exc, RequestValidationError)
+        if not wants_html(request.headers.get("accept")):
+            return await request_validation_exception_handler(request, exc)
+        # Validation errors echo submitted values; the page shows a static message only.
+        return _error_page(request, 422, None)
+
+    application.add_exception_handler(StarletteHTTPException, _http_exception)
+    application.add_exception_handler(RequestValidationError, _validation_exception)
+
     @application.get("/", response_class=HTMLResponse)
     async def dashboard_home(
         request: Request,
@@ -181,10 +299,175 @@ def create_app(
             name="dashboard.html",
             context={
                 "snapshot": snapshot,
+                "nav": _nav_from_snapshot(snapshot),
                 "csrf_token": control_token,
                 "executors": list_automation_executors(),
+                "quick_run": await _load_quick_run_status(session),
                 "notice": _DASHBOARD_NOTICES.get(request.query_params.get("notice", "")),
             },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/runs", response_class=HTMLResponse)
+    async def runs_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+        status: str | None = None,
+        automation: str | None = None,
+        page: int = 1,
+    ) -> HTMLResponse:
+        if not valid_run_status(status) or page < 1 or page > 100_000:
+            raise HTTPException(status_code=400, detail="invalid run filter")
+        listing = await load_run_list(
+            session,
+            status=status or None,
+            automation_slug=automation if automation and len(automation) <= 100 else None,
+            page=page,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="runs.html",
+            context={"listing": listing, "nav": await load_nav_summary(session)},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/approvals", response_class=HTMLResponse)
+    async def approvals_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="approvals.html",
+            context={
+                "snapshot": snapshot,
+                "nav": _nav_from_snapshot(snapshot),
+                "history": await load_approval_history(session),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/alerts", response_class=HTMLResponse)
+    async def alerts_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="alerts.html",
+            context={
+                "snapshot": snapshot,
+                "nav": _nav_from_snapshot(snapshot),
+                "resolved": await load_resolved_alerts(session),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/schedules", response_class=HTMLResponse)
+    async def schedules_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="schedules.html",
+            context={
+                "snapshot": snapshot,
+                "nav": _nav_from_snapshot(snapshot),
+                "csrf_token": control_token,
+                "notice": _DASHBOARD_NOTICES.get(request.query_params.get("notice", "")),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/automations", response_class=HTMLResponse)
+    async def automations_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="automations.html",
+            context={
+                "snapshot": snapshot,
+                "nav": _nav_from_snapshot(snapshot),
+                "csrf_token": control_token,
+                "executors": list_automation_executors(),
+                "quick_run": await _load_quick_run_status(session),
+                "notice": _DASHBOARD_NOTICES.get(request.query_params.get("notice", "")),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/automations/content-engine/readiness", response_class=HTMLResponse)
+    async def content_readiness_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        # Opening the page never probes anything: the operator asks by posting the form.
+        return templates.TemplateResponse(
+            request=request,
+            name="content_readiness.html",
+            context={
+                "report": None,
+                "nav": await load_nav_summary(session),
+                "csrf_token": control_token,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.post("/automations/content-engine/readiness", response_class=HTMLResponse)
+    async def run_content_readiness(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        """Read-only diagnostic; POST + CSRF so a stray GET (prefetch, cross-site) can't start it."""
+        fields = await _parse_form_fields(request, maximum_fields=1)
+        submitted_token = _single_form_value(fields, "csrf_token", maximum_length=128)
+        if not _csrf_token_matches(submitted_token, control_token):
+            raise HTTPException(status_code=403, detail="invalid csrf token")
+        if readiness_lock.locked():
+            raise HTTPException(status_code=409, detail="readiness in progress")
+        async with readiness_lock:
+            report = await readiness_collector()
+        return templates.TemplateResponse(
+            request=request,
+            name="content_readiness.html",
+            context={
+                "report": report,
+                "nav": await load_nav_summary(session),
+                "csrf_token": control_token,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/reports", response_class=HTMLResponse)
+    async def reports_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="reports.html",
+            context={"snapshot": snapshot, "nav": _nav_from_snapshot(snapshot)},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/data", response_class=HTMLResponse)
+    async def data_page(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> HTMLResponse:
+        snapshot = await load_dashboard_snapshot(session)
+        return templates.TemplateResponse(
+            request=request,
+            name="data.html",
+            context={"snapshot": snapshot, "nav": _nav_from_snapshot(snapshot)},
             headers={"Cache-Control": "no-store"},
         )
 
@@ -226,6 +509,7 @@ def create_app(
             name="run_detail.html",
             context={
                 "run": detail,
+                "nav": await load_nav_summary(session),
                 "csrf_token": control_token,
                 "caption_alignment": alignment,
                 "caption_alignment_unavailable": alignment_unavailable,
@@ -268,8 +552,10 @@ def create_app(
             request=request,
             name="content_local_export.html",
             context={
+                "nav": await load_nav_summary(session),
                 "run_id": package.run_id,
                 "manifest_sha256": package.manifest_sha256,
+                "usage_scope": package.visual_usage_scope,
                 "video": {
                     "artifact_id": package.video.artifact_id,
                     "size_bytes": package.video.size_bytes,
@@ -349,11 +635,16 @@ def create_app(
         detail = await load_run_detail(session, run_id=run_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="run not found")
+        headers = {"Cache-Control": "no-store"}
+        if detail.is_terminal and request.headers.get("hx-request") == "true":
+            # The header actions (cancel, retry, export) live outside this fragment. When a
+            # polling page sees the run finish, reload once so they match the final state.
+            headers["HX-Refresh"] = "true"
         return templates.TemplateResponse(
             request=request,
             name="run_status_fragment.html",
             context={"run": detail},
-            headers={"Cache-Control": "no-store"},
+            headers=headers,
         )
 
     @application.get("/approvals/{approval_id}/review", response_class=HTMLResponse)
@@ -391,6 +682,7 @@ def create_app(
             name=template,
             context={
                 "review": review,
+                "nav": await load_nav_summary(session),
                 "csrf_token": control_token,
                 "approval_status": approval.status,
             },
@@ -465,6 +757,53 @@ def create_app(
             },
         )
 
+    @application.get("/approvals/{approval_id}/visuals/{artifact_id}")
+    async def approval_visual_image(
+        approval_id: int,
+        artifact_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> FileResponse:
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        try:
+            review = await load_registered_approval_review(
+                session,
+                approval=approval,
+            )
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="approval has no reviewed images",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="approval review evidence is unavailable",
+            ) from exc
+        if not isinstance(review, VisualReview):
+            raise HTTPException(
+                status_code=404,
+                detail="approval has no reviewed images",
+            )
+        image = next(
+            (item for item in review.images if item.artifact_id == artifact_id),
+            None,
+        )
+        if image is None:
+            raise HTTPException(status_code=404, detail="reviewed image not found")
+        return FileResponse(
+            image.image_path,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": (
+                    f'inline; filename="artifact-{image.artifact_id}-visual.png"'
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     @application.get("/approvals/{approval_id}/thumbnails/{artifact_id}")
     async def approval_thumbnail_candidate(
         approval_id: int,
@@ -525,7 +864,7 @@ def create_app(
         return templates.TemplateResponse(
             request=request,
             name="health.html",
-            context={"report": report},
+            context={"report": report, "nav": await load_nav_summary(session)},
             headers={"Cache-Control": "no-store"},
         )
 
@@ -547,6 +886,7 @@ def create_app(
             request=request,
             name="storage.html",
             context={
+                "nav": await load_nav_summary(session),
                 "inventory": inventory,
                 "error": error,
                 "retention_policies": declared_retention_policies(),
@@ -571,11 +911,71 @@ def create_app(
             raise HTTPException(status_code=403, detail="invalid csrf token")
         if confirmation != "start-example-run":
             raise HTTPException(status_code=400, detail="explicit confirmation required")
+        run_id = await start_run(
+            session,
+            executor=executor,
+            idempotency_key=idempotency_key
+            or generated_idempotency_key(datetime.now(), random.SystemRandom()),
+            experiment_id=experiment_id,
+            input_payload=input_payload,
+        )
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    @application.post("/automations/content-engine/quick-run", response_class=HTMLResponse)
+    async def start_quick_run(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> RedirectResponse:
+        fields = await _parse_form_fields(request, maximum_fields=2)
+        if set(fields) - {"csrf_token", "confirmation"}:
+            raise HTTPException(status_code=400, detail="unexpected quick run field")
+        submitted_token = _single_form_value(fields, "csrf_token", maximum_length=128)
+        confirmation = _single_form_value(fields, "confirmation", maximum_length=40)
+        if not _csrf_token_matches(submitted_token, control_token):
+            raise HTTPException(status_code=403, detail="invalid csrf token")
+        if confirmation != "start-quick-run":
+            raise HTTPException(status_code=400, detail="explicit confirmation required")
+        status = await _load_quick_run_status(session)
+        if not status.available:
+            return RedirectResponse(
+                url="/automations?notice=quick-run-unavailable", status_code=303
+            )
+        rng = random.SystemRandom()
+        try:
+            values = choose_quick_run(
+                load_topics(Path(settings.content_quick_topics_path)),
+                persona=status.persona,
+                used_topics=await _used_content_topics(session),
+                rng=rng,
+            )
+            input_payload = parse_registered_manual_input(slug="content-engine", values=values)
+        except (QuickRunUnavailableError, ValueError):
+            return RedirectResponse(
+                url="/automations?notice=quick-run-unavailable", status_code=303
+            )
+        run_id = await start_run(
+            session,
+            executor=get_automation_executor("content-engine"),
+            idempotency_key=generated_idempotency_key(datetime.now(), rng),
+            experiment_id=None,
+            input_payload=input_payload,
+        )
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    async def start_run(
+        session: AsyncSession,
+        *,
+        executor: AutomationExecutor,
+        idempotency_key: str,
+        experiment_id: int | None,
+        input_payload: dict[str, object],
+    ) -> int:
+        """Prepare and start one registered run; shared by the full and quick forms."""
         try:
             if executor.runs_in_background:
                 prepared = await publish_registered_dispatch(
                     session,
-                    slug=automation_slug,
+                    slug=executor.slug,
                     idempotency_key=idempotency_key,
                     experiment_id=experiment_id,
                     input_payload=input_payload,
@@ -585,7 +985,7 @@ def create_app(
             else:
                 execution = await start_registered_automation(
                     session,
-                    slug=automation_slug,
+                    slug=executor.slug,
                     idempotency_key=idempotency_key,
                     experiment_id=experiment_id,
                     input_payload=input_payload,
@@ -600,7 +1000,7 @@ def create_app(
         except Exception:
             await session.rollback()
             raise
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return run_id
 
     @application.post("/runs/{run_id}/retry", response_class=HTMLResponse)
     async def retry_run(
@@ -759,7 +1159,7 @@ def create_app(
         except Exception:
             await session.rollback()
             raise
-        return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url="/automations", status_code=303)
 
     @application.post("/automations/{automation_id}/enabled", response_class=HTMLResponse)
     async def change_automation_enabled(
@@ -796,7 +1196,7 @@ def create_app(
         except Exception:
             await session.rollback()
             raise
-        return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url="/automations", status_code=303)
 
     @application.post("/schedules/{schedule_id}/enabled", response_class=HTMLResponse)
     async def change_schedule_enabled(
@@ -823,7 +1223,7 @@ def create_app(
                 get_automation_executor(automation.slug)
             except AutomationExecutorNotFoundError:
                 return RedirectResponse(
-                    url="/?notice=schedule-change-blocked",
+                    url="/schedules?notice=schedule-change-blocked",
                     status_code=303,
                 )
         try:
@@ -838,7 +1238,7 @@ def create_app(
         except ScheduleControlError:
             await session.rollback()
             return RedirectResponse(
-                url="/?notice=schedule-change-blocked",
+                url="/schedules?notice=schedule-change-blocked",
                 status_code=303,
             )
         except ValueError as exc:
@@ -847,7 +1247,7 @@ def create_app(
         except Exception:
             await session.rollback()
             raise
-        return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url="/schedules", status_code=303)
 
     @application.post("/approvals/{approval_id}/approve", response_class=HTMLResponse)
     async def approve_approval(
@@ -889,35 +1289,13 @@ def create_app(
                     review,
                     thumbnail_artifact_id=thumbnail_artifact_id,
                 )
-            await decide_approval(
+            await approve_and_continue(
                 session,
                 approval=approval,
-                decision=ApprovalStatus.APPROVED,
                 actor=actor,
                 reason=reason,
                 decision_payload=decision_payload,
             )
-            continuation_required = await finalize_registered_approval(
-                session,
-                approval=approval,
-            )
-            continuation_dispatch_id: int | None = None
-            if continuation_required:
-                requeued = await requeue_completed_run_dispatch(
-                    session,
-                    run_id=run_id,
-                    actor=actor,
-                )
-                if requeued.should_publish:
-                    continuation_dispatch_id = requeued.dispatch_id
-            await session.commit()
-            if continuation_dispatch_id is not None:
-                await publish_prepared_dispatch(
-                    session,
-                    dispatch_id=continuation_dispatch_id,
-                    publish=dispatch_publisher,
-                    only_if_pending=True,
-                )
         except DispatchPublishError as exc:
             raise HTTPException(
                 status_code=503,
@@ -926,6 +1304,16 @@ def create_app(
         except (IdempotencyConflictError, InvalidRunTransitionError) as exc:
             await session.rollback()
             raise HTTPException(status_code=409, detail="approval cannot be approved") from exc
+        except NarrationVisualsNotReadyError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "approval not recorded; A3 visual manifest is not ready: "
+                    f"{exc.problem_code} (declared={exc.declared_count}, "
+                    f"accepted={exc.minimum_count}..{exc.maximum_count})"
+                ),
+            ) from exc
         except ValueError as exc:
             await session.rollback()
             raise HTTPException(status_code=400, detail="invalid approval decision") from exc
@@ -933,6 +1321,117 @@ def create_app(
             await session.rollback()
             raise
         return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    @application.post("/approvals/{approval_id}/visual-redo", response_class=HTMLResponse)
+    async def redo_visuals(
+        request: Request,
+        approval_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> RedirectResponse:
+        """Send specific draft images back with notes; the next round redoes them."""
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        fields = await _parse_form_fields(request, maximum_fields=130, maximum_bytes=16_384)
+        submitted_token = _single_form_value(fields, "csrf_token", maximum_length=128)
+        confirmation = _single_form_value(fields, "confirmation", maximum_length=40)
+        if not _csrf_token_matches(submitted_token, control_token):
+            raise HTTPException(status_code=403, detail="invalid csrf token")
+        if confirmation != "redo-visuals":
+            raise HTTPException(status_code=400, detail="explicit confirmation required")
+        if ApprovalStatus(approval.status) is not ApprovalStatus.PENDING:
+            raise HTTPException(status_code=409, detail="approval already decided")
+        if any(
+            name not in {"csrf_token", "confirmation", "redo"}
+            and not (name.startswith("note_") and name[5:].isdigit())
+            for name in fields
+        ):
+            raise HTTPException(status_code=400, detail="unexpected redo field")
+        try:
+            chosen = sorted({int(value) for value in fields.get("redo", [])})
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid redo field") from exc
+        notes = {
+            index: _optional_single_form_value(
+                fields, f"note_{index}", maximum_length=1_000
+            )
+            or ""
+            for index in chosen
+        }
+        run_id = approval.run_id
+        try:
+            review = await load_registered_approval_review(session, approval=approval)
+            if not isinstance(review, VisualReview):
+                raise HTTPException(status_code=404, detail="approval has no redoable images")
+            decision_payload = redo_decision_payload(review, notes)
+            await approve_and_continue(
+                session,
+                approval=approval,
+                actor="local-owner",
+                reason="Ajustes pedidos nas imagens " + ", ".join(map(str, chosen)),
+                decision_payload=decision_payload,
+            )
+        except HTTPException:
+            raise
+        except DispatchPublishError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="redo persisted; continuation broker unavailable",
+            ) from exc
+        except (IdempotencyConflictError, InvalidRunTransitionError) as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail="images cannot be redone") from exc
+        except VisualReviewGateError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=400, detail=f"invalid redo request: {exc}") from exc
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="approval has no redoable images") from exc
+        except ValueError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail="redo cannot continue") from exc
+        except Exception:
+            await session.rollback()
+            raise
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    async def approve_and_continue(
+        session: AsyncSession,
+        *,
+        approval: Approval,
+        actor: str,
+        reason: str,
+        decision_payload: dict[str, object] | None,
+    ) -> None:
+        """Record an approval and requeue the run when the domain asks to continue."""
+        await decide_approval(
+            session,
+            approval=approval,
+            decision=ApprovalStatus.APPROVED,
+            actor=actor,
+            reason=reason,
+            decision_payload=decision_payload,
+        )
+        continuation_required = await finalize_registered_approval(
+            session,
+            approval=approval,
+        )
+        continuation_dispatch_id: int | None = None
+        if continuation_required:
+            requeued = await requeue_completed_run_dispatch(
+                session,
+                run_id=approval.run_id,
+                actor=actor,
+            )
+            if requeued.should_publish:
+                continuation_dispatch_id = requeued.dispatch_id
+        await session.commit()
+        if continuation_dispatch_id is not None:
+            await publish_prepared_dispatch(
+                session,
+                dispatch_id=continuation_dispatch_id,
+                publish=dispatch_publisher,
+                only_if_pending=True,
+            )
 
     return application
 
@@ -945,18 +1444,47 @@ async def _parse_cancellation_form(request: Request) -> tuple[str, str, str]:
     return csrf_token, confirmation, reason
 
 
+async def _load_quick_run_status(session: AsyncSession) -> QuickRunStatus:
+    return quick_run_status(
+        topics_path=Path(settings.content_quick_topics_path),
+        persona=settings.content_default_persona,
+        used_topics=await _used_content_topics(session),
+    )
+
+
+async def _used_content_topics(session: AsyncSession) -> set[str]:
+    """Topics of earlier Content Engine runs, so a quick run prefers new ones."""
+    payloads = (
+        await session.scalars(
+            select(Run.input_payload)
+            .join(Automation, Automation.id == Run.automation_id)
+            .where(Automation.slug == "content-engine")
+            .order_by(Run.id.desc())
+            .limit(2_000)
+        )
+    ).all()
+    return {
+        " ".join(payload["topic"].split())
+        for payload in payloads
+        if isinstance(payload, dict) and isinstance(payload.get("topic"), str)
+    }
+
+
 async def _parse_manual_run_form(
     request: Request,
     *,
     executor: AutomationExecutor,
-) -> tuple[str, str, str, int | None, dict[str, object]]:
+) -> tuple[str, str, str | None, int | None, dict[str, object]]:
     fields = await _parse_form_fields(
         request,
         maximum_fields=4 + len(executor.manual_input_fields),
     )
     csrf_token = _single_form_value(fields, "csrf_token", maximum_length=128)
     confirmation = _single_form_value(fields, "confirmation", maximum_length=40)
-    idempotency_key = _single_form_value(fields, "idempotency_key", maximum_length=255)
+    # Left blank, the dashboard generates one: repeating a key still never creates a second run.
+    idempotency_key = _optional_single_form_value(
+        fields, "idempotency_key", maximum_length=255
+    )
     experiment_value = _optional_single_form_value(
         fields,
         "experiment_id",
@@ -1017,14 +1545,38 @@ async def _parse_retry_form(request: Request) -> tuple[str, str, str, str, str]:
     return csrf_token, confirmation, idempotency_key, actor, reason
 
 
+# The dashboard is bound to loopback and has one operator, so a decision does
+# not ask who is deciding; the note is optional and a default keeps the audit
+# record non-empty.
+_LOCAL_DECISION_ACTOR = "local-owner"
+_DECISION_WITHOUT_NOTE = {
+    "approve-approval": "Aprovado sem observação.",
+    "reject-approval": "Rejeitado sem observação.",
+}
+
+
+def _decision_actor_and_reason(
+    fields: dict[str, list[str]],
+    *,
+    confirmation: str,
+) -> tuple[str, str]:
+    actor = _optional_single_form_value(fields, "actor", maximum_length=200)
+    reason = _optional_single_form_value(fields, "reason", maximum_length=500)
+    return (
+        actor or _LOCAL_DECISION_ACTOR,
+        reason or _DECISION_WITHOUT_NOTE.get(confirmation, "Decisão sem observação."),
+    )
+
+
 async def _parse_approval_rejection_form(
     request: Request,
 ) -> tuple[str, str, str, str]:
     fields = await _parse_form_fields(request, maximum_fields=4)
+    if set(fields) - {"csrf_token", "confirmation", "actor", "reason"}:
+        raise HTTPException(status_code=400, detail="unexpected approval decision field")
     csrf_token = _single_form_value(fields, "csrf_token", maximum_length=128)
     confirmation = _single_form_value(fields, "confirmation", maximum_length=32)
-    actor = _single_form_value(fields, "actor", maximum_length=200)
-    reason = _single_form_value(fields, "reason", maximum_length=500)
+    actor, reason = _decision_actor_and_reason(fields, confirmation=confirmation)
     return csrf_token, confirmation, actor, reason
 
 
@@ -1062,19 +1614,12 @@ async def _parse_thumbnail_approval_form(
     request: Request,
 ) -> tuple[str, str, str, str, int]:
     fields = await _parse_form_fields(request, maximum_fields=5)
-    expected = {
-        "csrf_token",
-        "confirmation",
-        "actor",
-        "reason",
-        "thumbnail_artifact_id",
-    }
-    if set(fields) != expected:
+    required = {"csrf_token", "confirmation", "thumbnail_artifact_id"}
+    if not required <= set(fields) <= required | {"actor", "reason"}:
         raise HTTPException(status_code=400, detail="invalid thumbnail selection form")
     csrf_token = _single_form_value(fields, "csrf_token", maximum_length=128)
     confirmation = _single_form_value(fields, "confirmation", maximum_length=32)
-    actor = _single_form_value(fields, "actor", maximum_length=200)
-    reason = _single_form_value(fields, "reason", maximum_length=500)
+    actor, reason = _decision_actor_and_reason(fields, confirmation=confirmation)
     artifact_value = _single_form_value(
         fields,
         "thumbnail_artifact_id",
@@ -1099,12 +1644,13 @@ async def _parse_form_fields(
     request: Request,
     *,
     maximum_fields: int,
+    maximum_bytes: int = 4_096,
 ) -> dict[str, list[str]]:
     content_type = request.headers.get("content-type", "").split(";", maxsplit=1)[0]
     if content_type.lower() != "application/x-www-form-urlencoded":
         raise HTTPException(status_code=415, detail="unsupported form content type")
     body = await request.body()
-    if len(body) > 4_096:
+    if len(body) > maximum_bytes:
         raise HTTPException(status_code=413, detail="form body too large")
     try:
         fields = parse_qs(

@@ -12,10 +12,14 @@ um backend.
 
 - A3 consome somente o bundle A1 aprovado e o WAV A2 conferidos por tamanho e
   SHA-256.
-- A quantidade é proporcional ao áudio, com um visual a cada seis segundos e
+- A quantidade é proporcional ao áudio, com um visual a cada seis segundos por
+  padrão (o backend de importação local aceita uma faixa, descrita abaixo) e
   limite de 60.
 - Cada adapter precisa declarar provider, modelo, ID/URI da fonte, licença,
-  atribuição e `commercial_use=True` para cada arquivo.
+  atribuição e `commercial_use=True` para cada arquivo. A única exceção é o
+  escopo de teste descrito em "Geração local como teste de qualidade": um
+  arquivo com `commercial_use=False` só é aceito quando o executor pede esse
+  escopo, e o bundle inteiro passa a carregar `usage_scope: quality-test-only`.
 - O pipeline aceita apenas PNG completo, com CRC, dimensões, dados e fim do
   arquivo validados; short usa 1080x1920 e long usa 1920x1080.
 - Imagens e manifesto são publicados por rename atômico e registrados como
@@ -39,10 +43,15 @@ CONTENT_VISUAL_IMPORT_ROOT=./imports/content-visuals
 CONTENT_VISUAL_MANIFEST_PATH=manifest.json
 ```
 
-O caminho do manifesto é resolvido dentro da raiz de importação. Cada run exige
-exatamente a quantidade calculada por A3 — um PNG por seis segundos de áudio,
-arredondado para cima, entre 1 e 60. Não há repetição automática. Short exige
+O caminho do manifesto é resolvido dentro da raiz de importação. A quantidade
+de imagens é a que o manifesto declarar, desde que cada imagem fique de 4 a 10
+segundos na tela: no mínimo um PNG a cada dez segundos de áudio (arredondado
+para cima) e no máximo um a cada quatro (arredondado para baixo), entre 1 e 60.
+Uma narração de 45 s aceita de 5 a 11 imagens. Fora dessa faixa a run falha com
+`CONTENT_VISUALS_COUNT_MISMATCH`. Não há repetição automática. Short exige
 1080x1920; long exige 1920x1080. Arquivos, IDs de fonte e nomes devem ser únicos.
+Depois que A3 publica o bundle, a quantidade usada fica fixa para aquela run,
+mesmo que o manifesto mude.
 
 Exemplo de `imports/content-visuals/manifest.json` para uma imagem própria:
 
@@ -73,6 +82,21 @@ evidência de direitos. A execução recusa manifesto ou asset fora da raiz,
 campos extras/ausentes, `commercial_use` diferente de `true`, duplicatas, hash
 divergente, PNG inválido ou dimensões incorretas. Os arquivos de importação não
 são alterados; A3 copia os bytes conferidos para seu diretório de artifacts.
+
+A faixa exata só é conhecida depois que a narração existe. Com o gate A2
+habilitado, a página de revisão da narração informa a faixa aceita e confere
+o manifesto naquele momento: quantidade dentro da faixa, campos, uso comercial,
+existência dos arquivos e SHA-256, sem copiar nada. Enquanto o import seria
+recusado, a aprovação pelo painel não é registrada e a revisão continua aberta
+para o operador terminar o manifesto. Dimensões e validade do PNG continuam
+sendo conferidas apenas por A3.
+
+A mesma página mostra um plano de imagens: o trecho aproximado da narração que
+cada imagem vai cobrir, na ordem do manifesto, com o nome do arquivo declarado
+quando o manifesto está pronto. A ordem dos itens no manifesto é a ordem em que
+as imagens aparecem no vídeo. Os tempos do plano supõem ritmo de fala constante
+e servem só para escolher e ordenar as imagens; os cortes finais são definidos
+na montagem a partir dos tempos reais das legendas.
 
 ## Candidatos ainda bloqueados
 
@@ -172,6 +196,191 @@ Um futuro adapter poderia chamar-se somente `flux_schnell_quality_test`, nunca
   pedidos de texto, dados, gráficos ou documentos;
 - exigir revisão humana de semelhança com pessoa real, marcas, artefatos e
   adequação editorial antes de montagem.
+
+## Candidatos auditados em 2026-10-10
+
+Auditoria somente documental, feita nas páginas e na API pública do Hugging
+Face. Nada foi baixado, instalado nem executado, e `CONTENT_VISUAL_BACKEND`
+continua aceitando apenas `disabled` e `local_assets_quality_test`. O objetivo
+foi reavaliar, para três modelos mais novos, os riscos que reprovaram o FLUX.1
+Schnell.
+
+| Item | FLUX.2 klein 4B | Z-Image Turbo | Qwen-Image |
+| --- | --- | --- | --- |
+| Repositório | `black-forest-labs/FLUX.2-klein-4B` | `Tongyi-MAI/Z-Image-Turbo` | `Qwen/Qwen-Image` |
+| Revisão observada | `e7b7dc27f91deacad38e78976d1f2b499d76a294` | `f332072aa78be7aecdf3ee76d5c247082da564a6` | `75e0b4be04f60ec59a75f475837eced720f823b6` |
+| Acesso | público, sem gate | público, sem gate | público, sem gate |
+| Licença declarada | Apache-2.0 no card ("commercial use") | Apache-2.0 só no metadado | Apache-2.0 no card |
+| Arquivo de licença junto dos pesos | `LICENSE.md` com o texto Apache-2.0, sem aviso de copyright nem apêndice | **não há** | `LICENSE` existe; conteúdo não lido nesta auditoria |
+| Text encoder | arquitetura `Qwen3ForCausalLM` (2560 × 36 camadas); o repositório não nomeia o modelo de origem | arquitetura `Qwen3ForCausalLM` (2560 × 36 camadas); origem não nomeada | arquitetura `Qwen2_5_VLForConditionalGeneration` (3584 × 28 camadas); origem não nomeada |
+| Dados de treino | só afirma que filtrou NSFW e CSAM conhecido (parceria com a IWF); **não lista datasets, consentimento ou opt-out** | **não mencionados** | **não mencionados** |
+| Titularidade do output | não tratada | não tratada | não tratada |
+| Segurança | filtros de entrada/saída e exemplo de watermark no código de inferência de referência; C2PA só na API paga; lista de usos proibidos no card | nada descrito | nada descrito |
+| Requisito declarado | cerca de 13 GB de VRAM, cita RTX 3090 | "16G VRAM", 8 passos, guidance 0 | não declarado; exemplo usa 50 passos |
+| Layout Diffusers | cerca de 16,0 GB (sem o bundle single-file duplicado de 7,75 GB) | cerca de 32,8 GB | não medido; transformer em 9 shards |
+
+### O que mudou em relação ao FLUX.1 Schnell
+
+- **Risco 1 (licença só no metadado):** resolvido no FLUX.2 klein 4B e,
+  aparentemente, no Qwen-Image, que trazem o arquivo de licença ao lado dos
+  pesos. Continua aberto no Z-Image Turbo.
+- **Risco 2 (CLIP-L sem licença):** nenhum dos três usa CLIP-L. Os text
+  encoders têm a arquitetura Qwen3 ou Qwen2.5-VL; o upstream `Qwen/Qwen3-4B`
+  (revisão `1cfa9a7208912126459214e8b04321603b3df60c`) é Apache-2.0 com arquivo
+  `LICENSE`. Nenhum repositório, porém, declara de qual checkpoint os pesos do
+  encoder foram copiados: a correspondência é inferida das dimensões e não foi
+  confirmada por hash.
+- **Risco 3 (dados de treino não divulgados):** **continua aberto nos três.** O
+  FLUX.2 klein 4B é o único que diz algo, e só sobre filtragem; nenhum informa
+  datasets, proveniência, consentimento ou opt-out.
+- **Risco 4 (titularidade do output):** continua aberto nos três.
+- **Risco 5 (safety checker, watermark, C2PA):** melhor no FLUX.2 klein 4B, mas
+  os filtros e o watermark ficam no código de inferência de referência; não foi
+  verificado se o pipeline `diffusers` os aplica. Nada nos outros dois.
+- **Risco 6 (não é fonte factual):** o card do FLUX.2 klein 4B repete o aviso;
+  a regra de não gerar dado, gráfico, documento ou captura de tela permanece.
+
+Observações adicionais:
+
+- O card do FLUX.2 klein 4B lista usos proibidos (conteúdo ilegal, enganoso,
+  íntimo não consensual, decisão automatizada de alto risco) que não fazem parte
+  do texto Apache-2.0. O efeito jurídico dessa lista não foi avaliado.
+- A variante FLUX.2 klein **9B** é não comercial e não é candidata.
+- Hashes LFS observados para o FLUX.2 klein 4B: transformer
+  `9f29f9edcfdae452a653ffb51a534ca4decd389952c225724ff3b94042612a6e`; text
+  encoder `8c0506e7f4936fa7e26183a4fd8da4e2bdbc5990ba64ae441f965d51228f36ea` e
+  `82f2bd839378541b0557bfabaf37c7d3d637071fdcb73302dedd7cf61162ce07`; VAE
+  `ca70d2202afe6415bdbcb8793ba8cd99fd159cfe6192381504d6c4d3036e0f04`. Como no
+  FLUX.1, eles não fecham o inventário: JSONs e tokenizers também precisam ser
+  congelados.
+- Qualidade em português, aderência ao prompt, tempo e VRAM reais na RTX 3090
+  não foram medidos.
+
+### Decisão
+
+Nenhum dos três é aprovado para conteúdo monetizado. O motivo decisivo é o
+risco 3: o proprietário decidiu, em 2026-10-09 (D4), não aceitar por enquanto
+modelos de imagem com dataset de treino não divulgado, e os três estão nessa
+situação. Visuais monetizados continuam com acervo próprio, stock ou geração
+externa com direitos declarados no manifesto.
+
+Se a D4 for revista, o FLUX.2 klein 4B é o candidato com a melhor evidência:
+licença em arquivo, sem gate, sem CLIP-L, mitigações descritas e requisito
+compatível com a RTX 3090. Mesmo assim ele só poderia entrar como
+`flux2_klein_quality_test`, com os limites descritos para o FLUX.1 acima, e
+qualquer teste de geração precisa de autorização para o download e deve
+acontecer fora do pipeline, porque A3 exige `commercial_use=True` por arquivo.
+
+### Teste de geração fora do pipeline (2026-10-10)
+
+Com autorização do proprietário para o download, o FLUX.2 klein 4B foi baixado
+na revisão auditada (somente o layout Diffusers, 15,98 GB) para
+`D:\automation-foundry\labs\img-flux2-klein\`, em ambiente virtual separado
+(Python 3.11, `torch 2.6.0+cu124`, `diffusers 0.41.0`, `transformers 5.19.0`,
+instalados do PyPI). Os quatro hashes LFS listados acima conferiram. A geração
+rodou com `HF_HUB_OFFLINE=1` e `local_files_only=True`.
+
+- Seis imagens para a narração da run 13, com prompts escritos à mão em inglês
+  a partir do plano de imagens, 4 passos, `guidance_scale=1.0`, seeds fixas,
+  geradas em 1088×1920 e recortadas para 1080×1920.
+- RTX 3090 com `enable_model_cpu_offload()`: carga em 7,8 s, de 22 a 29 s por
+  imagem, pico de 8,3 GB de VRAM alocada pelo PyTorch, 151 s no total.
+- As imagens correspondem aos trechos do roteiro e não trazem texto nem
+  logotipos; uma delas mostra uma mão. A avaliação de qualidade é do
+  proprietário e ainda não foi registrada.
+- A narração da run 13 foi remontada fora do pipeline com essas imagens e com
+  as legendas por frase, para comparação.
+
+Isso não muda a decisão acima: o teste mede qualidade e custo, não licença. As
+imagens geradas não entram em `imports/content-visuals/`, não têm
+`commercial_use` declarado e não podem ser usadas em vídeo monetizado enquanto
+a D4 valer. Não foi verificado se o pipeline `diffusers` aplica os filtros e o
+watermark do código de referência, nem o comportamento com prompts em
+português, pessoas ou marcas.
+
+### Descrições automáticas e pedido de revisão da D4 (2026-10-13)
+
+Em 2026-10-13 o proprietário pediu para rever a D4 e seguir com geração local.
+Isso ainda não é a aceitação do risco 3: ela precisa ser dada por escrito antes
+de qualquer vídeo monetizado, e até lá a decisão acima continua valendo.
+
+O experimento E9 repetiu o teste fora do pipeline para a narração da run 14,
+agora com as descrições escritas pelo `qwen3:14b` a partir de cada trecho do
+plano de imagens, em vez de à mão. As descrições passam por checagens em código
+que recusam texto, gráfico, logotipo, documento e captura de tela (risco 6). As
+seis imagens foram geradas offline com os mesmos parâmetros do teste anterior,
+em 18 a 42 s cada e pico de 8,3 GB de VRAM. Os pesos não foram reconferidos por
+hash nesta rodada. Saída em
+`storage/experiments/e9-imagens-automaticas/run14/`, não versionada; as imagens
+não têm `commercial_use` declarado e não entram em `imports/content-visuals/`.
+
+### Geração local como teste de qualidade (2026-10-13)
+
+A pedido do proprietário, a geração foi levada para o pipeline como
+`CONTENT_VISUAL_BACKEND=flux2_klein_quality_test`. `Settings` só aceita esse
+valor junto com `CONTENT_VISUAL_REVIEW_ENABLED=true` (o gate humano de imagens
+antes da montagem, exigido pelos limites acima), legendas, montagem e os dois
+caminhos `CONTENT_VISUAL_FLUX2_PYTHON_PATH` e `CONTENT_VISUAL_FLUX2_MODEL_DIR`.
+O padrão continua `disabled`.
+
+O que o código faz:
+
+- `src/pipeline/visual_prompts.py` escreve, com o modelo do roteiro, uma
+  descrição em inglês da cena de cada trecho da narração e a confere em código:
+  tamanho, inglês, e recusa de texto, gráfico, documento, logotipo, tela,
+  aparelho e "style of". Uma descrição recusada é refeita com o motivo até
+  quatro vezes; depois disso a etapa falha com
+  `CONTENT_VISUALS_SCENE_PROMPT_REJECTED` em vez de gerar a imagem. A checagem é
+  um filtro por palavras: não reconhece pessoa real nem marca pelo nome.
+- O estilo visual é escolhido por vídeo (`visual_style`: `photo`, `cartoon` ou
+  `dark`) e somado a toda cena. Nenhum estilo cita artista, estúdio, obra ou
+  personagem.
+- `src/pipeline/visual_generation.py` confere, antes de cada inferência, que a
+  pasta do modelo contém exatamente os 19 arquivos do inventário SHA-256 fixado
+  (pesos, configs, tokenizer e `LICENSE.md`; `README.md` e `.cache/` são
+  ignorados) e roda `scripts/visuals/flux2_klein_runner.py` em subprocess, no
+  ambiente virtual separado, offline, com 4 passos, `guidance_scale=1.0` e seed
+  derivada do prompt e gravada por arquivo.
+- Cada arquivo é declarado com `commercial_use=False` e licença
+  `Apache-2.0(weights; LICENSE.md pinned); training-data=undisclosed;
+  output-ownership=unaddressed; scope=quality-test-only`.
+- O escopo viaja com o vídeo: manifesto de A3 (`usage_scope`), saída de A5
+  (`visual_usage_scope`), digest e texto da approval A7, saída final da run,
+  e manifesto do export local (`usage_scope` e `monetizable: false`). Montagem
+  recusa imagem sem uso comercial em bundle que não esteja rotulado, e um
+  bundle rotulado não é reaproveitado por um backend comercial.
+
+O gate A3 (`src/pipeline/visual_review.py`) pausa a run depois das imagens e
+abre a approval `review_content_visuals_a3`. A página do painel mostra cada
+imagem ao lado do trecho narrado que ela cobre, a descrição usada para gerá-la,
+a proveniência e o que conferir (pessoa real, marca, texto legível, defeitos e
+se combina com o trecho). A decisão fica ligada ao manifesto e ao SHA-256 de
+cada imagem; imagem alterada depois da abertura é recusada pela página e pela
+continuação. Aprovar segue para legendas e montagem na mesma run; rejeitar
+cancela. O gate vale para qualquer backend de visuais, mas só é obrigatório
+para o de geração.
+
+O que foi verificado: testes com runner, modelo e imagens falsos cobrindo
+adapter, gate, página e escopo até o export, e uma execução do adapter real
+fora de uma run (duas imagens 1080×1920 em 120 s, incluindo o hash dos 16 GB,
+que fica em cache no processo). O que não foi verificado: uma run real pelo
+pipeline, a página do gate num navegador, o formato long, e se o pipeline
+`diffusers` aplica filtros ou watermark. Seis imagens levam cerca de
+200 s na primeira execução de um worker, perto do limite atual de 285 s da
+etapa; narrações mais longas exigem aumentar `CELERY_SOFT_TIME_LIMIT_SECONDS`.
+
+A aceitação escrita do risco 3 continua pendente. Um futuro gate de upload
+precisa recusar qualquer run com `visual_usage_scope`.
+
+Fontes primárias consultadas em 2026-10-10:
+
+- <https://huggingface.co/black-forest-labs/FLUX.2-klein-4B> (card,
+  `LICENSE.md`, `text_encoder/config.json` e listagem de arquivos);
+- <https://huggingface.co/Tongyi-MAI/Z-Image-Turbo> (card,
+  `text_encoder/config.json` e listagem de arquivos);
+- <https://huggingface.co/Qwen/Qwen-Image> (card, `text_encoder/config.json` e
+  listagem de arquivos);
+- <https://huggingface.co/Qwen/Qwen3-4B> (metadados e presença de `LICENSE`).
 
 ## Gate para habilitar um backend
 

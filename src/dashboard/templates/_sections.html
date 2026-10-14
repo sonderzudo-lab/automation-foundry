@@ -1,0 +1,146 @@
+{% import "_macros.html" as ui %}
+{#
+  Blocos de página reutilizados por mais de uma tela. Cada macro recebe tudo o que usa:
+  macros importados não enxergam o contexto da página.
+#}
+
+{# Linha de aprovação pendente (Visão geral, Approvals). `review_actions` lista as ações com página própria. #}
+{% macro approval_alert(approval, review_actions) -%}
+<div class="alert alert-brand">
+  <span class="alert-icon">{{ ui.icon("shield-check") }}</span>
+  <div class="alert-body">
+    <p class="alert-title">Approval pendente · <code>{{ approval.action }}</code></p>
+    <p class="alert-description">Run <a href="/runs/{{ approval.run_id }}">#{{ approval.run_id }}</a> · <code>{{ approval.automation_slug }}</code> · solicitada <time datetime="{{ approval.requested_at.isoformat() }}Z">{{ approval.requested_at|utc_label }}</time> · <span class="meta-label">Idade</span> <strong>há {{ approval.pending_for_label }}</strong>.</p>
+  </div>
+  {% if approval.action in review_actions %}
+  <a class="btn btn-sm alert-action" href="/approvals/{{ approval.id }}/review">{{ ui.icon("eye") }}Revisar</a>
+  {% else %}
+  <a class="btn btn-sm btn-outline alert-action" href="/runs/{{ approval.run_id }}#decidir-{{ approval.id }}">{{ ui.icon("shield-check") }}Decidir</a>
+  {% endif %}
+</div>
+{%- endmacro %}
+
+{# Linha de alerta ativo. #}
+{% macro alert_row(alert) -%}
+<div class="alert {{ ui.severity_tone(alert.severity) }}">
+  <span class="alert-icon">{{ ui.icon("octagon-x" if alert.severity in ("error", "critical") else "triangle-alert") }}</span>
+  <div class="alert-body">
+    <p class="alert-title">{{ alert.title }}</p>
+    <p class="alert-description">{{ ui.severity_badge(alert.severity) }} {{ ui.badge("neutral", "info", alert.status) }} · <code>{{ alert.automation_slug }}</code> · <span class="tabular">{{ alert.occurrence_count }}</span> ocorrências · última <time datetime="{{ alert.last_seen_at.isoformat() }}Z">{{ alert.last_seen_at|utc_label }}</time> ({{ alert.last_seen_at|age_label }})</p>
+  </div>
+</div>
+{%- endmacro %}
+
+{# Tabela de runs. Aceita RunSummary (Visão geral) e RunListItem (Runs, com duração). #}
+{% macro runs_table(runs, caption="Runs", with_duration=false) -%}
+<div class="table-wrap">
+  <table class="table">
+    <caption class="sr-only">{{ caption }}</caption>
+    <thead><tr><th scope="col">Run · trigger</th><th scope="col">Automação</th><th scope="col">Status</th><th scope="col">Enfileirada (UTC)</th>{% if with_duration %}<th scope="col" class="num">Duração</th>{% endif %}</tr></thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td><a href="/runs/{{ run.id }}"><strong>#{{ run.id }}</strong></a><small>{{ run.trigger }}{% if run.retry_of_run_id %} · retry da <a href="/runs/{{ run.retry_of_run_id }}">#{{ run.retry_of_run_id }}</a>{% endif %}</small></td>
+        <td class="nowrap"><a href="/runs?automation={{ run.automation_slug }}"><code>{{ run.automation_slug }}</code></a></td>
+        <td>{{ ui.run_badge(run.status) }}</td>
+        <td class="nowrap"><time datetime="{{ run.queued_at.isoformat() }}Z">{{ run.queued_at|utc_label }}</time><small>{{ run.queued_at|age_label }}</small></td>
+        {% if with_duration %}<td class="num nowrap">{{ ui.seconds(run.duration_seconds) }}</td>{% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{%- endmacro %}
+
+{# Cartão completo de automação (Automações). #}
+{% macro automation_card(automation, executor, summary, last_run, csrf_token="") -%}
+<article class="card automation{{ ' is-killed' if automation.kill_switch_active }}" id="auto-{{ automation.slug }}" aria-labelledby="auto-title-{{ automation.slug }}">
+  <div class="card-header">
+    <div class="automation-title">
+      <span class="alert-icon">{{ ui.icon("bot") }}</span>
+      <div><h3 id="auto-title-{{ automation.slug }}">{{ automation.name }}</h3><code>{{ automation.slug }}</code></div>
+    </div>
+    <details class="menu">
+      <summary class="btn btn-ghost btn-icon btn-sm" aria-label="Mais ações de {{ automation.name }}">{{ ui.icon("ellipsis") }}</summary>
+      <div class="menu-content">
+        <a class="menu-item" href="/runs?automation={{ automation.slug }}">{{ ui.icon("layers") }}Ver runs</a>
+        <a class="menu-item" href="/schedules">{{ ui.icon("calendar-clock") }}Ver schedules</a>
+        <div class="menu-sep"></div>
+        <a class="menu-item danger" href="#gerenciar-{{ automation.slug }}">{{ ui.icon("triangle-alert") }}Gerenciar módulo…</a>
+      </div>
+    </details>
+  </div>
+  <div class="card-content" style="display:grid;gap:1rem;align-content:start">
+    <div class="chips">
+      {% if automation.enabled %}{{ ui.badge("success", "circle-check", "Ativa") }}{% else %}{{ ui.badge("disabled", "power", "Desabilitada") }}{% endif %}
+      {% if automation.kill_switch_active %}{{ ui.badge("danger", "octagon-x", "Kill switch ativo") }}{% else %}{{ ui.badge("neutral", "octagon-x", "Kill switch livre") }}{% endif %}
+      {% if executor %}<span class="badge badge-secondary">Fila <code class="mono" style="background:none;padding:0">{{ executor.queue.value }}</code></span>{% endif %}
+    </div>
+    <div class="stat-row">
+      <div class="stat"><span>Taxa de sucesso</span><strong>{% if summary and summary.success_rate_percent is not none %}{{ summary.success_rate_percent }}%{% else %}—{% endif %}</strong>{% if summary %}<span>{{ summary.succeeded_count }} de {{ summary.sample_size }} (máx. {{ summary.sample_limit }})</span>{% else %}<span>sem amostra</span>{% endif %}</div>
+      <div class="stat"><span>Duração média</span><strong>{% if summary and summary.average_duration_seconds is not none %}{{ summary.average_duration_seconds|duration_label }}{% else %}—{% endif %}</strong>{% if summary %}<span>{{ summary.duration_sample_size }} válidas</span>{% endif %}</div>
+      <div class="stat"><span>Última run</span><strong>{% if last_run %}<a href="/runs/{{ last_run.id }}">#{{ last_run.id }}</a> · {{ last_run.queued_at|age_label }}{% else %}Nenhuma run{% endif %}</strong></div>
+    </div>
+  </div>
+  <div class="card-footer">
+    {% if executor and executor.supports_manual_start %}
+      {% if automation.enabled and not automation.kill_switch_active %}
+      <span>Disparo manual disponível</span>
+      <a class="btn btn-sm" href="#executar-{{ automation.slug }}">{{ ui.icon("play") }}Executar</a>
+      {% elif automation.enabled %}
+      <span>Kill switch ativo; novos disparos de {{ executor.name }} permanecem bloqueados.</span>
+      <button class="btn btn-sm" type="button" disabled>{{ ui.icon("play") }}Executar</button>
+      {% else %}
+      <span>{{ executor.name }} está administrativamente desabilitada; novos disparos permanecem bloqueados.</span>
+      <button class="btn btn-sm" type="button" disabled>{{ ui.icon("play") }}Executar</button>
+      {% endif %}
+    {% else %}
+      <span>Sem disparo manual</span>
+    {% endif %}
+    {% if automation.slug == "content-engine" and csrf_token %}
+      <form method="post" action="/automations/content-engine/readiness">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-outline btn-sm" type="submit">{{ ui.icon("circle-check") }}Verificar preparação</button>
+      </form>
+    {% endif %}
+  </div>
+</article>
+{%- endmacro %}
+
+{# Lista de schedules (Schedules e prévia da Visão geral). `manage` mostra o botão que abre o diálogo. #}
+{% macro schedule_list(schedules, manage=true) -%}
+<ul class="list">
+  {% for schedule in schedules %}
+  <li>
+    <span class="alert-icon" style="flex:none">{{ ui.icon("calendar-clock") }}</span>
+    <div class="grow">
+      <strong>{{ schedule.name }}</strong>
+      <span class="cell-sub"><code>{{ schedule.cron_expression }}</code> · {{ schedule.timezone }} · <code>{{ schedule.automation_slug }}</code></span>
+      <span class="cell-sub">Próxima: {% if schedule.next_run_at %}<time datetime="{{ schedule.next_run_at.isoformat() }}Z">{{ schedule.next_run_at|utc_label }}</time> · {{ schedule.next_run_at|age_label }}{% else %}—{% endif %}</span>
+      {% if schedule.latest_scheduled_for %}
+      <span class="cell-sub">Última ocorrência: {{ ui.badge("neutral", "clock", schedule.latest_occurrence_status) }} <time datetime="{{ schedule.latest_scheduled_for.isoformat() }}Z">{{ schedule.latest_scheduled_for|utc_label }}</time>{% if schedule.latest_occurrence_note %} · {{ schedule.latest_occurrence_note }}{% endif %}</span>
+      {% endif %}
+      {% if schedule.status_note %}<span class="cell-sub">{{ schedule.status_note }}</span>{% endif %}
+    </div>
+    <div class="chips" style="flex-direction:column;align-items:flex-end">
+      {% if schedule.effective_status == "enabled" %}{{ ui.badge("success", "circle-check", "Habilitado") }}
+      {% elif schedule.effective_status == "disabled" %}{{ ui.badge("neutral", "power", "Desabilitado") }}
+      {% else %}{{ ui.badge("warning", "triangle-alert", schedule.effective_status) }}{% endif %}
+      {% if manage %}<a class="btn btn-ghost btn-sm" href="#agendamento-{{ schedule.id }}">Gerenciar</a>{% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{%- endmacro %}
+
+{# Cabeçalho de página: sobrelinha (seção), título e descrição; ações no slot `actions`. #}
+{% macro page_head(kicker, title, description) -%}
+<header class="page-header">
+  <div>
+    <span class="kicker">{{ kicker }}</span>
+    <h1>{{ title }}</h1>
+    {% if description %}<p>{{ description }}</p>{% endif %}
+  </div>
+  <div class="page-actions">{{ caller() if caller is defined }}</div>
+</header>
+{%- endmacro %}

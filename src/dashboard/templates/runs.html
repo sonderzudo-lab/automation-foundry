@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% import "_sections.html" as sec %}
+{% set active_page = "runs" %}
+
+{% set status_labels = {
+  "running": "Executando",
+  "queued": "Na fila",
+  "awaiting_approval": "Aguardando aprovação",
+  "succeeded": "Concluídas",
+  "failed": "Falharam",
+  "cancelled": "Canceladas",
+} %}
+{% set automation_query = ("&automation=" ~ (listing.automation_slug|urlencode)) if listing.automation_slug else "" %}
+{% set status_query = ("&status=" ~ listing.status) if listing.status else "" %}
+{% set all_count = listing.status_counts|map(attribute=1)|sum %}
+
+{% block title %}Runs · Automation Foundry{% endblock %}
+{% block breadcrumb %}<li><span aria-current="page">Runs</span></li>{% endblock %}
+
+{% block content %}
+  {% call sec.page_head("Operação", "Runs", "Histórico de execuções, da mais recente para a mais antiga. Horários em UTC.") %}
+    <form class="filter-form" method="get" action="/runs">
+      {% if listing.status %}<input type="hidden" name="status" value="{{ listing.status }}">{% endif %}
+      <label class="sr-only" for="filtro-automacao">Automação</label>
+      <select class="select" id="filtro-automacao" name="automation">
+        <option value="">Todas as automações</option>
+        {% for automation in nav.automations %}
+        <option value="{{ automation.slug }}"{% if automation.slug == listing.automation_slug %} selected{% endif %}>{{ automation.name }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-outline" type="submit">{{ ui.icon("list-filter") }}Filtrar</button>
+    </form>
+  {% endcall %}
+
+  <nav class="chip-bar" aria-label="Filtrar por status">
+    <a class="chip{% if not listing.status %} is-active{% endif %}" href="/runs{% if listing.automation_slug %}?automation={{ listing.automation_slug|urlencode }}{% endif %}"{% if not listing.status %} aria-current="true"{% endif %}>Todas <span class="chip-count">{{ all_count }}</span></a>
+    {% for value, count in listing.status_counts %}
+    <a class="chip{% if listing.status == value %} is-active{% endif %}" href="/runs?status={{ value }}{{ automation_query }}"{% if listing.status == value %} aria-current="true"{% endif %}>{{ status_labels[value] }} <span class="chip-count">{{ count }}</span></a>
+    {% endfor %}
+  </nav>
+
+  <section class="card" aria-labelledby="h-lista-runs">
+    <div class="card-header row">
+      <div>
+        <h2 class="card-title" id="h-lista-runs" style="font-size:1rem">{{ listing.total }} {{ "run" if listing.total == 1 else "runs" }}</h2>
+        <p class="card-description">Página {{ listing.page }} de {{ listing.page_count }}{% if listing.automation_slug %} · automação <code>{{ listing.automation_slug }}</code>{% endif %}{% if listing.status %} · {{ status_labels[listing.status]|lower }}{% endif %}</p>
+      </div>
+      {% if listing.status or listing.automation_slug %}<a class="btn btn-ghost btn-sm" href="/runs">Limpar filtros</a>{% endif %}
+    </div>
+    <div class="card-content flush">
+      {% if listing.items %}
+      {{ sec.runs_table(listing.items, "Runs", with_duration=true) }}
+      {% else %}
+      {{ ui.empty("layers", "Nenhuma run encontrada", "Ajuste os filtros ou dispare um módulo em Automações." if (listing.status or listing.automation_slug) else "Dispare um módulo em Automações para criar a primeira run.") }}
+      {% endif %}
+    </div>
+    {% if listing.page_count > 1 %}
+    <div class="card-footer pager">
+      <span>{{ listing.items|length }} nesta página</span>
+      <span class="pager-links">
+        {% if listing.has_previous %}<a class="btn btn-outline btn-sm" href="/runs?page={{ listing.page - 1 }}{{ status_query }}{{ automation_query }}">{{ ui.icon("arrow-left") }}Anterior</a>{% endif %}
+        {% if listing.has_next %}<a class="btn btn-outline btn-sm" href="/runs?page={{ listing.page + 1 }}{{ status_query }}{{ automation_query }}">Próxima{{ ui.icon("arrow-right") }}</a>{% endif %}
+      </span>
+    </div>
+    {% endif %}
+  </section>
+{% endblock %}

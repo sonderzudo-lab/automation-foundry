@@ -1,0 +1,64 @@
+{% import "_macros.html" as ui %}
+{# Requer: snapshot.automations, csrf_token. #}
+{# ===== Gerenciar módulo: habilitação administrativa e kill switch, na zona de perigo ===== #}
+{% for automation in snapshot.automations %}
+<div class="dialog-backdrop" id="gerenciar-{{ automation.slug }}">
+  <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+  <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="gerenciar-{{ automation.slug }}-title" tabindex="-1">
+    <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar">{{ ui.icon("x") }}</a>
+    <header class="dialog-header"><h2 id="gerenciar-{{ automation.slug }}-title">Gerenciar · {{ automation.name }}</h2><p><code>{{ automation.slug }}</code> · controles administrativos</p></header>
+
+    {% if not automation.enabled %}
+    <div class="form-stack">
+      <h3>Habilitação administrativa</h3>
+      <p class="muted text-sm">Este módulo está desabilitado: novos disparos permanecem bloqueados.</p>
+      <form class="form-stack" method="post" action="/automations/{{ automation.id }}/enabled">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="target" value="enable">
+        <div class="field"><label for="enabled-actor-{{ automation.id }}">Actor local</label><input class="input" id="enabled-actor-{{ automation.id }}" type="text" name="actor" maxlength="200" required></div>
+        <div class="field"><label for="enabled-reason-{{ automation.id }}">Motivo administrativo</label><textarea class="textarea" id="enabled-reason-{{ automation.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
+        <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="automation-enable" required> Confirmo a habilitação de novos disparos.</label>
+        <div><button class="btn" type="submit">{{ ui.icon("power") }}Habilitar módulo</button></div>
+      </form>
+    </div>
+    {% endif %}
+
+    <div class="danger-zone">
+      <h3>{{ ui.icon("triangle-alert") }}Zona de perigo</h3>
+      <p>Ações administrativas ficam registradas com actor e motivo. Cada uma exige confirmação.</p>
+
+      {% if automation.enabled %}
+      <details class="disclosure">
+        <summary>{{ ui.icon("power") }}Desabilitar módulo<span class="chev">{{ ui.icon("chevron-right") }}</span></summary>
+        <div class="form-stack">
+          <p>Controla a admissão de novas runs; não interrompe trabalho que já esteja em execução.</p>
+          <form class="form-stack" method="post" action="/automations/{{ automation.id }}/enabled">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="target" value="disable">
+            <div class="field"><label for="enabled-actor-{{ automation.id }}">Actor local</label><input class="input" id="enabled-actor-{{ automation.id }}" type="text" name="actor" maxlength="200" required></div>
+            <div class="field"><label for="enabled-reason-{{ automation.id }}">Motivo administrativo</label><textarea class="textarea" id="enabled-reason-{{ automation.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="automation-disable" required> Confirmo a desabilitação de novos disparos.</label>
+            <div><button class="btn btn-destructive" type="submit">{{ ui.icon("power") }}Desabilitar módulo</button></div>
+          </form>
+        </div>
+      </details>
+      {% endif %}
+
+      <details class="disclosure">
+        <summary>{{ ui.icon("octagon-x") }}{{ "Desativar" if automation.kill_switch_active else "Ativar" }} kill switch<span class="chev">{{ ui.icon("chevron-right") }}</span></summary>
+        <div class="form-stack">
+          <p>Bloqueia o módulo imediatamente, inclusive schedules futuros, até ser liberado.</p>
+          <form class="form-stack" method="post" action="/automations/{{ automation.id }}/kill-switch">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="target" value="{{ 'disable' if automation.kill_switch_active else 'enable' }}">
+            <div class="field"><label for="actor-{{ automation.id }}">Actor local</label><input class="input" id="actor-{{ automation.id }}" type="text" name="actor" maxlength="200" required></div>
+            <div class="field"><label for="reason-{{ automation.id }}">Motivo operacional</label><textarea class="textarea" id="reason-{{ automation.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
+            <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="kill-switch-{{ 'disable' if automation.kill_switch_active else 'enable' }}" required> Confirmo {{ 'a liberação' if automation.kill_switch_active else 'o bloqueio' }} deste módulo.</label>
+            <div><button class="btn {{ 'btn-outline' if automation.kill_switch_active else 'btn-destructive' }}" type="submit">{{ ui.icon("octagon-x") }}{{ "Desativar" if automation.kill_switch_active else "Ativar" }} kill switch</button></div>
+          </form>
+        </div>
+      </details>
+    </div>
+  </section>
+</div>
+{% endfor %}

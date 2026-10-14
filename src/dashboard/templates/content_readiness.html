@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% import "_sections.html" as sec %}
+{% set active_page = "automations" %}
+{% set states = {
+  "ready": ("success", "circle-check", "Pronto"),
+  "problem": ("danger", "triangle-alert", "Problema encontrado"),
+  "not_applicable": ("disabled", "minus-circle", "Não aplicável"),
+  "not_checked": ("warning", "clock", "Não verificado")
+} %}
+{% block title %}Preparação do Content Engine · Automation Foundry{% endblock %}
+{% block breadcrumb %}<li><a href="/automations">Automações</a></li><li><span aria-current="page">Preparação do Content Engine</span></li>{% endblock %}
+{% block content %}
+{{ sec.page_head("Content Engine", "Preparação do pipeline", "Consulta solicitada pelo operador sobre as dependências dos backends habilitados neste runtime.") }}
+<div class="alert alert-info" role="note">
+  <span class="alert-icon">{{ ui.icon("info") }}</span>
+  <div class="alert-body">
+    <p class="alert-title">Diagnóstico parcial, somente leitura</p>
+    <p class="alert-description">Não dispara runs, não altera aprovações nem regras de disparo e não executa inferência, downloads ou geração. Não comprova licenciamento e não substitui as verificações completas (hashes, mídia, direitos) feitas por cada step nem a revisão humana. O resultado pode mudar depois desta consulta.</p>
+  </div>
+</div>
+
+<form class="page-actions" method="post" action="/automations/content-engine/readiness">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <a class="btn btn-outline" href="/automations#auto-content-engine">{{ ui.icon("arrow-left") }}Voltar às automações</a>
+  <button class="btn" type="submit">{{ ui.icon("rotate-cw") if report else ui.icon("circle-check") }}{{ "Verificar novamente" if report else "Verificar preparação" }}</button>
+</form>
+
+{% if report %}
+{% set total = report.checks|length %}
+{% set problems = report.checks|selectattr("status.value", "equalto", "problem")|list|length %}
+{% set ready = report.checks|selectattr("status.value", "equalto", "ready")|list|length %}
+{% set unchecked = report.checks|selectattr("status.value", "equalto", "not_checked")|list|length %}
+{% set skipped = report.checks|selectattr("status.value", "equalto", "not_applicable")|list|length %}
+<section class="card" aria-labelledby="checks-title">
+  <div class="card-header">
+    <h2 id="checks-title">Dependências verificadas</h2>
+    <p role="status">
+      {% if problems %}{{ ui.badge("danger", "triangle-alert", problems ~ (" problema encontrado" if problems == 1 else " problemas encontrados")) }}{% else %}{{ ui.badge("success", "circle-check", "Nenhum problema nos itens verificados") }}{% endif %}
+      <span class="cell-sub">Prontos: {{ ready }} · Problemas: {{ problems }} · Não verificados: {{ unchecked }} · Não aplicáveis: {{ skipped }} · Total: {{ total }}. Consulta de <time datetime="{{ report.started_at.isoformat() }}" title="{{ report.started_at.isoformat() }}">{{ report.started_at|utc_label }}</time> a <time datetime="{{ report.completed_at.isoformat() }}" title="{{ report.completed_at.isoformat() }}">{{ report.completed_at|utc_label }}</time>.</span>
+    </p>
+  </div>
+  <ul class="list">
+    {% for check in report.checks %}
+    {% set state = states[check.status.value] %}
+    <li>
+      <div class="grow">
+        <h3>{{ check.label }}</h3>
+        <p>{{ ui.badge(state[0], state[1], state[2]) }}
+          <span class="cell-sub">Código <code>{{ check.result_code }}</code> · consultado em <time datetime="{{ check.checked_at.isoformat() }}" title="{{ check.checked_at.isoformat() }}">{{ check.checked_at|utc_label }}</time></span>
+        </p>
+        <p>{{ check.guidance }}</p>
+        {% if check.free_bytes is not none %}<p class="cell-sub">Espaço livre: <span title="{{ check.free_bytes }} bytes">{{ check.free_bytes|byte_size }}</span>.</p>{% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% else %}
+<div class="card"><div class="card-content">
+  {{ ui.empty("clock", "Ainda não consultado", "Use “Verificar preparação” para consultar Ollama, storage, narração, legendas, FFmpeg e a configuração de visuais. Nada é consultado ao abrir esta página.") }}
+</div></div>
+{% endif %}
+{% endblock %}

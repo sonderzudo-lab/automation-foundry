@@ -1,52 +1,148 @@
-<!doctype html>
-<html lang="pt-BR">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Saúde · Automation Foundry</title>
-    <style>
-      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
-      body { margin: 0; background: #0b0d10; color: #f2f4f7; }
-      main { width: min(1000px, calc(100% - 2rem)); margin: 0 auto; padding: 2rem 0 4rem; }
-      header { display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin-bottom: 1.5rem; }
-      h1 { margin: 0; letter-spacing: -.03em; }
-      p { color: #9ba6b4; }
-      a { color: #8ab4f8; text-decoration: none; }
-      table { width: 100%; border-collapse: collapse; background: #13171c; border: 1px solid #262d36; border-radius: 14px; overflow: hidden; }
-      th, td { text-align: left; border-bottom: 1px solid #252c34; padding: .8rem; vertical-align: top; }
-      th { color: #8995a3; }
-      tr:last-child td { border-bottom: 0; }
-      .badge { display: inline-block; border: 1px solid #3b4552; border-radius: 999px; padding: .15rem .5rem; font-size: .75rem; }
-      .pass { color: #7ee787; } .degraded { color: #f2cc60; } .fail { color: #ff7b72; } .skip { color: #8995a3; }
-      dl { display: grid; grid-template-columns: max-content 1fr; gap: .2rem .7rem; margin: 0; font-size: .85rem; }
-      dt { color: #8995a3; } dd { margin: 0; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <header>
-        <div>
-          <h1>Saúde operacional</h1>
-          <p>Probes locais redigidos; nenhum endpoint ou nome de host é exibido.</p>
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% set active_page = "health" %}
+
+{# Número com vírgula decimal (pt-BR), sem alterar o valor. #}
+{% macro num(value) -%}{{ value|string|replace(".", ",") }}{%- endmacro %}
+
+{% block title %}Saúde operacional · Automation Foundry{% endblock %}
+{% block breadcrumb %}<li><span aria-current="page">Saúde operacional</span></li>{% endblock %}
+
+{% block topbar_status %}
+  {% set overall = report.status.value %}
+  <span class="hide-sm">
+  {% if overall == "pass" %}{{ ui.badge("success", "circle-check", "Tudo operacional") }}
+  {% elif overall == "fail" %}{{ ui.badge("danger", "circle-x", "Falha em componente") }}
+  {% else %}{{ ui.badge("warning", "triangle-alert", "Componente degradado") }}{% endif %}
+  </span>
+{% endblock %}
+
+{% block content %}
+  {% set states = {"pass": ("circle-check", "Operacional"), "degraded": ("triangle-alert", "Degradado"), "fail": ("circle-x", "Falha"), "skip": ("minus-circle", "Ignorado")} %}
+  {# código do probe -> (título, ícone, grupo) #}
+  {% set meta = {
+    "cpu": ("CPU", "cpu", "machine"),
+    "memory": ("Memória", "memory", "machine"),
+    "disk": ("Disco", "hard-drive", "machine"),
+    "gpu": ("GPU e VRAM", "monitor", "machine"),
+    "machine": ("Máquina", "cpu", "machine"),
+    "database": ("Banco de dados", "database", "services"),
+    "redis": ("Redis", "server", "services"),
+    "workers": ("Workers", "layers", "services"),
+    "beat": ("Agendador (Beat)", "timer", "services"),
+  } %}
+  {% set overall = report.status.value %}
+  {% set degraded = report.checks|selectattr("status.value", "equalto", "degraded")|list %}
+  {% set failed = report.checks|selectattr("status.value", "equalto", "fail")|list %}
+  {% set passed = report.checks|selectattr("status.value", "equalto", "pass")|list %}
+  {% set skipped = report.checks|selectattr("status.value", "equalto", "skip")|list %}
+
+  <header class="page-header">
+    <div>
+      <div class="title-row"><h1>Saúde operacional</h1>{% set e = states.get(overall, ("circle", overall)) %}{{ ui.badge(overall if overall in states else "neutral", e[0], e[1]) }}</div>
+      <p>Estado geral: {{ overall }} · verificado em <time datetime="{{ report.checked_at.isoformat() }}Z">{{ report.checked_at.isoformat() }}Z</time> ({{ report.checked_at|age_label }}). Probes locais redigidos; nenhum endpoint ou nome de host é exibido.</p>
+    </div>
+    <div class="page-actions"><a class="btn btn-outline" href="/health">{{ ui.icon("rotate-cw") }}Verificar novamente</a></div>
+  </header>
+
+  {% if failed %}
+  <div class="alert alert-destructive" role="alert">
+    <span class="alert-icon">{{ ui.icon("circle-x") }}</span>
+    <div class="alert-body"><p class="alert-title">{{ failed|length }} {{ "componente com falha" if failed|length == 1 else "componentes com falha" }}: {% for c in failed %}{{ meta.get(c.name, (c.name,))[0] }}{{ ", " if not loop.last }}{% endfor %}</p>
+      <p class="alert-description">{% for c in failed %}{{ c.summary }}{{ " · " if not loop.last }}{% endfor %}</p></div>
+  </div>
+  {% endif %}
+  {% if degraded %}
+  <div class="alert alert-warning" role="status">
+    <span class="alert-icon">{{ ui.icon("triangle-alert") }}</span>
+    <div class="alert-body"><p class="alert-title">{{ degraded|length }} {{ "componente degradado" if degraded|length == 1 else "componentes degradados" }}: {% for c in degraded %}{{ meta.get(c.name, (c.name,))[0] }}{{ ", " if not loop.last }}{% endfor %}</p>
+      <p class="alert-description">{% for c in degraded %}{{ c.summary }}{{ " · " if not loop.last }}{% endfor %}</p></div>
+    {% if degraded|selectattr("name", "equalto", "disk")|list %}<a class="btn btn-outline btn-sm alert-action" href="/storage">Ver storage</a>{% endif %}
+  </div>
+  {% endif %}
+  {% if overall == "pass" %}
+  <div class="alert alert-success" role="status">
+    <span class="alert-icon">{{ ui.icon("circle-check") }}</span>
+    <div class="alert-body"><p class="alert-title">Tudo operacional</p><p class="alert-description">Todos os probes locais responderam dentro do esperado.</p></div>
+  </div>
+  {% endif %}
+
+  <div class="summary-chips" aria-label="Resumo por estado">
+    {{ ui.badge("pass", "circle-check", passed|length ~ " operacionais") }}{{ ui.badge("degraded", "triangle-alert", degraded|length ~ " degradados") }}{{ ui.badge("fail", "circle-x", failed|length ~ " com falha") }}{{ ui.badge("skip", "minus-circle", skipped|length ~ " ignorados") }}
+  </div>
+
+  {% for group, group_title, group_text in (("machine", "Máquina", "Recursos do computador que executa as automações."), ("services", "Serviços", "Banco, broker, workers e agendador.")) %}
+  <section class="section" aria-labelledby="h-{{ group }}">
+    <div class="section-head"><div><h2 id="h-{{ group }}">{{ group_title }}</h2><p>{{ group_text }}</p></div></div>
+    <div class="grid grid-kpi">
+      {% for check in report.checks if meta.get(check.name, ("", "", "services"))[2] == group %}
+      {% set title, icon_name = meta.get(check.name, (check.name, "activity", "services"))[:2] %}
+      {% set status = check.status.value %}
+      {% set m = check.metrics %}
+      <article class="card health-card is-{{ status }}" aria-labelledby="h-{{ check.name }}">
+        <div class="card-header">
+          <div class="automation-title"><span class="alert-icon">{{ ui.icon(icon_name) }}</span><div><h3 id="h-{{ check.name }}">{{ title }}</h3><code>{{ check.name }}</code></div></div>
         </div>
-        <a href="/">← Dashboard</a>
-      </header>
-      <p>Estado geral: <span class="badge {{ report.status.value }}">{{ report.status.value }}</span> · verificado em {{ report.checked_at.isoformat() }}Z</p>
-      <table>
-        <thead><tr><th>Componente</th><th>Estado</th><th>Resumo</th><th>Métricas seguras</th></tr></thead>
+        <div class="card-content">
+          {% set entry = states.get(status, ("circle", status)) %}
+          {# Métrica principal por tipo de probe; probes desconhecidos mostram só o estado. #}
+          {% if check.name in ("cpu", "memory", "disk") and m.percent is defined %}
+            {% set pct = m.percent %}
+            <div class="metric-row"><p class="metric">{{ num(pct) }}<small>%</small></p>{{ ui.badge(status if status in states else "neutral", entry[0], entry[1]) }}</div>
+            <div class="progress {{ 'is-danger' if pct >= 95 else 'is-warning' if pct >= 80 }}" role="progressbar" aria-label="Uso de {{ title }}" aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100" style="--value:{{ pct }}%"><span></span></div>
+          {% elif check.name == "gpu" and m.detected and m.memory_percent is defined %}
+            <div class="metric-row"><p class="metric">{{ num(m.memory_percent) }}<small>% VRAM</small></p>{{ ui.badge(status if status in states else "neutral", entry[0], entry[1]) }}</div>
+            <div class="progress {{ 'is-danger' if m.memory_percent >= 95 else 'is-warning' if m.memory_percent >= 80 }}" role="progressbar" aria-label="VRAM em uso" aria-valuenow="{{ m.memory_percent }}" aria-valuemin="0" aria-valuemax="100" style="--value:{{ m.memory_percent }}%"><span></span></div>
+          {% elif check.name in ("database", "redis") and m.latency_ms is defined %}
+            <div class="metric-row"><p class="metric">{{ num(m.latency_ms) }}<small> ms</small></p>{{ ui.badge(status if status in states else "neutral", entry[0], entry[1]) }}</div>
+          {% elif check.name == "workers" %}
+            <div class="metric-row"><p class="metric">{{ (m.gpu_workers|default(0)) + (m.cpu_workers|default(0)) + (m.io_workers|default(0)) }}<small> workers</small></p>{{ ui.badge(status if status in states else "neutral", entry[0], entry[1]) }}</div>
+            <div class="queue-grid">
+              <div class="queue-cell"><span>Fila gpu</span><strong>{{ m.gpu_workers|default(0) }}</strong></div>
+              <div class="queue-cell"><span>Fila cpu</span><strong>{{ m.cpu_workers|default(0) }}</strong></div>
+              <div class="queue-cell"><span>Fila io</span><strong>{{ m.io_workers|default(0) }}</strong></div>
+            </div>
+          {% elif check.name == "beat" %}
+            <div class="metric-row"><p class="metric">{{ "Ativo" if (m.singleton_owned or m.pid_active) else "Inativo" }}</p>{{ ui.badge(status if status in states else "neutral", entry[0], entry[1]) }}</div>
+          {% else %}
+            <div class="metric-row"><p class="metric">{{ "—" if status == "skip" else "" }}</p>{{ ui.badge(status if status in states else "neutral", entry[0], entry[1]) }}</div>
+          {% endif %}
+          <p class="card-description">{{ check.summary }}</p>
+        </div>
+        <div class="card-footer"><div class="health-foot">
+          {% if check.name == "cpu" and m.logical_cpus is defined %}<span>CPUs lógicas <strong>{{ m.logical_cpus }}</strong></span>{% endif %}
+          {% if check.name == "memory" and m.available_gib is defined %}<span>Disponível <strong>{{ num(m.available_gib) }} GiB</strong></span>{% endif %}
+          {% if check.name == "disk" %}{% if m.free_gib is defined %}<span>Livre <strong>{{ num(m.free_gib) }} GiB</strong></span>{% endif %}<a href="/storage">Ver retenção →</a>{% endif %}
+          {% if check.name == "gpu" and m.detected %}<span>{{ m.model }}</span><span>VRAM <strong>{{ m.memory_used_mib }} de {{ m.memory_total_mib }} MiB</strong></span>{% if m.utilization_percent is defined %}<span>Utilização <strong>{{ m.utilization_percent }}%</strong></span>{% endif %}{% endif %}
+          {% if check.name in ("database", "redis") and m.latency_ms is defined %}<span>Latência <strong>{{ num(m.latency_ms) }} ms</strong></span>{% endif %}
+          {% if check.name == "workers" %}<span>gpu <strong>{{ m.gpu_workers|default(0) }}</strong></span><span>cpu <strong>{{ m.cpu_workers|default(0) }}</strong></span><span>io <strong>{{ m.io_workers|default(0) }}</strong></span>{% endif %}
+          {% if check.name == "beat" %}<span>Instância única <strong>{{ "sim" if m.singleton_owned else "não" }}</strong></span>{% endif %}
+        </div></div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+
+  <details class="raw-probes">
+    <summary>{{ ui.icon("file-text") }}Dados brutos dos probes<span class="chev">{{ ui.icon("chevron-right") }}</span></summary>
+    <div class="table-wrap">
+      <table class="table">
+        <caption class="sr-only">Probes de saúde</caption>
+        <thead><tr><th scope="col">Componente</th><th scope="col">Estado</th><th scope="col">Resumo</th><th scope="col">Métricas seguras</th></tr></thead>
         <tbody>
-        {% for check in report.checks %}
+          {% for check in report.checks %}
+          {% set status = check.status.value %}
+          {% set entry = states.get(status, ("circle", status)) %}
           <tr>
             <td><code>{{ check.name }}</code></td>
-            <td><span class="badge {{ check.status.value }}">{{ check.status.value }}</span></td>
+            <td>{{ ui.badge(status if status in states else "neutral", entry[0], entry[1]) }}</td>
             <td>{{ check.summary }}</td>
-            <td>
-              {% if check.metrics %}<dl>{% for key, value in check.metrics.items() %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>{% else %}—{% endif %}
-            </td>
+            <td class="mono text-xs" style="overflow-wrap:anywhere">{% if check.metrics %}{% for key, value in check.metrics.items() %}{{ key }}={{ value }}{{ " · " if not loop.last }}{% endfor %}{% else %}—{% endif %}</td>
           </tr>
-        {% endfor %}
+          {% endfor %}
         </tbody>
       </table>
-    </main>
-  </body>
-</html>
+    </div>
+  </details>
+{% endblock %}

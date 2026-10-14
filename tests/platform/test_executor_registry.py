@@ -33,9 +33,13 @@ async def test_registry_dispatches_only_declared_manual_executor(
     executors = list_automation_executors()
     assert [executor.slug for executor in executors] == [
         "content-engine",
+        "operations-brief",
         "platform-smoke",
     ]
-    content_executor, smoke_executor = executors
+    content_executor, brief_executor, smoke_executor = executors
+    assert brief_executor.queue.value == "io"
+    assert brief_executor.runs_in_background is True
+    assert [field.name for field in brief_executor.manual_input_fields] == ["window_days"]
     assert content_executor.queue.value == "gpu"
     assert content_executor.runs_in_background is True
     assert [field.name for field in content_executor.manual_input_fields] == [
@@ -43,6 +47,10 @@ async def test_registry_dispatches_only_declared_manual_executor(
         "persona",
         "format",
         "recent_openings",
+        "facts",
+        "opening_style",
+        "structure",
+        "visual_style",
     ]
     assert smoke_executor.queue.value == "io"
     assert smoke_executor.runs_in_background is False
@@ -69,10 +77,47 @@ def test_registry_validates_executor_owned_manual_input() -> None:
             "persona": "Ciência acessível",
             "format": "short",
             "recent_openings": "",
+            "facts": "",
+            "opening_style": "",
+            "structure": "",
+            "visual_style": "",
         },
     )
     assert payload["format"] == "short"
     assert payload["recent_openings"] == []
+    # Unset optional fields stay out of the payload persisted on the run.
+    assert not {"facts", "opening_style", "structure", "visual_style"} & set(payload)
+
+    chosen = parse_registered_manual_input(
+        slug="content-engine",
+        values={
+            "topic": "Sono e memória",
+            "persona": "Ciência acessível",
+            "format": "short",
+            "recent_openings": "",
+            "facts": "",
+            "opening_style": "auto",
+            "structure": "list",
+            "visual_style": "dark",
+        },
+    )
+    assert chosen["opening_style"] == "auto"
+    assert chosen["structure"] == "list"
+    assert chosen["visual_style"] == "dark"
+    with pytest.raises(ValueError):
+        parse_registered_manual_input(
+            slug="content-engine",
+            values={
+                "topic": "Sono e memória",
+                "persona": "Ciência acessível",
+                "format": "short",
+                "recent_openings": "",
+                "facts": "",
+                "opening_style": "clickbait",
+                "structure": "",
+                "visual_style": "",
+            },
+        )
 
     with pytest.raises(ValueError, match="do not match"):
         parse_registered_manual_input(

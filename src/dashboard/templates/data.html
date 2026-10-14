@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% import "_sections.html" as sec %}
+{% set active_page = "data" %}
+
+{% block title %}Dados e conectores · Automation Foundry{% endblock %}
+{% block breadcrumb %}<li><span aria-current="page">Dados e conectores</span></li>{% endblock %}
+
+{% block content %}
+  {{ sec.page_head("Gestão", "Dados e conectores", "Última observação persistida de cada conector, com frescor e qualidade. Endpoints, credenciais e mensagens brutas não são exibidos.") }}
+
+  {% with connectors=snapshot.connectors, connectors_truncated=snapshot.connectors_truncated %}
+    {% include "data_observability_fragment.html" %}
+  {% endwith %}
+{% endblock %}

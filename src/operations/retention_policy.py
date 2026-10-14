@@ -82,6 +82,24 @@ _POLICY: tuple[RetentionPolicyEntry, ...] = (
         ),
     ),
     RetentionPolicyEntry(
+        artifact_type="visual_draft_manifest",
+        retention_days=90,
+        producer="content-engine:a3",
+        rationale=(
+            "Manifesto de uma rodada de rascunhos gerados: o conjunto exato que o "
+            "operador revisou, com as descrições e os ajustes pedidos."
+        ),
+    ),
+    RetentionPolicyEntry(
+        artifact_type="visual_draft_image",
+        retention_days=90,
+        producer="content-engine:a3",
+        rationale=(
+            "Imagem de rascunho revisada no gate A3; a aprovada é copiada, conferida "
+            "por SHA-256, para o pacote oficial de A3."
+        ),
+    ),
+    RetentionPolicyEntry(
         artifact_type="caption_ass",
         retention_days=90,
         producer="content-engine:a4",
@@ -115,6 +133,24 @@ _POLICY: tuple[RetentionPolicyEntry, ...] = (
         rationale=(
             "Relatório de originalidade: evidência de que o gate A6 avaliou "
             "exatamente aquele roteiro e aquele vídeo."
+        ),
+    ),
+    RetentionPolicyEntry(
+        artifact_type="operations_brief",
+        retention_days=180,
+        producer="operations-brief",
+        rationale=(
+            "Brief operacional aprovado: histórico comparável de semana a "
+            "semana para avaliar o módulo antes de qualquer schedule."
+        ),
+    ),
+    RetentionPolicyEntry(
+        artifact_type="operations_brief_evidence",
+        retention_days=180,
+        producer="operations-brief",
+        rationale=(
+            "Evidência estruturada do brief: prova de onde cada número veio e "
+            "base da conferência de integridade na revisão."
         ),
     ),
 )

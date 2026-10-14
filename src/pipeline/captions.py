@@ -74,6 +74,13 @@ _FASTER_WHISPER_SNAPSHOT_FILES = {
         "c9074644d9d1205686f16d411564729461324b75",
     ),
 }
+
+
+def caption_snapshot_file_sizes() -> tuple[tuple[str, int], ...]:
+    """Metadata for light readiness checks; full integrity remains in the step."""
+    return tuple((name, metadata[0]) for name, metadata in _FASTER_WHISPER_SNAPSHOT_FILES.items())
+
+
 _SOURCE = "content-engine:a4"
 _RETENTION_DAYS = resolve_retention_days("caption_ass")
 _MAX_WORDS = 10_000
@@ -84,6 +91,16 @@ _MIN_TRANSCRIPT_MATCH = Decimal("0.85")
 _MATCH_QUANTUM = Decimal("0.0000000001")
 _MIN_REPAIRED_WORD_SECONDS = Decimal("0.02")
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+", re.ASCII)
+_SENTENCE_END = re.compile(r"[.!?…][’”\"')\]]*$")
+_CLAUSE_END = re.compile(r"[,;:—–][’”\"')\]]*$")
+_LIST_MARKER = re.compile(r"\d{1,2}[.)]")
+# Approved words the transcription missed are shown only in short runs; a
+# longer run was probably never spoken and has no timing to borrow.
+_MAX_UNTIMED_APPROVED_WORDS = 3
+# Six words was the fixed block size before blocks followed the sentences. The
+# character limit keeps a block within two lines at the style's font size.
+_MAX_BLOCK_WORDS = 6
+_MAX_BLOCK_CHARACTERS = {"short": 42, "long": 60}
 
 
 class CaptionRetryableAdapterError(RuntimeError):
@@ -859,7 +876,10 @@ def _generate_caption_atomic(
             expected_language=language_code,
             audio_duration=audio_duration,
         )
-        rendered = _render_ass(result.words, video_format=video_format)
+        rendered = _render_ass(
+            _restore_approved_wording(result.words, narration),
+            video_format=video_format,
+        )
         temporary.write_text(rendered, encoding="utf-8", newline="\n")
         with temporary.open("r+b") as handle:
             os.fsync(handle.fileno())
@@ -966,8 +986,10 @@ def _render_ass(words: tuple[CaptionWord, ...], *, video_format: str) -> str:
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    for offset in range(0, len(words), 6):
-        group = words[offset : offset + 6]
+    for group in _caption_blocks(
+        words,
+        max_characters=_MAX_BLOCK_CHARACTERS["short" if video_format == "short" else "long"],
+    ):
         start = _timing_decimal(group[0].start_seconds)
         end = _timing_decimal(group[-1].end_seconds)
         karaoke: list[str] = []
@@ -986,6 +1008,239 @@ def _render_ass(words: tuple[CaptionWord, ...], *, video_format: str) -> str:
             + " ".join(karaoke)
         )
     return "\n".join(lines) + "\n"
+
+
+def _restore_approved_wording(
+    words: tuple[CaptionWord, ...],
+    narration: str,
+) -> tuple[CaptionWord, ...]:
+    """Show the approved narration's spelling over the transcription's timings.
+
+    The transcription decides when each word is on screen; the approved text
+    decides how it is written, so capitals, accents and punctuation follow what
+    the reviewer approved. Words only the transcription heard are kept as heard.
+    """
+    approved: list[str] = []
+    for raw in narration.split():
+        if _tokens(raw):
+            approved.append(raw)
+        elif approved and _displayable(f"{approved[-1]} {raw}"):
+            # A lone dash or ellipsis has no timing of its own.
+            approved[-1] = f"{approved[-1]} {raw}"
+    if not approved:
+        return words
+
+    restored: list[CaptionWord] = []
+    leading: list[str] = []
+
+    def spread(texts: list[str], start: Decimal, end: Decimal) -> None:
+        weights = [max(1, len("".join(_tokens(text)))) for text in texts]
+        total = Decimal(sum(weights))
+        cursor = start
+        for position, (text, weight) in enumerate(zip(texts, weights, strict=True)):
+            stop = (
+                end
+                if position == len(texts) - 1
+                else cursor + (end - start) * Decimal(weight) / total
+            )
+            restored.append(CaptionWord(text, cursor, stop))
+            cursor = stop
+
+    matcher = SequenceMatcher(
+        None,
+        ["".join(_tokens(word.text)) for word in words],
+        ["".join(_tokens(text)) for text in approved],
+        autojunk=False,
+    )
+    for tag, heard_from, heard_to, approved_from, approved_to in matcher.get_opcodes():
+        heard = words[heard_from:heard_to]
+        texts = [
+            text if _displayable(text) else ""
+            for text in approved[approved_from:approved_to]
+        ]
+        if tag == "insert":
+            if len(texts) > _MAX_UNTIMED_APPROVED_WORDS or not all(texts):
+                continue
+            if restored:
+                previous = restored.pop()
+                spread([previous.text, *texts], previous.start_seconds, previous.end_seconds)
+            else:
+                leading = texts
+            continue
+        if tag == "delete":
+            restored.extend(heard)
+            continue
+        if leading:
+            texts = [*leading, *texts]
+            leading = []
+        if len(texts) == len(heard):
+            restored.extend(
+                CaptionWord(text or word.text, word.start_seconds, word.end_seconds)
+                for text, word in zip(texts, heard, strict=True)
+            )
+        elif not all(texts):
+            restored.extend(heard)
+        else:
+            spread(
+                texts,
+                _timing_decimal(heard[0].start_seconds),
+                _timing_decimal(heard[-1].end_seconds),
+            )
+    return tuple(restored) if restored else words
+
+
+def _displayable(text: str) -> bool:
+    return (
+        0 < len(text) <= _MAX_WORD_LENGTH
+        and not any(character in text for character in "\r\n{}\\")
+        and not any(ord(character) < 32 for character in text)
+    )
+
+
+def _caption_blocks(
+    words: tuple[CaptionWord, ...],
+    *,
+    max_characters: int,
+) -> list[tuple[CaptionWord, ...]]:
+    """Group timed words into on-screen blocks that follow the spoken phrasing.
+
+    A block never runs past the end of a sentence. Inside a sentence, clauses
+    are kept together while they fit; a clause that does not fit is cut into
+    even parts, so no block is left with a single trailing word.
+    """
+    blocks: list[tuple[CaptionWord, ...]] = []
+    sentence: list[CaptionWord] = []
+    for word in _screen_words(words):
+        sentence.append(word)
+        if _SENTENCE_END.search(word.text.strip()):
+            blocks.extend(_sentence_blocks(sentence, max_characters=max_characters))
+            sentence = []
+    if sentence:
+        blocks.extend(_sentence_blocks(sentence, max_characters=max_characters))
+    return blocks
+
+
+def _screen_words(words: tuple[CaptionWord, ...]) -> list[CaptionWord]:
+    """Keep list numbers and stray punctuation from becoming blocks of their own.
+
+    A list number that opens a sentence ("1.") is shown with the word after it.
+    A word with no letter or digit gives its time to the word before it (or
+    after it, at the start). A dash or ellipsis stays glued to that word, since
+    it marks the pause; anything else ("?’") has nothing to read and is dropped.
+    """
+    screen: list[CaptionWord] = []
+    pending_marker: CaptionWord | None = None
+    lead_start: Decimal | None = None
+    for word in words:
+        text = word.text.strip()
+        if pending_marker is not None:
+            word = CaptionWord(
+                f"{pending_marker.text.strip()} {text}",
+                pending_marker.start_seconds,
+                word.end_seconds,
+            )
+            text = word.text
+            pending_marker = None
+        if not _tokens(text):
+            if screen:
+                previous = screen[-1]
+                screen[-1] = CaptionWord(
+                    f"{previous.text.strip()} {text}"
+                    if any(character in text for character in "—–-…")
+                    else previous.text,
+                    previous.start_seconds,
+                    max(previous.end_seconds, word.end_seconds),
+                )
+            elif lead_start is None:
+                lead_start = word.start_seconds
+            continue
+        if lead_start is not None:
+            word = CaptionWord(word.text, lead_start, word.end_seconds)
+            lead_start = None
+        if _LIST_MARKER.fullmatch(text) and (
+            not screen or _SENTENCE_END.search(screen[-1].text.strip())
+        ):
+            pending_marker = word
+            continue
+        screen.append(word)
+    if pending_marker is not None:
+        screen.append(pending_marker)
+    return screen
+
+
+def _sentence_blocks(
+    sentence: list[CaptionWord],
+    *,
+    max_characters: int,
+) -> list[tuple[CaptionWord, ...]]:
+    clauses: list[list[CaptionWord]] = []
+    clause: list[CaptionWord] = []
+    for word in sentence:
+        clause.append(word)
+        if _CLAUSE_END.search(word.text.strip()):
+            clauses.append(clause)
+            clause = []
+    if clause:
+        clauses.append(clause)
+
+    merged: list[list[CaptionWord]] = []
+    for clause in clauses:
+        if merged and _fits(merged[-1] + clause, max_characters=max_characters):
+            merged[-1] = merged[-1] + clause
+        else:
+            merged.append(clause)
+    parts: list[list[CaptionWord]] = []
+    for chunk in merged:
+        parts.extend(_even_parts(chunk, max_characters=max_characters))
+
+    # A lone word ("Primeiro,") reads better with its neighbour: join the block
+    # that follows it, else the one before, else borrow that block's last word.
+    index = 0
+    while len(parts) > 1 and index < len(parts):
+        if len(parts[index]) != 1:
+            index += 1
+            continue
+        if index + 1 < len(parts) and _fits(
+            parts[index] + parts[index + 1],
+            max_characters=max_characters,
+        ):
+            parts[index : index + 2] = [parts[index] + parts[index + 1]]
+        elif index > 0 and _fits(
+            parts[index - 1] + parts[index],
+            max_characters=max_characters,
+        ):
+            parts[index - 1 : index + 1] = [parts[index - 1] + parts[index]]
+        elif index > 0 and len(parts[index - 1]) > 2:
+            parts[index] = [parts[index - 1][-1], *parts[index]]
+            parts[index - 1] = parts[index - 1][:-1]
+            index += 1
+        else:
+            index += 1
+    return [tuple(part) for part in parts]
+
+
+def _even_parts(
+    chunk: list[CaptionWord],
+    *,
+    max_characters: int,
+) -> list[list[CaptionWord]]:
+    for part_count in range(1, len(chunk) + 1):
+        parts = [
+            chunk[index * len(chunk) // part_count : (index + 1) * len(chunk) // part_count]
+            for index in range(part_count)
+        ]
+        if all(
+            len(part) == 1 or _fits(part, max_characters=max_characters)
+            for part in parts
+        ):
+            return parts
+    return [[word] for word in chunk]
+
+
+def _fits(group: list[CaptionWord], *, max_characters: int) -> bool:
+    if len(group) > _MAX_BLOCK_WORDS:
+        return False
+    return len(" ".join(word.text.strip() for word in group)) <= max_characters
 
 
 def _tokens(value: str) -> list[str]:

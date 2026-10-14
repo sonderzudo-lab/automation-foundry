@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% import "_sections.html" as sec %}
+{% set active_page = "reports" %}
+
+{% block title %}Relatórios · Automation Foundry{% endblock %}
+{% block breadcrumb %}<li><span aria-current="page">Relatórios</span></li>{% endblock %}
+
+{% block content %}
+  {{ sec.page_head("Gestão", "Relatórios", "Custo, receita e desempenho observados. Cada moeda permanece separada; sem conversão cambial, pagamento ou promessa.") }}
+
+  {# ============ RESUMO FINANCEIRO POR MOEDA ============ #}
+  {% if snapshot.ledger_totals %}
+  <section class="grid grid-kpi" aria-label="Resumo por moeda">
+    {% for total in snapshot.ledger_totals %}
+    <article class="card kpi">
+      <div class="card-header"><h3 class="card-title">Receita líquida observada · <code>{{ total.currency }}</code></h3></div>
+      <div class="card-content"><p class="metric"><small>{{ total.currency }}</small> {{ total.net_revenue|exact_decimal }}</p></div>
+      <div class="card-footer plain"><span class="kpi-foot"><strong>Custo {{ total.cost|exact_decimal }} · Receita {{ total.revenue|exact_decimal }}</strong><span>Valor atribuído {{ total.attributed_value|exact_decimal }}</span></span></div>
+    </article>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <div class="grid">
+    {# ============ LEDGER ============ #}
+    <section class="card" id="ledger" aria-labelledby="h-ledger">
+      <div class="card-header"><h2 class="card-title" id="h-ledger" style="font-size:1rem">Ledger</h2><p class="card-description">Totais exatos, sem notação científica.</p></div>
+      <div class="card-content flush" style="padding-top:.75rem">
+        {% if snapshot.ledger_totals %}
+        <div class="table-wrap">
+          <table class="table">
+            <caption class="sr-only">Ledger por moeda</caption>
+            <thead><tr><th scope="col">Moeda</th><th scope="col" class="num">Custo</th><th scope="col" class="num">Receita</th><th scope="col" class="num">Receita líquida observada</th><th scope="col" class="num">Valor atribuído</th></tr></thead>
+            <tbody>
+              {% for total in snapshot.ledger_totals %}
+              <tr><th scope="row"><code>{{ total.currency }}</code></th><td class="num">{{ total.cost|exact_decimal }}</td><td class="num">{{ total.revenue|exact_decimal }}</td><td class="num">{{ total.net_revenue|exact_decimal }}</td><td class="num">{{ total.attributed_value|exact_decimal }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        {{ ui.empty("wallet", "Nenhuma observação financeira registrada") }}
+        {% endif %}
+        <details class="disclosure neutral" style="margin:.75rem 1.25rem 1rem">
+          <summary>Por automação<span class="chev">{{ ui.icon("chevron-right") }}</span></summary>
+          {% if snapshot.automation_ledger_totals %}
+          <div class="table-wrap">
+            <table class="table">
+              <caption class="sr-only">Ledger por automação</caption>
+              <thead><tr><th scope="col">Automação</th><th scope="col">Moeda</th><th scope="col" class="num">Custo</th><th scope="col" class="num">Receita</th><th scope="col" class="num">Receita líquida observada</th><th scope="col" class="num">Valor atribuído</th></tr></thead>
+              <tbody>
+                {% for total in snapshot.automation_ledger_totals %}
+                <tr><td><code>{{ total.automation_slug }}</code></td><td><code>{{ total.currency }}</code></td><td class="num">{{ total.cost|exact_decimal }}</td><td class="num">{{ total.revenue|exact_decimal }}</td><td class="num">{{ total.net_revenue|exact_decimal }}</td><td class="num">{{ total.attributed_value|exact_decimal }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <p class="muted text-sm" style="padding:.75rem">Nenhuma observação financeira atribuída a uma automação.</p>
+          {% endif %}
+        </details>
+      </div>
+    </section>
+
+    {# ============ DESEMPENHO POR AUTOMAÇÃO ============ #}
+    <section class="card" aria-labelledby="h-desempenho">
+      <div class="card-header"><h2 class="card-title" id="h-desempenho" style="font-size:1rem">Desempenho</h2><p class="card-description">Taxa de sucesso e duração média na janela recente de cada automação.</p></div>
+      <div class="card-content{{ ' flush' if snapshot.execution_summaries }}"{% if snapshot.execution_summaries %} style="padding-top:.75rem"{% endif %}>
+        {% if snapshot.execution_summaries %}
+        <div class="table-wrap">
+          <table class="table">
+            <caption class="sr-only">Desempenho por automação</caption>
+            <thead><tr><th scope="col">Automação</th><th scope="col" class="num">Sucesso</th><th scope="col" class="num">Amostra</th><th scope="col" class="num">Duração média</th></tr></thead>
+            <tbody>
+              {% for summary in snapshot.execution_summaries %}
+              <tr>
+                <td><code>{{ summary.automation_slug }}</code></td>
+                <td class="num">{% if summary.success_rate_percent is not none %}{{ summary.success_rate_percent }}%{% else %}—{% endif %}</td>
+                <td class="num">{{ summary.succeeded_count }} de {{ summary.sample_size }}<small>máx. {{ summary.sample_limit }}</small></td>
+                <td class="num">{% if summary.average_duration_seconds is not none %}{{ summary.average_duration_seconds|duration_label }}{% else %}—{% endif %}<small>{{ summary.duration_sample_size }} válidas</small></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        {{ ui.empty("trending-up", "Sem amostra de execução", "A janela considera apenas runs concluídas ou com falha.") }}
+        {% endif %}
+      </div>
+    </section>
+  </div>
+
+  {# ============ EXPERIMENTOS ============ #}
+  <section class="card" aria-labelledby="h-exp">
+    <div class="card-header"><h2 class="card-title" id="h-exp" style="font-size:1rem">Experimentos</h2><p class="card-description">Comparações entre variantes de uma automação.</p></div>
+    <div class="card-content{{ ' flush' if snapshot.experiments }}"{% if snapshot.experiments %} style="padding-top:.75rem"{% endif %}>
+      {% if snapshot.experiments %}
+      <div class="table-wrap">
+        <table class="table">
+          <caption class="sr-only">Experimentos</caption>
+          <thead><tr><th scope="col">ID</th><th scope="col">Automação</th><th scope="col">Experimento</th><th scope="col">Status</th><th scope="col">Variantes</th><th scope="col">Métrica primária</th></tr></thead>
+          <tbody>
+            {% for experiment in snapshot.experiments %}
+            <tr><td>#{{ experiment.id }}</td><td><code>{{ experiment.automation_slug }}</code></td><td>{{ experiment.name }}<small><code>{{ experiment.key }}</code></small></td><td>{{ ui.badge("running" if experiment.status == "running" else "neutral", "flask", experiment.status) }}</td><td class="nowrap">{{ experiment.control_variant }} → {{ experiment.candidate_variant }}</td><td>{{ experiment.primary_metric }} ({{ experiment.primary_metric_unit }})</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      {{ ui.empty("flask", "Nenhum experimento registrado", "Quando houver um experimento em andamento, ele aparece aqui e como opção ao executar um módulo.") }}
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

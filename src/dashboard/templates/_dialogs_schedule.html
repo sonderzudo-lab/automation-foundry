@@ -1,0 +1,31 @@
+{% import "_macros.html" as ui %}
+{# Requer: snapshot.schedules, csrf_token. #}
+{# ===== Gerenciar schedule: habilitar ou desabilitar futuros disparos locais ===== #}
+{% for schedule in snapshot.schedules %}
+<div class="dialog-backdrop" id="agendamento-{{ schedule.id }}">
+  <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+  <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="agendamento-{{ schedule.id }}-title" tabindex="-1">
+    <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar">{{ ui.icon("x") }}</a>
+    <header class="dialog-header"><h2 id="agendamento-{{ schedule.id }}-title">Schedule · {{ schedule.name }}</h2><p><code>{{ schedule.cron_expression }}</code> · {{ schedule.timezone }}</p></header>
+    {% if schedule.status != "enabled" and schedule.enable_block_reason %}
+    <div class="alert alert-warning">
+      <span class="alert-icon">{{ ui.icon("triangle-alert") }}</span>
+      <div class="alert-body"><p class="alert-title">Habilitação indisponível</p><p class="alert-description">{{ schedule.enable_block_reason }}.</p></div>
+    </div>
+    {% else %}
+    <form class="form-stack" method="post" action="/schedules/{{ schedule.id }}/enabled">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="target" value="{{ 'disable' if schedule.status == 'enabled' else 'enable' }}">
+      <p class="muted text-sm">Controla apenas futuros disparos locais. Habilitar exige que o módulo esteja ativo e sem kill switch.</p>
+      <div class="field"><label for="schedule-actor-{{ schedule.id }}">Actor local</label><input class="input" id="schedule-actor-{{ schedule.id }}" type="text" name="actor" maxlength="200" required></div>
+      <div class="field"><label for="schedule-reason-{{ schedule.id }}">Motivo operacional</label><textarea class="textarea" id="schedule-reason-{{ schedule.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
+      <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="schedule-{{ 'disable' if schedule.status == 'enabled' else 'enable' }}" required> Confirmo {{ 'a suspensão dos próximos disparos' if schedule.status == 'enabled' else 'a habilitação dos próximos disparos locais' }}.</label>
+      <div class="dialog-footer">
+        <a class="btn btn-outline" href="#">Cancelar</a>
+        <button class="btn {{ 'btn-destructive' if schedule.status == 'enabled' }}" type="submit">{{ "Desabilitar" if schedule.status == "enabled" else "Habilitar" }} schedule</button>
+      </div>
+    </form>
+    {% endif %}
+  </section>
+</div>
+{% endfor %}

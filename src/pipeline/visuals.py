@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import time
@@ -56,6 +57,14 @@ _SOURCE = "content-engine:a3"
 _MANIFEST_RETENTION_DAYS = resolve_retention_days("visual_manifest")
 _IMAGE_RETENTION_DAYS = resolve_retention_days("visual_image")
 _SECONDS_PER_VISUAL = Decimal("6")
+_MIN_SECONDS_PER_VISUAL = Decimal("4")
+_MAX_SECONDS_PER_VISUAL = Decimal("10")
+_SENTENCE_END = re.compile(r"[.!?…][’”\"')\]]*$")
+LOCAL_ASSETS_QUALITY_TEST_BACKEND = "local_assets_quality_test"
+# Recorded on a bundle whose assets carry no commercial-use claim. Such a bundle
+# is accepted only when the caller asked for it, and every later stage must keep
+# the scope visible instead of treating the video as monetizable.
+QUALITY_TEST_USAGE_SCOPE = "quality-test-only"
 _MAX_VISUALS = 60
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
 _MAX_IMAGE_PIXELS = 4096 * 4096
@@ -91,6 +100,8 @@ class VisualRequest:
     prompt: str
     width: int
     height: int
+    # Stretch of approved narration this visual is expected to cover.
+    narration_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +117,9 @@ class VisualAssetResult:
     license_id: str
     commercial_use: bool
     attribution: str
+    # Filled by a generating backend: the exact prompt and seed behind the file.
+    generation_prompt: str = ""
+    seed: int | None = None
 
 
 VisualAdapter = Callable[
@@ -156,7 +170,7 @@ def get_configured_visual_adapter(
 ) -> VisualAdapter:
     """Return the explicitly configured visual adapter or fail closed."""
     normalized = backend.strip().casefold()
-    if normalized == "local_assets_quality_test":
+    if normalized == LOCAL_ASSETS_QUALITY_TEST_BACKEND:
         if import_root is None or manifest_path is None:
             raise VisualPermanentAdapterError("CONTENT_VISUALS_IMPORT_CONFIG_REQUIRED")
         return build_local_asset_adapter(
@@ -184,15 +198,7 @@ def build_local_asset_adapter(
     manifest_path: Path,
 ) -> VisualAdapter:
     """Import operator-selected PNGs from a contained, hash-pinned manifest."""
-    root = import_root.resolve()
-    if root == Path(root.anchor):
-        raise VisualPermanentAdapterError("CONTENT_VISUALS_IMPORT_ROOT_UNSAFE")
-    manifest = manifest_path if manifest_path.is_absolute() else root / manifest_path
-    manifest = manifest.resolve()
-    try:
-        manifest.relative_to(root)
-    except ValueError as exc:
-        raise VisualPermanentAdapterError("CONTENT_VISUALS_MANIFEST_OUTSIDE_IMPORT_ROOT") from exc
+    root, manifest = _resolve_local_asset_manifest(import_root, manifest_path)
 
     def import_assets(
         requests: tuple[VisualRequest, ...],
@@ -226,12 +232,203 @@ def build_local_asset_adapter(
     return import_assets
 
 
-def _load_local_asset_manifest(
-    manifest_path: Path,
+@dataclass(frozen=True, slots=True)
+class VisualCountBounds:
+    """How many visuals one narration accepts.
+
+    ``default`` is one visual per six seconds. A backend that brings its own
+    assets may use any count that keeps each visual on screen for four to ten
+    seconds.
+    """
+
+    minimum: int
+    default: int
+    maximum: int
+
+    def accepts(self, count: int) -> bool:
+        return self.minimum <= count <= self.maximum
+
+
+VisualCountResolver = Callable[[VisualCountBounds], int]
+
+
+def visual_count_bounds(duration_seconds: Decimal, *, word_count: int) -> VisualCountBounds:
+    """Derive the accepted visual counts from the verified narration length."""
+    cap = max(1, min(_MAX_VISUALS, word_count))
+    default = min(cap, max(1, math.ceil(duration_seconds / _SECONDS_PER_VISUAL)))
+    minimum = min(
+        default,
+        max(1, math.ceil(duration_seconds / _MAX_SECONDS_PER_VISUAL)),
+    )
+    maximum = min(
+        cap,
+        max(default, math.floor(duration_seconds / _MIN_SECONDS_PER_VISUAL)),
+    )
+    return VisualCountBounds(minimum=minimum, default=default, maximum=maximum)
+
+
+@dataclass(frozen=True, slots=True)
+class VisualPlanSlot:
+    """The stretch of narration one visual is expected to cover."""
+
+    index: int
+    start_seconds: Decimal
+    end_seconds: Decimal
+    text: str
+    file_name: str | None = None
+
+
+def plan_visual_slots(
+    narration: str,
     *,
-    root: Path,
-    expected_count: int,
-) -> tuple[dict[str, object], ...]:
+    duration_seconds: Decimal,
+    count: int,
+) -> tuple[VisualPlanSlot, ...]:
+    """Estimate which stretch of the narration each visual will cover.
+
+    It mirrors the motion edit: even shares, with each cut moved to a sentence
+    start when one lies within half a share. The speech rate is assumed
+    constant, so the times are a guide for choosing images, not the final cuts.
+    """
+    words = narration.split()
+    if not words or count < 1 or duration_seconds <= 0:
+        return ()
+    count = min(count, len(words))
+    share = Decimal(len(words)) / Decimal(count)
+    sentence_starts = [
+        index + 1
+        for index, word in enumerate(words[:-1])
+        if _SENTENCE_END.search(word)
+    ]
+    cuts: list[int] = []
+    previous = 0
+    for position in range(1, count):
+        ideal = share * position
+        latest = len(words) - (count - position)
+        nearby = [
+            start
+            for start in sentence_starts
+            if previous < start <= latest and abs(Decimal(start) - ideal) <= share / 2
+        ]
+        cut = (
+            min(nearby, key=lambda start: abs(Decimal(start) - ideal))
+            if nearby
+            else int(ideal.to_integral_value())
+        )
+        cut = min(max(cut, previous + 1), latest)
+        cuts.append(cut)
+        previous = cut
+    edges = [0, *cuts, len(words)]
+    per_word = duration_seconds / Decimal(len(words))
+    return tuple(
+        VisualPlanSlot(
+            index=index + 1,
+            start_seconds=(per_word * edges[index]).quantize(Decimal("0.1")),
+            end_seconds=(per_word * edges[index + 1]).quantize(Decimal("0.1")),
+            text=" ".join(words[edges[index] : edges[index + 1]]),
+        )
+        for index in range(count)
+    )
+
+
+def build_local_asset_count_resolver(
+    *,
+    import_root: Path,
+    manifest_path: Path,
+) -> VisualCountResolver:
+    """Let the operator manifest choose the visual count inside the accepted range.
+
+    Any other situation keeps the default count, so the import itself reports
+    the precise manifest error.
+    """
+
+    def resolve(bounds: VisualCountBounds) -> int:
+        try:
+            _, manifest = _resolve_local_asset_manifest(import_root, manifest_path)
+            declared = len(_read_local_asset_manifest(manifest))
+        except VisualPermanentAdapterError:
+            return bounds.default
+        return declared if bounds.accepts(declared) else bounds.default
+
+    return resolve
+
+
+@dataclass(frozen=True, slots=True)
+class LocalAssetManifestStatus:
+    """Whether the operator manifest can satisfy one A3 import right now."""
+
+    bounds: VisualCountBounds
+    declared_count: int | None
+    problem_code: str | None
+    # Declared image paths in manifest order; filled only when the manifest is ready.
+    relative_paths: tuple[str, ...] = ()
+
+    @property
+    def ready(self) -> bool:
+        return self.problem_code is None
+
+
+def inspect_local_asset_manifest(
+    *,
+    import_root: Path,
+    manifest_path: Path,
+    bounds: VisualCountBounds,
+) -> LocalAssetManifestStatus:
+    """Run the A3 import checks against the manifest without copying anything.
+
+    The result carries the same error code the import would raise, so a gate
+    can refuse to continue before the run reaches a permanent A3 failure.
+    Image dimensions are still validated only by the A3 step itself.
+    """
+    declared_count: int | None = None
+    try:
+        root, manifest = _resolve_local_asset_manifest(import_root, manifest_path)
+        declared_count = len(_read_local_asset_manifest(manifest))
+        if not bounds.accepts(declared_count):
+            raise VisualPermanentAdapterError("CONTENT_VISUALS_COUNT_MISMATCH")
+        entries = _load_local_asset_manifest(
+            manifest,
+            root=root,
+            expected_count=declared_count,
+        )
+        for entry in entries:
+            _verify_pinned_local_asset(
+                _local_asset_source_path(root, entry),
+                expected_sha256=_manifest_sha256(entry),
+            )
+    except VisualPermanentAdapterError as exc:
+        return LocalAssetManifestStatus(
+            bounds=bounds,
+            declared_count=declared_count,
+            problem_code=str(exc),
+        )
+    return LocalAssetManifestStatus(
+        bounds=bounds,
+        declared_count=declared_count,
+        problem_code=None,
+        relative_paths=tuple(
+            _manifest_text(entry, "relative_path", max_length=500) for entry in entries
+        ),
+    )
+
+
+def _resolve_local_asset_manifest(
+    import_root: Path,
+    manifest_path: Path,
+) -> tuple[Path, Path]:
+    root = import_root.resolve()
+    if root == Path(root.anchor):
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_IMPORT_ROOT_UNSAFE")
+    manifest = manifest_path if manifest_path.is_absolute() else root / manifest_path
+    manifest = manifest.resolve()
+    try:
+        manifest.relative_to(root)
+    except ValueError as exc:
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_MANIFEST_OUTSIDE_IMPORT_ROOT") from exc
+    return root, manifest
+
+
+def _read_local_asset_manifest(manifest_path: Path) -> list[object]:
     try:
         if (
             not manifest_path.is_file()
@@ -248,6 +445,16 @@ def _load_local_asset_manifest(
     assets = payload.get("assets")
     if payload.get("schema_version") != 1 or not isinstance(assets, list):
         raise VisualPermanentAdapterError("CONTENT_VISUALS_MANIFEST_INVALID")
+    return assets
+
+
+def _load_local_asset_manifest(
+    manifest_path: Path,
+    *,
+    root: Path,
+    expected_count: int,
+) -> tuple[dict[str, object], ...]:
+    assets = _read_local_asset_manifest(manifest_path)
     if len(assets) != expected_count:
         raise VisualPermanentAdapterError("CONTENT_VISUALS_COUNT_MISMATCH")
     entries: list[dict[str, object]] = []
@@ -324,6 +531,22 @@ def _manifest_source_type(
     return value
 
 
+def _verify_pinned_local_asset(source: Path, *, expected_sha256: str) -> None:
+    digest = hashlib.sha256()
+    size_bytes = 0
+    try:
+        with source.open("rb") as source_handle:
+            while chunk := source_handle.read(1024 * 1024):
+                size_bytes += len(chunk)
+                if size_bytes > _MAX_IMAGE_BYTES:
+                    raise VisualPermanentAdapterError("CONTENT_VISUALS_INVALID_IMAGE_SIZE")
+                digest.update(chunk)
+    except OSError as exc:
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_IMAGE_UNAVAILABLE") from exc
+    if size_bytes < 1 or digest.hexdigest() != expected_sha256:
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_LOCAL_ASSET_HASH_MISMATCH")
+
+
 def _copy_pinned_local_asset(
     source: Path,
     destination: Path,
@@ -366,8 +589,15 @@ async def execute_approved_visual_step(
     timeout_seconds: float,
     finalize_run: bool = True,
     sleep: Sleeper = asyncio.sleep,
+    count_resolver: VisualCountResolver | None = None,
+    allow_quality_test_assets: bool = False,
 ) -> VisualExecutionResult:
-    """Create licensed visual assets from the exact approved script and A2 WAV."""
+    """Create licensed visual assets from the exact approved script and A2 WAV.
+
+    Assets without a commercial-use claim are refused unless
+    ``allow_quality_test_assets`` is set; the bundle is then labelled
+    ``quality-test-only`` and the label travels with the step output.
+    """
     if queue not in {QueueClass.GPU, QueueClass.IO}:
         raise ValueError("visual queue must be gpu or io")
     if gpu_power_watts < 1:
@@ -380,10 +610,13 @@ async def execute_approved_visual_step(
         audio_artifact=audio_artifact,
         storage_root=storage_root,
     )
-    requests = _build_visual_requests(context)
     visual_directory = _visual_directory(
         storage_root,
         run_id=_persisted_id(run.id, "run"),
+    )
+    requests = _build_visual_requests(
+        context,
+        count=_resolve_visual_count(context, visual_directory, count_resolver),
     )
     step_key = f"{idempotency_key}:{VISUAL_STEP_NAME}"
 
@@ -397,6 +630,7 @@ async def execute_approved_visual_step(
                 visual_directory,
                 context,
                 storage_root,
+                allow_quality_test_assets,
             )
         except VisualRetryableAdapterError as exc:
             raise RetryableTaskError("CONTENT_VISUALS_BACKEND_UNAVAILABLE") from exc
@@ -422,6 +656,12 @@ async def execute_approved_visual_step(
                 "visual_count": len(requests),
                 "width": requests[0].width,
                 "height": requests[0].height,
+                # Absent for commercial bundles, so earlier runs keep their step input.
+                **(
+                    {"usage_scope": QUALITY_TEST_USAGE_SCOPE}
+                    if allow_quality_test_assets
+                    else {}
+                ),
             },
         ),
         policy=RetryPolicy(max_attempts=2, timeout_seconds=timeout_seconds),
@@ -616,6 +856,76 @@ async def execute_approved_visual_step(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class VisualRequestPlan:
+    """The verified sources and the exact requests A3 would build for a run."""
+
+    script_artifact_id: int
+    script_artifact_sha256: str
+    audio_artifact_id: int
+    audio_artifact_sha256: str
+    duration_seconds: Decimal
+    format: Literal["short", "long"]
+    narration: str
+    requests: tuple[VisualRequest, ...]
+
+
+def plan_visual_requests(
+    *,
+    run: Run,
+    approval: Approval,
+    approval_input_payload: dict[str, object],
+    script_artifact: Artifact,
+    audio_artifact: Artifact,
+    storage_root: Path,
+) -> VisualRequestPlan:
+    """Verify the approved script and WAV and return the requests A3 will use.
+
+    Generated drafts are built from the same requests, so the bundle A3 later
+    imports from an approved draft has exactly the count and prompts A3 expects.
+    """
+    context = _load_visual_context(
+        run=run,
+        approval=approval,
+        approval_input_payload=approval_input_payload,
+        script_artifact=script_artifact,
+        audio_artifact=audio_artifact,
+        storage_root=storage_root,
+    )
+    directory = _visual_directory(storage_root, run_id=_persisted_id(run.id, "run"))
+    requests = _build_visual_requests(
+        context, count=_resolve_visual_count(context, directory, None)
+    )
+    return VisualRequestPlan(
+        script_artifact_id=context.script_artifact_id,
+        script_artifact_sha256=context.script_artifact_sha256,
+        audio_artifact_id=context.audio_artifact_id,
+        audio_artifact_sha256=context.audio_artifact_sha256,
+        duration_seconds=context.duration_seconds,
+        format=context.format,
+        narration=context.narration,
+        requests=requests,
+    )
+
+
+def validate_generated_visuals(
+    results: tuple[VisualAssetResult, ...],
+    requests: tuple[VisualRequest, ...],
+    directory: Path,
+) -> list[dict[str, object]]:
+    """Validate generated files with the A3 rules, accepting the quality-test scope."""
+    return _validate_visual_results(
+        results, requests, directory, allow_quality_test_assets=True
+    )
+
+
+def visual_draft_directory(storage_root: Path, *, run_id: int, round_number: int) -> Path:
+    """Where one round of generated drafts is published, next to the A3 bundle."""
+    return _visual_directory(storage_root, run_id=run_id).parent / "visual-drafts" / (
+        f"r{round_number}"
+    )
+
+
 def _load_visual_context(
     *,
     run: Run,
@@ -683,22 +993,53 @@ def _load_visual_context(
     )
 
 
-def _build_visual_requests(context: _VisualContext) -> tuple[VisualRequest, ...]:
-    desired = max(
-        1,
-        min(
-            _MAX_VISUALS,
-            math.ceil(context.duration_seconds / _SECONDS_PER_VISUAL),
-        ),
+def _resolve_visual_count(
+    context: _VisualContext,
+    visual_directory: Path,
+    count_resolver: VisualCountResolver | None,
+) -> int:
+    bounds = visual_count_bounds(
+        context.duration_seconds,
+        word_count=len(context.full_script.split()),
     )
-    segments = _split_editorial_text(context.full_script, desired)
+    # A published bundle keeps its own count: the operator manifest may change
+    # after A3 and every replay must rebuild the same requests.
+    count = _existing_bundle_visual_count(visual_directory)
+    if count is None and count_resolver is not None:
+        count = count_resolver(bounds)
+    return count if count is not None and bounds.accepts(count) else bounds.default
+
+
+def _existing_bundle_visual_count(visual_directory: Path) -> int | None:
+    try:
+        payload = json.loads(
+            (visual_directory / "manifest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    count = payload.get("visual_count") if isinstance(payload, dict) else None
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+
+def _build_visual_requests(
+    context: _VisualContext,
+    *,
+    count: int,
+) -> tuple[VisualRequest, ...]:
+    segments = _split_editorial_text(context.full_script, count)
     width, height = (1080, 1920) if context.format == "short" else (1920, 1080)
+    slots = plan_visual_slots(
+        context.narration,
+        duration_seconds=context.duration_seconds,
+        count=len(segments),
+    )
     return tuple(
         VisualRequest(
             index=index,
             prompt=f"Editorial documentary image, no text or logos: {segment}",
             width=width,
             height=height,
+            narration_text=slots[index - 1].text if index <= len(slots) else "",
         )
         for index, segment in enumerate(segments, start=1)
     )
@@ -724,15 +1065,27 @@ def _prepare_visual_bundle(
     destination: Path,
     context: _VisualContext,
     storage_root: Path,
+    allow_quality_test_assets: bool = False,
 ) -> dict[str, object]:
     if destination.exists():
-        return _load_existing_bundle(destination, requests, context, storage_root)
+        return _load_existing_bundle(
+            destination,
+            requests,
+            context,
+            storage_root,
+            allow_quality_test_assets,
+        )
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
     temporary.mkdir()
     try:
         results = adapter(requests, temporary)
-        assets = _validate_visual_results(results, requests, temporary)
+        assets = _validate_visual_results(
+            results,
+            requests,
+            temporary,
+            allow_quality_test_assets=allow_quality_test_assets,
+        )
         manifest_payload = _manifest_payload(context, requests, assets)
         manifest_path = temporary / "manifest.json"
         _write_json_file(manifest_path, manifest_payload)
@@ -751,6 +1104,8 @@ def _validate_visual_results(
     results: tuple[VisualAssetResult, ...],
     requests: tuple[VisualRequest, ...],
     directory: Path,
+    *,
+    allow_quality_test_assets: bool = False,
 ) -> list[dict[str, object]]:
     if not isinstance(results, tuple) or len(results) != len(requests):
         raise VisualPermanentAdapterError("CONTENT_VISUALS_COUNT_MISMATCH")
@@ -780,8 +1135,15 @@ def _validate_visual_results(
             raise VisualPermanentAdapterError("CONTENT_VISUALS_INVALID_METADATA")
         if result.source_type not in {"generated", "stock", "owned"}:
             raise VisualPermanentAdapterError("CONTENT_VISUALS_INVALID_SOURCE_TYPE")
-        if result.commercial_use is not True:
+        if result.commercial_use is not True and not (
+            allow_quality_test_assets and result.commercial_use is False
+        ):
             raise VisualPermanentAdapterError("CONTENT_VISUALS_COMMERCIAL_USE_BLOCKED")
+        if len(result.generation_prompt) > 2000 or (
+            result.seed is not None
+            and (isinstance(result.seed, bool) or not 0 <= result.seed < 2**32)
+        ):
+            raise VisualPermanentAdapterError("CONTENT_VISUALS_INVALID_METADATA")
         if urlparse(result.source_uri).scheme not in {
             "https",
             "local-asset",
@@ -807,12 +1169,25 @@ def _validate_visual_results(
                 "source_id": result.source_id.strip(),
                 "source_uri": result.source_uri.strip(),
                 "license_id": result.license_id.strip(),
-                "commercial_use": True,
+                "commercial_use": result.commercial_use,
                 "attribution": result.attribution.strip(),
                 "width": inspection.width,
                 "height": inspection.height,
                 "sha256": inspection.sha256,
                 "size_bytes": inspection.size_bytes,
+                # The stretch of narration this image covers, shown at the A3 review.
+                **(
+                    {"narration_text": request.narration_text}
+                    if request.narration_text
+                    else {}
+                ),
+                # Only generating backends add these; other manifests keep their shape.
+                **(
+                    {"generation_prompt": result.generation_prompt.strip()}
+                    if result.generation_prompt.strip()
+                    else {}
+                ),
+                **({"seed": result.seed} if result.seed is not None else {}),
             }
         )
     return assets
@@ -916,6 +1291,11 @@ def _manifest_payload(
         "format": context.format,
         "visual_count": len(requests),
         "assets": assets,
+        **(
+            {"usage_scope": QUALITY_TEST_USAGE_SCOPE}
+            if any(asset.get("commercial_use") is not True for asset in assets)
+            else {}
+        ),
     }
 
 
@@ -932,6 +1312,7 @@ def _load_existing_bundle(
     requests: tuple[VisualRequest, ...],
     context: _VisualContext,
     storage_root: Path,
+    allow_quality_test_assets: bool = False,
 ) -> dict[str, object]:
     manifest_path = destination / "manifest.json"
     try:
@@ -958,6 +1339,15 @@ def _load_existing_bundle(
     assets = payload.get("assets")
     if not isinstance(assets, list) or len(assets) != len(requests):
         raise VisualPermanentAdapterError("CONTENT_VISUALS_EXISTING_BUNDLE_INVALID")
+    non_commercial = any(
+        not isinstance(asset, dict) or asset.get("commercial_use") is not True
+        for asset in assets
+    )
+    labelled = payload.get("usage_scope") == QUALITY_TEST_USAGE_SCOPE
+    if non_commercial != labelled or ("usage_scope" in payload and not labelled):
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_EXISTING_BUNDLE_INVALID")
+    if non_commercial and not allow_quality_test_assets:
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_COMMERCIAL_USE_BLOCKED")
     for request, asset in zip(requests, assets, strict=True):
         if not isinstance(asset, dict) or asset.get("prompt") != request.prompt:
             raise VisualPermanentAdapterError("CONTENT_VISUALS_EXISTING_BUNDLE_CONFLICT")
@@ -986,6 +1376,11 @@ def _bundle_output(
     relative_directory = directory.relative_to(storage_root.resolve())
     return {
         "manifest_relative_path": (relative_directory / "manifest.json").as_posix(),
+        **(
+            {"usage_scope": QUALITY_TEST_USAGE_SCOPE}
+            if payload.get("usage_scope") == QUALITY_TEST_USAGE_SCOPE
+            else {}
+        ),
         "assets": [
             {
                 **asset,

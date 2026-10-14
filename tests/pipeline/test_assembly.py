@@ -287,6 +287,110 @@ def test_ffmpeg_quality_test_requires_configuration_and_exact_hash(
         )(request, tmp_path / "video.mp4")
 
 
+_KARAOKE_CAPTIONS = """[Script Info]
+ScriptType: v4.00+
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\kf50}Você {\\kf50}já {\\kf60}reparou? {\\kf40}É
+Dialogue: 0,0:00:02.00,0:00:05.00,Default,,0,0,0,,{\\kf100}a {\\kf100}dívida {\\kf100}cresce.
+Dialogue: 0,0:00:05.20,0:00:08.00,Default,,0,0,0,,{\\kf140}‘Cada {\\kf140}troca’
+Dialogue: 0,0:00:08.00,0:00:12.00,Default,,0,0,0,,Sem marcação por palavra.
+Dialogue: 0,0:00:12.00,0:00:18.00,Default,,0,0,0,,{\\kf300}Fecho {\\kf300}final.
+"""
+
+
+def test_sentence_starts_come_from_word_timings_and_tolerate_untimed_events() -> None:
+    starts = assembly._caption_sentence_starts(_KARAOKE_CAPTIONS)
+
+    # "reparou?" ends at 1.60 s, "cresce." at 5.00 s (next word starts at 5.20 s) and
+    # the event without karaoke tags counts as one unit ending at its successor.
+    assert starts == (Decimal("1.6"), Decimal("5.2"), Decimal("12"))
+    assert assembly._caption_sentence_starts("not an ASS file") == ()
+
+
+def test_motion_cuts_move_to_a_close_sentence_start_and_keep_images_on_screen() -> None:
+    duration = Decimal("36")
+    sentence_starts = (
+        Decimal("1"),      # too early: the first image would last under 2.5 s
+        Decimal("6.9"),    # close to the equal cut at 6 s
+        Decimal("17.5"),   # close to the equal cut at 18 s
+        Decimal("35.5"),   # too late: the last image would last under 2.5 s
+    )
+
+    cuts = assembly._motion_cuts(duration, 6, sentence_starts)
+
+    assert cuts == (
+        Decimal("6.9"),
+        Decimal("12"),     # no sentence start within half a share: equal cut kept
+        Decimal("17.5"),
+        Decimal("24"),
+        Decimal("30"),
+    )
+    assert assembly._motion_cuts(duration, 6, ()) == tuple(
+        Decimal(6 * index) for index in range(1, 6)
+    )
+    assert assembly._motion_cuts(Decimal("5"), 1, sentence_starts) == ()
+
+
+def test_motion_inputs_overlap_by_half_a_fade_around_each_cut() -> None:
+    cuts = (Decimal("6.9"), Decimal("12"))
+    fade = assembly._motion_fade(Decimal("18"), cuts)
+
+    assert fade == Decimal("0.4")
+    assert assembly._motion_segment_durations(Decimal("18"), cuts, fade) == (
+        Decimal("7.1"),
+        Decimal("5.5"),
+        Decimal("6.2"),
+    )
+    # An image that stays on screen briefly shortens the fade instead of breaking it.
+    assert assembly._motion_fade(Decimal("1.2"), (Decimal("0.6"),)) == Decimal("0.3")
+    assert assembly._motion_fade(Decimal("5"), ()) == Decimal("0.4")
+
+
+def test_motion_filter_graph_uses_subpixel_motion_and_centred_crossfades() -> None:
+    cuts = (Decimal("6.9"), Decimal("12"))
+    graph = assembly._ffmpeg_motion_filter_graph(
+        segment_durations=(Decimal("7.1"), Decimal("5.5"), Decimal("6.2")),
+        cuts=cuts,
+        fade=Decimal("0.4"),
+        width=1080,
+        height=1920,
+        caption_name="captions.ass",
+    )
+
+    assert graph.count("perspective=") == 3
+    assert "zoompan" not in graph
+    assert "interpolation=cubic:eval=frame" in graph
+    # 7.1 s at 30 fps; the first image zooms in and the second zooms out.
+    assert "(1+0.08*on/213)" in graph
+    assert "(1+0.08-0.08*on/165)" in graph
+    assert "xfade=transition=fade:duration=0.400000:offset=6.700000[mixed_1]" in graph
+    assert "xfade=transition=fade:duration=0.400000:offset=11.800000[mixed_2]" in graph
+    assert graph.endswith("[mixed_2]ass=filename=captions.ass[video_out]")
+
+    single = assembly._ffmpeg_motion_filter_graph(
+        segment_durations=(Decimal("5"),),
+        cuts=(),
+        fade=Decimal("0.4"),
+        width=1080,
+        height=1920,
+        caption_name="captions.ass",
+    )
+    assert "xfade" not in single
+    assert single.endswith("[visual_0]ass=filename=captions.ass[video_out]")
+
+    with pytest.raises(AssemblyPermanentAdapterError, match="FILTER_INVALID"):
+        assembly._ffmpeg_motion_filter_graph(
+            segment_durations=(Decimal("5"), Decimal("5")),
+            cuts=(),
+            fade=Decimal("0.4"),
+            width=1080,
+            height=1920,
+            caption_name="captions.ass",
+        )
+
+
 async def test_a1_continuation_runs_through_a5_local_export(
     session: AsyncSession,
     tmp_path: Path,
@@ -564,6 +668,7 @@ async def test_a5_rejects_duration_mismatch(
         ),
         ("subtitles_burned", False, "CONTENT_ASSEMBLY_SUBTITLES_REQUIRED"),
         ("video_codec", "hevc", "CONTENT_ASSEMBLY_H264_REQUIRED"),
+        ("edit", "unreviewed", "CONTENT_ASSEMBLY_INVALID_PROVENANCE"),
     ],
 )
 async def test_a5_rejects_unsafe_adapter_contract(
@@ -590,6 +695,8 @@ async def test_a5_rejects_unsafe_adapter_contract(
             return replace(result, subtitles_burned=bool(value))
         if field == "video_codec":
             return replace(result, video_codec=str(value))
+        if field == "edit":
+            return replace(result, edit=str(value))
         raise AssertionError("unsupported test field")
 
     result = await execute_approved_assembly_step(

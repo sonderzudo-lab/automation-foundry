@@ -6,11 +6,11 @@ import asyncio
 import hashlib
 import json
 import os
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from openai import APIConnectionError, APITimeoutError
@@ -47,11 +47,24 @@ from src.pipeline.local_export import LocalExportPackage, load_local_export_pack
 from src.pipeline.narration_review import (
     NARRATION_REVIEW_APPROVAL_ACTION,
     NarrationReview,
+    NarrationVisualsNotReadyError,
+    describe_visual_plan_problem,
     finalize_narration_approval,
     load_narration_review,
     request_narration_approval,
 )
-from src.pipeline.script_gen import EmptyResponseError, ScriptResult, generate_script
+from src.pipeline.script_gen import (
+    OPENING_STYLE_LABELS,
+    OPENING_STYLES,
+    STRUCTURE_LABELS,
+    EmptyResponseError,
+    OpeningStyle,
+    ScriptLengthError,
+    ScriptResult,
+    SourcedFact,
+    Structure,
+    generate_script,
+)
 from src.pipeline.thumbnail_review import (
     THUMBNAIL_REVIEW_APPROVAL_ACTION,
     ThumbnailReview,
@@ -60,14 +73,45 @@ from src.pipeline.thumbnail_review import (
     request_thumbnail_approval,
 )
 from src.pipeline.tts import (
+    QWEN3_CLONE_QUALITY_TEST_BACKEND,
+    Qwen3CloneQualityTestConfig,
     TTSSynthesizer,
     execute_approved_tts_step,
     get_configured_tts_synthesizer,
 )
+from src.pipeline.visual_drafts import (
+    PreviousRound,
+    build_approved_draft_adapter,
+    execute_visual_draft_round,
+)
+from src.pipeline.visual_generation import (
+    FLUX2_KLEIN_QUALITY_TEST_BACKEND,
+    Flux2KleinQualityTestConfig,
+    build_flux2_klein_quality_test_adapter,
+    ollama_scene_model,
+    release_ollama_scene_model,
+)
+from src.pipeline.visual_prompts import DEFAULT_VISUAL_STYLE, VISUAL_STYLES, VisualStyle
+from src.pipeline.visual_review import (
+    VISUAL_REVIEW_APPROVAL_ACTION,
+    VisualReview,
+    VisualReviewImage,
+    finalize_visual_approval,
+    load_reviewed_assets,
+    load_visual_review,
+    request_visual_approval,
+    requested_redo,
+)
 from src.pipeline.visuals import (
+    LOCAL_ASSETS_QUALITY_TEST_BACKEND,
     VisualAdapter,
+    VisualCountBounds,
+    build_local_asset_count_resolver,
     execute_approved_visual_step,
     get_configured_visual_adapter,
+    inspect_local_asset_manifest,
+    plan_visual_requests,
+    plan_visual_slots,
 )
 from src.platform.approval_service import approval_payload_digest, request_approval
 from src.platform.artifact_service import ArtifactStorageError, register_local_artifact
@@ -111,7 +155,9 @@ _SOURCE = "content-engine:a1"
 CONTENT_SCRIPT_APPROVAL_ACTION = "review_content_script_a1"
 _MAX_BUNDLE_BYTES = 5 * 1024 * 1024
 
-ScriptGenerator = Callable[[str, str, Literal["short", "long"], list[str] | None], ScriptResult]
+# Chamado como (topic, persona, format, recent_openings) e, quando a pauta traz
+# fatos, também com o argumento nomeado `facts`.
+ScriptGenerator = Callable[..., ScriptResult]
 
 
 class ContentScriptInput(BaseModel):
@@ -121,6 +167,27 @@ class ContentScriptInput(BaseModel):
     persona: str = Field(min_length=3, max_length=1_000)
     format: Literal["short", "long"]
     recent_openings: list[str] = Field(default_factory=list, max_length=10)
+    facts: list[SourcedFact] = Field(default_factory=list, max_length=10)
+    # "auto" rotates the opening style by run; None asks for no particular style.
+    opening_style: Literal["auto"] | OpeningStyle | None = None
+    structure: Structure | None = None
+    # Look of the generated visuals; used only by a generating visual backend.
+    visual_style: VisualStyle | None = None
+
+    def as_payload(self) -> dict[str, object]:
+        """Return the JSON payload persisted on the run and on its step.
+
+        Fields added after the first runs are left out when unset, so runs
+        created before they existed keep the exact payload their idempotency
+        keys were recorded with.
+        """
+        payload = self.model_dump(mode="json")
+        if not self.facts:
+            del payload["facts"]
+        for optional in ("opening_style", "structure", "visual_style"):
+            if payload[optional] is None:
+                del payload[optional]
+        return payload
 
     @field_validator("topic", "persona")
     @classmethod
@@ -175,23 +242,54 @@ class ContentScriptReview:
     hook: str
     full_script: str
     narration: str
+    # Facts the operator supplied with the topic and the narration sentences the
+    # deterministic check could not tie to the topic or to one of those facts.
+    # None means the bundle predates the check, which is not the same as no finding.
+    facts: tuple[SourcedFact, ...] = ()
+    unsourced_claims: tuple[str, ...] | None = None
+    # Operator-facing labels of what was asked for this script; None when nothing was.
+    opening_style: str | None = None
+    opening_style_met: bool | None = None
+    structure: str | None = None
 
 
 def parse_content_script_form(values: dict[str, str]) -> dict[str, object]:
     """Normalize dashboard fields through the same typed A1 input boundary."""
-    expected = {"topic", "persona", "format", "recent_openings"}
+    expected = {
+        "topic",
+        "persona",
+        "format",
+        "recent_openings",
+        "facts",
+        "opening_style",
+        "structure",
+        "visual_style",
+    }
     if set(values) - expected:
         raise ValueError("unsupported content script input field")
     openings = values.get("recent_openings", "")
+    facts: list[dict[str, str]] = []
+    for line in values.get("facts", "").splitlines():
+        if not line.strip():
+            continue
+        # The source is whatever follows the last separator, so a claim may contain "|".
+        claim, separator, source = line.rpartition("|")
+        if not separator:
+            raise ValueError("each fact needs its source: 'fato | fonte'")
+        facts.append({"claim": claim.strip(), "source": source.strip()})
     payload = ContentScriptInput.model_validate(
         {
             "topic": values.get("topic"),
             "persona": values.get("persona"),
             "format": values.get("format"),
             "recent_openings": openings.splitlines(),
+            "facts": facts,
+            "opening_style": values.get("opening_style") or None,
+            "structure": values.get("structure") or None,
+            "visual_style": values.get("visual_style") or None,
         }
     )
-    return payload.model_dump(mode="json")
+    return payload.as_payload()
 
 
 async def prepare_content_script_run(
@@ -220,7 +318,7 @@ async def prepare_content_script_run(
         automation=automation,
         idempotency_key=idempotency_key,
         trigger="retry" if retry_of_run_id is not None else trigger,
-        input_payload=input_data.model_dump(mode="json"),
+        input_payload=input_data.as_payload(),
         retry_of_run_id=retry_of_run_id,
         retry_requested_by=retry_requested_by,
         retry_reason=retry_reason,
@@ -255,7 +353,7 @@ async def execute_content_script_run(
         retry_reason=retry_reason,
         experiment_id=experiment_id,
         trigger=trigger,
-        input_payload=input_data.model_dump(mode="json"),
+        input_payload=input_data.as_payload(),
     )
     run = creation.run
     root = Path(settings.storage_root) if storage_root is None else storage_root
@@ -310,10 +408,22 @@ async def execute_content_script_run(
             )
         await transition_run(session, run, RunStatus.RUNNING, note="Content Engine A1 started")
 
-    generator = script_generator or generate_script
+    generator: ScriptGenerator = script_generator or generate_script
     artifact_path = _artifact_path(root, run_id=_persisted_id(run.id, "run"))
 
     async def generate_operation(_context: TaskAttemptContext) -> dict[str, object]:
+        # Só vai ao gerador o que a pauta traz: geradores injetados que não conhecem
+        # esses argumentos continuam válidos para as demais runs.
+        keyword_arguments: dict[str, object] = {}
+        if input_data.facts:
+            keyword_arguments["facts"] = tuple(input_data.facts)
+        if input_data.opening_style is not None:
+            keyword_arguments["opening_style"] = _resolve_opening_style(
+                input_data.opening_style,
+                run_id=_persisted_id(run.id, "run"),
+            )
+        if input_data.structure is not None:
+            keyword_arguments["structure"] = input_data.structure
         try:
             generated = await asyncio.to_thread(
                 generator,
@@ -321,9 +431,13 @@ async def execute_content_script_run(
                 input_data.persona,
                 input_data.format,
                 input_data.recent_openings or None,
+                **keyword_arguments,
             )
         except (APITimeoutError, APIConnectionError, EmptyResponseError) as exc:
             raise RetryableTaskError("CONTENT_LLM_UNAVAILABLE") from exc
+        except ScriptLengthError as exc:
+            # Outra geração pode acertar o tamanho, então um retry explícito é permitido.
+            raise RetryableTaskError("CONTENT_SCRIPT_LENGTH_OUT_OF_RANGE") from exc
         _validate_script_result(generated)
         try:
             _write_script_bundle(
@@ -340,6 +454,10 @@ async def execute_content_script_run(
             "model": settings.ollama_model,
             "full_script_characters": len(generated.full_script),
             "narration_characters": len(generated.narration),
+            "unsourced_claims": len(generated.unsourced_claims or []),
+            "opening_style": generated.opening_style,
+            "opening_style_met": generated.opening_style_met,
+            "structure": generated.structure,
         }
 
     task_result = await execute_task_step(
@@ -350,7 +468,7 @@ async def execute_content_script_run(
             queue=QueueClass.GPU,
             ordinal=1,
             idempotency_key=step_key,
-            input_payload=input_data.model_dump(mode="json"),
+            input_payload=input_data.as_payload(),
         ),
         policy=RetryPolicy(
             max_attempts=1,
@@ -509,7 +627,10 @@ async def execute_content_script_run(
             storage_root=root,
             synthesizer=(
                 tts_synthesizer
-                or get_configured_tts_synthesizer(_tts_backend())
+                or get_configured_tts_synthesizer(
+                    _tts_backend(),
+                    qwen3_clone_config=_qwen3_clone_quality_test_config(),
+                )
             ),
             voice_id=_tts_voice_id(),
             language_code=_tts_language_code(),
@@ -561,8 +682,32 @@ async def execute_content_script_run(
                 storage_root=root,
             )
         visual_result = None
+        a3_adapter: VisualAdapter | None = None
         if (
-            _visuals_enabled()
+            _generated_visuals_reviewed()
+            and audio_artifact is not None
+            and RunStatus(run.status) is RunStatus.RUNNING
+        ):
+            # Generated images are reviewed as numbered rounds of drafts first;
+            # A3 then imports exactly the round the reviewer approved.
+            approved_drafts = await _review_generated_drafts(
+                session,
+                run=run,
+                approval=approval,
+                approval_input=approval_input,
+                script_artifact=artifact,
+                audio_artifact=audio_artifact,
+                idempotency_key=idempotency_key,
+                storage_root=root,
+                input_data=input_data,
+                draft_adapter=visual_adapter,
+            )
+            if approved_drafts is not None:
+                a3_adapter = build_approved_draft_adapter(approved_drafts)
+        elif _visuals_enabled():
+            a3_adapter = visual_adapter or _configured_visual_adapter(input_data)
+        if (
+            a3_adapter is not None
             and audio_artifact is not None
             and RunStatus(run.status) is RunStatus.RUNNING
         ):
@@ -575,29 +720,9 @@ async def execute_content_script_run(
                 audio_artifact=audio_artifact,
                 idempotency_key=idempotency_key,
                 storage_root=root,
-                adapter=(
-                    visual_adapter
-                    or get_configured_visual_adapter(
-                        _visuals_backend(),
-                        import_root=Path(
-                            str(
-                                getattr(
-                                    settings,
-                                    "content_visual_import_root",
-                                    "./imports/content-visuals",
-                                )
-                            )
-                        ),
-                        manifest_path=Path(
-                            str(
-                                getattr(
-                                    settings,
-                                    "content_visual_manifest_path",
-                                    "manifest.json",
-                                )
-                            )
-                        ),
-                    )
+                adapter=a3_adapter,
+                allow_quality_test_assets=(
+                    _visuals_backend() == FLUX2_KLEIN_QUALITY_TEST_BACKEND
                 ),
                 queue=_visuals_queue(),
                 gpu_power_watts=int(getattr(settings, "gpu_power_watts", 400)),
@@ -605,9 +730,35 @@ async def execute_content_script_run(
                     1.0,
                     float(settings.celery_soft_time_limit_seconds - 15),
                 ),
-                finalize_run=not (_captions_enabled() or _assembly_enabled()),
+                finalize_run=not (
+                    _visual_review_enabled()
+                    or _captions_enabled()
+                    or _assembly_enabled()
+                ),
+                count_resolver=(
+                    build_local_asset_count_resolver(
+                        import_root=_visual_import_root(),
+                        manifest_path=_visual_manifest_path(),
+                    )
+                    if visual_adapter is None
+                    and _visuals_backend() == LOCAL_ASSETS_QUALITY_TEST_BACKEND
+                    else None
+                ),
             )
             visual_replayed = visual_result.replayed
+            if (
+                _visual_review_enabled()
+                and not _generated_visuals_reviewed()
+                and visual_result.manifest_artifact_id is not None
+                and RunStatus(run.status) is RunStatus.RUNNING
+            ):
+                # Pauses the run until a person has looked at every image.
+                await request_visual_approval(
+                    session,
+                    run=run,
+                    idempotency_key=idempotency_key,
+                    storage_root=root,
+                )
         caption_result = None
         if (
             _captions_enabled()
@@ -802,14 +953,28 @@ async def load_content_approval_review(
     *,
     approval: Approval,
     storage_root: Path | None = None,
-) -> ContentScriptReview | NarrationReview | FinalVideoReview | ThumbnailReview:
+) -> (
+    ContentScriptReview
+    | NarrationReview
+    | VisualReview
+    | FinalVideoReview
+    | ThumbnailReview
+):
     """Route one Content Engine approval to its own verified review projection."""
     root = Path(settings.storage_root) if storage_root is None else storage_root
-    if approval.action == NARRATION_REVIEW_APPROVAL_ACTION:
-        return await load_narration_review(
+    if approval.action == VISUAL_REVIEW_APPROVAL_ACTION:
+        return await load_visual_review(
             session,
             approval=approval,
             storage_root=root,
+        )
+    if approval.action == NARRATION_REVIEW_APPROVAL_ACTION:
+        return _with_visual_plan_status(
+            await load_narration_review(
+                session,
+                approval=approval,
+                storage_root=root,
+            )
         )
     if approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
         return await load_thumbnail_review(
@@ -885,6 +1050,13 @@ async def load_content_script_review(
         hook=result.hook,
         full_script=result.full_script,
         narration=result.narration,
+        facts=tuple(input_data.facts),
+        unsourced_claims=(
+            None if result.unsourced_claims is None else tuple(result.unsourced_claims)
+        ),
+        opening_style=_known_label(OPENING_STYLE_LABELS, result.opening_style),
+        opening_style_met=result.opening_style_met,
+        structure=_known_label(STRUCTURE_LABELS, result.structure),
     )
 
 
@@ -897,7 +1069,31 @@ async def finalize_content_script_approval(
     """Verify approval and report whether the durable dispatch must continue."""
     root = Path(settings.storage_root) if storage_root is None else storage_root
     if approval.action == NARRATION_REVIEW_APPROVAL_ACTION:
-        return await finalize_narration_approval(
+        continuation_required = await finalize_narration_approval(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
+        if continuation_required:
+            # Refusing here rolls the decision back, so the gate stays open
+            # while the operator finishes the manifest.
+            narration_review = _with_visual_plan_status(
+                await load_narration_review(
+                    session,
+                    approval=approval,
+                    storage_root=root,
+                )
+            )
+            if narration_review.visual_plan_problem_code is not None:
+                raise NarrationVisualsNotReadyError(
+                    problem_code=narration_review.visual_plan_problem_code,
+                    minimum_count=narration_review.minimum_visual_count,
+                    maximum_count=narration_review.maximum_visual_count,
+                    declared_count=narration_review.declared_visual_count,
+                )
+        return continuation_required
+    if approval.action == VISUAL_REVIEW_APPROVAL_ACTION:
+        return await finalize_visual_approval(
             session,
             approval=approval,
             storage_root=root,
@@ -1001,6 +1197,33 @@ def _tts_enabled() -> bool:
     return _tts_backend() != "disabled"
 
 
+def _qwen3_clone_quality_test_config() -> Qwen3CloneQualityTestConfig | None:
+    if _tts_backend() != QWEN3_CLONE_QUALITY_TEST_BACKEND:
+        return None
+    paths = [
+        getattr(settings, field, None)
+        for field in (
+            "content_tts_qwen3_python_path",
+            "content_tts_qwen3_model_dir",
+            "content_tts_reference_audio_path",
+            "content_tts_reference_text_path",
+        )
+    ]
+    if not all(isinstance(path, str) and path.strip() for path in paths):
+        raise ContentScriptRunNotRunnableError(
+            "Qwen3-TTS clone quality test requires its local paths"
+        )
+    python_path, model_dir, reference_audio, reference_text = (str(path) for path in paths)
+    return Qwen3CloneQualityTestConfig(
+        python_path=python_path,
+        model_dir=model_dir,
+        reference_audio_path=reference_audio,
+        reference_text_path=reference_text,
+        # Leave room inside the step timeout for hashing the weights and validating the WAV.
+        timeout_seconds=max(1.0, float(settings.celery_soft_time_limit_seconds - 45)),
+    )
+
+
 def _narration_review_enabled() -> bool:
     return getattr(settings, "content_narration_review_enabled", False) is True
 
@@ -1022,6 +1245,196 @@ def _visuals_backend() -> str:
 
 def _visuals_enabled() -> bool:
     return _visuals_backend() != "disabled"
+
+
+def _generated_visuals_reviewed() -> bool:
+    return (
+        _visuals_backend() == FLUX2_KLEIN_QUALITY_TEST_BACKEND and _visual_review_enabled()
+    )
+
+
+async def _review_generated_drafts(
+    session: AsyncSession,
+    *,
+    run: Run,
+    approval: Approval,
+    approval_input: dict[str, object],
+    script_artifact: Artifact,
+    audio_artifact: Artifact,
+    idempotency_key: str,
+    storage_root: Path,
+    input_data: ContentScriptInput,
+    draft_adapter: VisualAdapter | None,
+) -> tuple[tuple[VisualReviewImage, dict[str, object]], ...] | None:
+    """Run draft rounds until one is approved; None while a decision is pending.
+
+    Every delivery replays the rounds already decided, so the loop resumes at
+    the first round without a decision. A round sent back with notes leads to
+    the next round; there is no limit on the number of rounds.
+    """
+    plan = plan_visual_requests(
+        run=run,
+        approval=approval,
+        approval_input_payload=approval_input,
+        script_artifact=script_artifact,
+        audio_artifact=audio_artifact,
+        storage_root=storage_root,
+    )
+    style = input_data.visual_style or DEFAULT_VISUAL_STYLE
+
+    def adapter_factory(
+        revisions: Mapping[int, tuple[str, str]] | None,
+        narration: str,
+        kept_scenes: Sequence[str],
+    ) -> VisualAdapter:
+        if draft_adapter is not None:
+            return draft_adapter
+        return _configured_visual_adapter(
+            input_data, revisions=revisions, narration=narration, kept_scenes=kept_scenes
+        )
+
+    previous: PreviousRound | None = None
+    round_number = 1
+    while True:
+        draft = await execute_visual_draft_round(
+            session,
+            run=run,
+            approval_input_payload=approval_input,
+            plan=plan,
+            round_number=round_number,
+            previous=previous,
+            idempotency_key=idempotency_key,
+            storage_root=storage_root,
+            adapter_factory=adapter_factory,
+            style_prompt_suffix=f", {VISUAL_STYLES[style]}",
+            timeout_seconds=max(1.0, float(settings.celery_soft_time_limit_seconds - 15)),
+        )
+        if draft.manifest_artifact_id is None or RunStatus(run.status) is not RunStatus.RUNNING:
+            return None
+        await request_visual_approval(
+            session,
+            run=run,
+            idempotency_key=idempotency_key,
+            storage_root=storage_root,
+            round_number=round_number,
+        )
+        if RunStatus(run.status) is not RunStatus.RUNNING:
+            return None
+        gate = await session.scalar(
+            select(Approval).where(
+                Approval.run_id == run.id,
+                Approval.idempotency_key
+                == f"{idempotency_key}:visual-review-r{round_number}",
+            )
+        )
+        if gate is None:
+            raise ContentScriptRunNotRunnableError("A3 draft round is missing its review")
+        images = await load_reviewed_assets(session, approval=gate, storage_root=storage_root)
+        notes = requested_redo(gate)
+        if not notes:
+            return images
+        previous = PreviousRound(images=images, notes=notes)
+        round_number += 1
+
+
+def _configured_visual_adapter(
+    input_data: ContentScriptInput,
+    *,
+    revisions: Mapping[int, tuple[str, str]] | None = None,
+    narration: str | None = None,
+    kept_scenes: Sequence[str] = (),
+) -> VisualAdapter:
+    """Build the visual adapter the settings name, with this run's topic and style."""
+    if _visuals_backend() != FLUX2_KLEIN_QUALITY_TEST_BACKEND:
+        return get_configured_visual_adapter(
+            _visuals_backend(),
+            import_root=_visual_import_root(),
+            manifest_path=_visual_manifest_path(),
+        )
+    paths = [
+        getattr(settings, field, None)
+        for field in (
+            "content_visual_flux2_python_path",
+            "content_visual_flux2_model_dir",
+        )
+    ]
+    if not all(isinstance(path, str) and path.strip() for path in paths):
+        raise ContentScriptRunNotRunnableError(
+            "FLUX.2 klein quality test requires its local paths"
+        )
+    python_path, model_dir = (str(path) for path in paths)
+    return build_flux2_klein_quality_test_adapter(
+        Flux2KleinQualityTestConfig(
+            python_path=python_path,
+            model_dir=model_dir,
+            # The same step also writes the scene descriptions and hashes the weights.
+            timeout_seconds=max(1.0, float(settings.celery_soft_time_limit_seconds - 90)),
+        ),
+        scene_model=ollama_scene_model(),
+        topic=input_data.topic,
+        style=input_data.visual_style or DEFAULT_VISUAL_STYLE,
+        release_scene_model=release_ollama_scene_model,
+        revisions=revisions,
+        narration=narration,
+        kept_scenes=kept_scenes,
+    )
+
+
+def _visual_import_root() -> Path:
+    return Path(
+        str(getattr(settings, "content_visual_import_root", "./imports/content-visuals"))
+    )
+
+
+def _visual_manifest_path() -> Path:
+    return Path(str(getattr(settings, "content_visual_manifest_path", "manifest.json")))
+
+
+def _with_visual_plan_status(review: NarrationReview) -> NarrationReview:
+    """Attach the manifest readiness when the visual backend is operator-supplied."""
+    if _visuals_backend() != LOCAL_ASSETS_QUALITY_TEST_BACKEND:
+        return review
+    status = inspect_local_asset_manifest(
+        import_root=_visual_import_root(),
+        manifest_path=_visual_manifest_path(),
+        bounds=VisualCountBounds(
+            minimum=review.minimum_visual_count,
+            default=review.required_visual_count,
+            maximum=review.maximum_visual_count,
+        ),
+    )
+    visual_plan = review.visual_plan
+    if status.ready and status.declared_count is not None:
+        # Re-plan for the count the manifest declares and name each image.
+        visual_plan = tuple(
+            replace(slot, file_name=file_name)
+            for slot, file_name in zip(
+                plan_visual_slots(
+                    review.narration,
+                    duration_seconds=Decimal(review.duration_seconds),
+                    count=status.declared_count,
+                ),
+                status.relative_paths,
+                strict=False,
+            )
+        )
+    return replace(
+        review,
+        visual_plan=visual_plan,
+        visual_plan_checked=True,
+        visual_plan_problem_code=status.problem_code,
+        visual_plan_problem=(
+            None
+            if status.problem_code is None
+            else describe_visual_plan_problem(
+                status.problem_code,
+                minimum_count=status.bounds.minimum,
+                maximum_count=status.bounds.maximum,
+                declared_count=status.declared_count,
+            )
+        ),
+        declared_visual_count=status.declared_count,
+    )
 
 
 def _visuals_queue() -> QueueClass:
@@ -1073,6 +1486,10 @@ def _caption_alignment_gate_enabled() -> bool:
     return getattr(settings, "content_caption_alignment_gate_enabled", False) is True
 
 
+def _visual_review_enabled() -> bool:
+    return getattr(settings, "content_visual_review_enabled", False) is True
+
+
 def _thumbnail_review_enabled() -> bool:
     return getattr(settings, "content_thumbnail_review_enabled", False) is True
 
@@ -1095,6 +1512,7 @@ def _ffmpeg_quality_test_config() -> FFmpegQualityTestConfig | None:
             1.0,
             float(settings.celery_soft_time_limit_seconds - 15),
         ),
+        edit="motion" if getattr(settings, "content_assembly_edit", "static") == "motion" else "static",
     )
 
 
@@ -1127,6 +1545,19 @@ def _validate_pipeline_backend_dependencies() -> None:
     if _narration_review_enabled() and not _visuals_enabled():
         raise ContentScriptRunNotRunnableError(
             "A2 narration review requires A3 visual continuation"
+        )
+    if _visual_review_enabled() and not (
+        _visuals_enabled() and _captions_enabled() and _assembly_enabled()
+    ):
+        raise ContentScriptRunNotRunnableError(
+            "A3 visual review requires A3 visuals, A4 captions and A5 assembly"
+        )
+    if (
+        _visuals_backend() == FLUX2_KLEIN_QUALITY_TEST_BACKEND
+        and not _visual_review_enabled()
+    ):
+        raise ContentScriptRunNotRunnableError(
+            "generated visuals require the A3 visual review gate"
         )
     if _assembly_enabled() and not (_visuals_enabled() and _captions_enabled()):
         raise ContentScriptRunNotRunnableError(
@@ -1167,6 +1598,11 @@ async def _load_completed_evidence(
                     session,
                     run=run,
                     action=NARRATION_REVIEW_APPROVAL_ACTION,
+                )
+                or await _has_pending_gate(
+                    session,
+                    run=run,
+                    action=VISUAL_REVIEW_APPROVAL_ACTION,
                 )
                 or await _has_pending_gate(
                     session,
@@ -1310,6 +1746,11 @@ def _load_verified_script_bundle(
             raise ValueError("persona mismatch")
         if payload.get("format") != input_data.format:
             raise ValueError("format mismatch")
+        # Bundles written before the field existed carry no facts at all.
+        if payload.get("facts", []) != [
+            fact.model_dump(mode="json") for fact in input_data.facts
+        ]:
+            raise ValueError("facts mismatch")
         result = ScriptResult.model_validate(payload.get("result"))
         if any(
             not getattr(result, field).strip()
@@ -1319,6 +1760,22 @@ def _load_verified_script_bundle(
     except (UnicodeError, ValueError, TypeError) as exc:
         raise ContentScriptRunNotRunnableError("A1 script bundle is invalid") from exc
     return result
+
+
+def _known_label(labels: Mapping[Any, str], value: str | None) -> str | None:
+    """Operator-facing label of a known value; other text from the bundle renders nothing."""
+    return None if value is None else labels.get(value)
+
+
+def _resolve_opening_style(
+    requested: Literal["auto"] | OpeningStyle,
+    *,
+    run_id: int,
+) -> OpeningStyle:
+    """Turn "auto" into one concrete style, stable for the run and rotating across runs."""
+    if requested != "auto":
+        return requested
+    return OPENING_STYLES[run_id % len(OPENING_STYLES)]
 
 
 def _validate_script_result(result: ScriptResult) -> None:
@@ -1349,6 +1806,7 @@ def _write_script_bundle(
         "persona": input_data.persona,
         "format": input_data.format,
         "model": model,
+        "facts": [fact.model_dump(mode="json") for fact in input_data.facts],
         "result": result.model_dump(mode="json"),
     }
     try:

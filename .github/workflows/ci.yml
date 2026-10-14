@@ -64,7 +64,9 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:17-alpine
+        # Espelho oficial do Docker Hub no ECR Public: o pull anônimo do Docker Hub é limitado
+        # por IP compartilhado dos runners e já derrubou este job antes de qualquer teste rodar.
+        image: public.ecr.aws/docker/library/postgres:17-alpine
         env:
           # Credencial descartável de um banco que existe só durante este job.
           POSTGRES_USER: ci

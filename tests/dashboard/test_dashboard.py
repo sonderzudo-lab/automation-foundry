@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import re
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from src.briefs import executor as brief_executor
 from src.core.config import Settings
 from src.core.database import Base, get_session
 from src.dashboard.main import create_app
@@ -57,6 +59,7 @@ from src.platform.dispatch_service import (
     execute_claimed_dispatch,
     publish_registered_dispatch,
 )
+from src.platform.executor_registry import list_automation_executors
 from src.platform.experiment_service import (
     get_or_create_experiment,
     transition_experiment,
@@ -107,6 +110,18 @@ from tests.support.local_media_rehearsal import (
     write_synthetic_narration_wav,
     write_synthetic_visual_import,
 )
+
+
+def _assert_review_link(home_html: str, approval_id: int, action: str) -> None:
+    """The pending-approval alert names the action and links to its review page."""
+    alert = re.search(
+        r'<div class="alert alert-brand">(?:(?!<div class="alert ).)*?'
+        rf"<code>{re.escape(action)}</code>.*?"
+        rf'href="/approvals/{approval_id}/review"',
+        home_html,
+        re.DOTALL,
+    )
+    assert alert is not None, f"no review link for {action} #{approval_id}"
 
 
 @pytest.fixture
@@ -799,12 +814,19 @@ async def test_connector_snapshot_and_htmx_fragment_are_latest_redacted_and_boun
         base_url="http://127.0.0.1",
     ) as client:
         home = await client.get("/")
+        data_page = await client.get("/data")
         fragment = await client.get("/data-observability/fragment")
 
     assert home.status_code == 200
     assert home.headers["cache-control"] == "no-store"
     assert '<script src="/static/htmx.min.js" defer></script>' in home.text
-    assert 'id="data-observability"' in home.text
+    # The stylesheet and theme script carry a version that follows the file, so a
+    # changed asset is never served from a browser's stale copy.
+    assert re.search(r'href="/static/styles\.css\?v=[0-9a-f]+"', home.text)
+    assert re.search(r'src="/static/theme\.js\?v=[0-9a-f]+"', home.text)
+    assert data_page.status_code == 200
+    assert '<script src="/static/htmx.min.js" defer></script>' in data_page.text
+    assert 'id="data-observability"' in data_page.text
     assert fragment.status_code == 200
     assert fragment.headers["cache-control"] == "no-store"
     assert 'hx-get="/data-observability/fragment"' in fragment.text
@@ -813,7 +835,11 @@ async def test_connector_snapshot_and_htmx_fragment_are_latest_redacted_and_boun
     assert "youtube-analytics" in fragment.text
     assert "0.8200" in fragment.text
     assert "2026-08-11T12:55:00Z" in fragment.text
-    assert '<span class="badge danger">stale</span>' in fragment.text
+    # A freshness vencida precisa de ícone, texto e cor de perigo juntos, nunca só cor.
+    assert re.search(
+        r'class="badge badge-danger"><svg[^>]*><use[^>]*/></svg>stale',
+        fragment.text,
+    )
     assert "<html" not in fragment.text
     for private_value in (
         "private-youtube-observation",
@@ -965,7 +991,7 @@ async def test_dashboard_toggles_schedule_idempotently_with_audit_evidence(
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
     ) as client:
-        initial = await client.get("/")
+        initial = await client.get("/schedules")
         enabled = await client.post(
             f"/schedules/{schedule_id}/enabled",
             data=enable_payload,
@@ -974,7 +1000,7 @@ async def test_dashboard_toggles_schedule_idempotently_with_audit_evidence(
             f"/schedules/{schedule_id}/enabled",
             data={**enable_payload, "reason": "duplicate must not replace evidence"},
         )
-        enabled_page = await client.get("/")
+        enabled_page = await client.get("/schedules")
         disabled = await client.post(
             f"/schedules/{schedule_id}/enabled",
             data={
@@ -1075,7 +1101,7 @@ async def test_dashboard_schedule_enable_respects_automation_safety_blocks(
         )
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/?notice=schedule-change-blocked"
+    assert response.headers["location"] == "/schedules?notice=schedule-change-blocked"
     async with AsyncClient(
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
@@ -1133,7 +1159,7 @@ async def test_dashboard_schedule_enable_requires_registered_executor(
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
     ) as client:
-        page = await client.get("/")
+        page = await client.get("/schedules")
         response = await client.post(
             f"/schedules/{schedule_id}/enabled",
             data={
@@ -1149,7 +1175,7 @@ async def test_dashboard_schedule_enable_requires_registered_executor(
     assert "Habilitação indisponível" in page.text
     assert "executor local não registrado" in page.text
     assert response.status_code == 303
-    assert response.headers["location"] == "/?notice=schedule-change-blocked"
+    assert response.headers["location"] == "/schedules?notice=schedule-change-blocked"
     async with session_factory() as session:
         fetched = await session.get(Schedule, schedule_id)
         events = list(
@@ -1352,13 +1378,14 @@ async def test_dashboard_ledger_is_exactly_attributed_by_automation_and_currency
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
     ) as client:
-        response = await client.get("/")
+        response = await client.get("/reports")
 
     assert response.status_code == 200
     assert "Ledger por automação" in response.text
     assert "alpha-automation" in response.text
     assert "beta-automation" in response.text
     assert "2.3456789012" in response.text
+    assert "0E-10" not in response.text
     assert "private-attributed-category" not in response.text
     assert "private-attributed-source" not in response.text
 
@@ -1416,7 +1443,7 @@ async def test_execution_metrics_use_bounded_completed_samples_only(
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
     ) as client:
-        response = await client.get("/")
+        response = await client.get("/automations")
 
     assert response.status_code == 200
     assert "Execução recente por automação" in response.text
@@ -1441,17 +1468,19 @@ async def test_dashboard_home_renders_redacted_state_and_safe_controls(
         base_url="http://127.0.0.1",
     ) as client:
         response = await client.get("/")
+        automations = await client.get("/automations")
+        reports = await client.get("/reports")
 
     assert response.status_code == 200
     assert "Automation Foundry" in response.text
     assert "Content Engine" in response.text
     assert "Worker unavailable" in response.text
     assert ">Idade<" in response.text
-    assert ">0.3<" in response.text
-    assert ">0.7<" in response.text
+    assert ">0.30<" in reports.text
+    assert ">0.70<" in reports.text
     assert f'href="/runs/{run_id}"' in response.text
-    assert "/kill-switch" in response.text
-    assert "Ativar kill switch" in response.text
+    assert "/kill-switch" in automations.text
+    assert "Ativar kill switch" in automations.text
     for private_value in (
         "private-owner",
         "private-run-key",
@@ -1472,15 +1501,20 @@ async def test_dashboard_home_renders_redacted_state_and_safe_controls(
         "private-metric-source",
         "metric-dimension-secret",
     ):
-        assert private_value not in response.text
+        for page in (response, automations, reports):
+            assert private_value not in page.text
 
     application_routes = [
         route for route in application.routes if isinstance(route, APIRoute)
     ]
-    assert len(application_routes) == 22
+    assert len(application_routes) == 34
     route_methods = [route.methods for route in application_routes]
-    assert route_methods.count({"GET"}) == 14
-    assert route_methods.count({"POST"}) == 8
+    # +1 GET and +1 POST: the readiness page and its explicit, read-only diagnostic run.
+    # +1 GET: the A3 review page serves each verified image.
+    assert route_methods.count({"GET"}) == 23
+    # +1 POST: the quick run draws a topic from the operator's list.
+    # +1 POST: specific A3 draft images are sent back with notes.
+    assert route_methods.count({"POST"}) == 11
 
 
 async def test_health_page_renders_only_redacted_probe_projection(
@@ -1749,7 +1783,7 @@ async def test_dashboard_shows_experiment_and_attributes_manual_run(
         transport=ASGITransport(app=application),
         base_url="http://127.0.0.1",
     ) as client:
-        dashboard = await client.get("/")
+        dashboard = await client.get("/reports")
         response = await client.post(
             "/automations/platform-smoke/runs",
             data={
@@ -1866,10 +1900,10 @@ async def test_dashboard_kill_switch_is_confirmed_and_audited(
                 "reason": "pause module for maintenance",
             },
         )
-        updated = await client.get("/")
+        updated = await client.get("/automations")
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/"
+    assert response.headers["location"] == "/automations"
     assert "Desativar kill switch" in updated.text
     async with session_factory() as session:
         automation = await session.get(Automation, automation_id)
@@ -1927,7 +1961,7 @@ async def test_dashboard_disables_automation_idempotently_and_blocks_new_runs(
             f"/automations/{automation_id}/enabled",
             data={**disable_payload, "reason": "duplicate must not replace evidence"},
         )
-        updated = await client.get("/")
+        updated = await client.get("/automations")
         blocked_start = await client.post(
             "/automations/platform-smoke/runs",
             data={
@@ -2175,6 +2209,7 @@ async def test_content_outcome_renders_local_scope_and_no_external_claim(
     assert "0.3000000003" in response.text
     assert "0.7000000001" in response.text
     assert "-0.4000000004" in response.text
+    assert "E-" not in response.text
     assert "Nenhuma plataforma externa foi consultada" in response.text
     assert "private-content-outcome-source" not in response.text
     assert "content-outcome-dimension" not in response.text
@@ -2460,7 +2495,7 @@ async def test_run_detail_renders_linked_evidence_without_mutation_or_private_da
     assert "UNEXPECTED_TASK_ERROR" in response.text
     assert "video/mp4" in response.text
     assert "render_duration" in response.text
-    assert ">0.1<" in response.text
+    assert ">0.10<" in response.text
     assert "controle local" in response.text
     assert '<script src="/static/htmx.min.js" defer></script>' in response.text
     assert "cdn.jsdelivr.net" not in response.text
@@ -2540,6 +2575,85 @@ async def test_run_detail_live_fragment_polls_locally_until_terminal(
     assert RunStatus.SUCCEEDED.value in terminal_fragment.text
     assert "hx-get=" not in terminal_fragment.text
     assert "hx-trigger=" not in terminal_fragment.text
+
+
+async def test_run_fragment_asks_htmx_to_reload_once_the_run_finishes(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # Cancel, retry and export live in the page header, outside the polled fragment.
+    run_id = await _seed_cancellable_run(session_factory)
+    application = create_app()
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    polling = {"HX-Request": "true"}
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        while_running = await client.get(f"/runs/{run_id}/fragment", headers=polling)
+
+        async with session_factory() as session:
+            run = await session.scalar(select(Run).where(Run.id == run_id))
+            assert run is not None
+            await transition_run(session, run, RunStatus.RUNNING)
+            await transition_run(session, run, RunStatus.SUCCEEDED)
+            await session.commit()
+
+        finished_by_polling = await client.get(f"/runs/{run_id}/fragment", headers=polling)
+        finished_plain = await client.get(f"/runs/{run_id}/fragment")
+
+    assert "hx-refresh" not in while_running.headers
+    assert finished_by_polling.headers["hx-refresh"] == "true"
+    assert "hx-refresh" not in finished_plain.headers
+
+
+async def test_dashboard_does_not_offer_manual_start_while_kill_switch_is_active(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        automation = Automation(
+            slug="platform-smoke",
+            name="Platform Smoke Automation",
+            owner="local-operator",
+        )
+        session.add(automation)
+        await session.commit()
+        automation_id = automation.id
+
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        before = await client.get("/automations")
+        blocked = await client.post(
+            f"/automations/{automation_id}/kill-switch",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "kill-switch-enable",
+                "target": "enable",
+                "actor": "local-owner",
+                "reason": "stop new dashboard intake",
+            },
+        )
+        after = await client.get("/automations")
+
+    assert blocked.status_code == 303
+    assert "Disparo manual disponível" in before.text
+    assert 'href="#executar-platform-smoke"' in before.text
+    assert "Disparo manual disponível" not in after.text
+    assert "Kill switch ativo; novos disparos" in after.text
+    assert 'href="#executar-platform-smoke"' not in after.text
 
 
 async def test_run_detail_returns_not_found_without_database_mutation(
@@ -2763,7 +2877,9 @@ async def test_dashboard_approval_rejection_is_confirmed_immutable_and_audited(
 
     assert detail.status_code == 200
     assert f'action="/approvals/{approval_id}/reject"' in detail.text
-    assert "Confirmo a rejeição definitiva" in detail.text
+    assert "Confirmar rejeição" in detail.text
+    assert 'name="confirmation" value="reject-approval"' in detail.text
+    assert "Actor local" not in detail.text.split("Approval #")[-1]
     assert "Aprovar approval" not in detail.text
     assert "/approve" not in detail.text
     assert "private protected approval summary" not in detail.text
@@ -2840,6 +2956,11 @@ async def test_dashboard_approval_can_be_safely_reviewed_and_approved(
     assert detail.status_code == 200
     assert "Video #42" in detail.text
     assert "Aprovar approval" in detail.text
+    # Sem página de revisão dedicada, a decisão acontece num diálogo da própria run.
+    assert f'id="decidir-{approval_id}"' in detail.text
+    assert f'action="/approvals/{approval_id}/approve"' in detail.text
+    assert f'action="/approvals/{approval_id}/reject"' in detail.text
+    assert f'href="/approvals/{approval_id}/review"' not in detail.text
     assert response.status_code == 303
     async with session_factory() as session:
         run = await session.get(Run, run_id)
@@ -2872,13 +2993,20 @@ async def test_dashboard_reviews_and_approves_complete_a1_script(
                 "persona": "persona-private-must-not-render",
                 "format": "short",
                 "recent_openings": [],
+                "facts": [
+                    {
+                        "claim": "Adultos precisam de 7 horas de sono",
+                        "source": "https://example.test/<sono>",
+                    }
+                ],
             },
-            script_generator=lambda *_args: ScriptResult(
+            script_generator=lambda *_args, **_kwargs: ScriptResult(
                 angle="Ângulo editorial completo",
                 outline="1. Hook\n2. Explicação\n3. Fecho",
                 full_script="Roteiro completo para revisão humana.",
                 hook="Hook editorial",
                 narration="Narração integral para revisão humana.",
+                unsourced_claims=["Quem dorme pouco erra o dobro."],
             ),
             storage_root=storage_root,
         )
@@ -2913,16 +3041,22 @@ async def test_dashboard_reviews_and_approves_complete_a1_script(
         )
 
     assert home.status_code == 200
-    assert (
-        f'href="/approvals/{result.approval_id}/review">'
-        "review_content_script_a1</a>"
-    ) in home.text
+    _assert_review_link(home.text, result.approval_id, "review_content_script_a1")
     assert detail.status_code == 200
     assert "Abrir roteiro completo e verificado" in detail.text
+    # Com página de revisão, ela é o único lugar de decidir: sem formulário inline.
+    assert f'href="/approvals/{result.approval_id}/review"' in detail.text
+    assert f'action="/approvals/{result.approval_id}/approve"' not in detail.text
+    assert f'action="/approvals/{result.approval_id}/reject"' not in detail.text
     assert review.status_code == 200
     assert review.headers["cache-control"] == "no-store"
     assert "Roteiro completo para revisão humana." in review.text
     assert "Narração integral para revisão humana." in review.text
+    assert "Frases para conferir" in review.text
+    assert "Quem dorme pouco erra o dobro." in review.text
+    assert "Adultos precisam de 7 horas de sono" in review.text
+    assert "fonte: https://example.test/&lt;sono&gt;" in review.text
+    assert "Nenhuma frase marcada" not in review.text
     assert "persona-private-must-not-render" not in review.text
     assert f'action="/approvals/{result.approval_id}/approve"' in review.text
     assert f'action="/approvals/{result.approval_id}/reject"' in review.text
@@ -3041,7 +3175,7 @@ async def test_dashboard_approval_requeues_enabled_tts_continuation_once(
     (
         ("wrong-token", "reject-approval", "local-owner", 403),
         ("test-csrf-token", "not-confirmed", "local-owner", 400),
-        ("test-csrf-token", "reject-approval", "", 400),
+        ("test-csrf-token", "", "local-owner", 400),
     ),
 )
 async def test_dashboard_approval_rejection_fails_closed_for_invalid_requests(
@@ -3091,6 +3225,59 @@ async def test_dashboard_approval_rejection_fails_closed_for_invalid_requests(
     assert approval is not None
     assert approval.status == ApprovalStatus.PENDING.value
     assert events == []
+
+
+@pytest.mark.parametrize(
+    ("decision", "note", "expected_status", "expected_reason"),
+    (
+        ("approve", None, ApprovalStatus.APPROVED, "Aprovado sem observação."),
+        ("approve", "  legenda conferida  ", ApprovalStatus.APPROVED, "legenda conferida"),
+        ("reject", None, ApprovalStatus.REJECTED, "Rejeitado sem observação."),
+        ("reject", "", ApprovalStatus.REJECTED, "Rejeitado sem observação."),
+    ),
+)
+async def test_dashboard_decision_needs_only_the_confirm_button_and_an_optional_note(
+    session_factory: async_sessionmaker[AsyncSession],
+    decision: str,
+    note: str | None,
+    expected_status: ApprovalStatus,
+    expected_reason: str,
+) -> None:
+    _, approval_id = await _seed_pending_approval(
+        session_factory,
+        with_review_projection=True,
+    )
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    data = {
+        "csrf_token": "test-csrf-token",
+        "confirmation": f"{decision}-approval",
+    }
+    if note is not None:
+        data["reason"] = note
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.post(f"/approvals/{approval_id}/{decision}", data=data)
+        unexpected = await client.post(
+            f"/approvals/{approval_id}/{decision}",
+            data={**data, "extra": "field"},
+        )
+
+    assert response.status_code == 303
+    assert unexpected.status_code == 400
+    async with session_factory() as session:
+        approval = await session.get(Approval, approval_id)
+    assert approval is not None
+    assert approval.status == expected_status.value
+    assert approval.decided_by == "local-owner"
+    assert approval.decision_reason == expected_reason
 
 
 async def test_dashboard_approval_rejection_conflicts_with_invalid_run_state(
@@ -3155,12 +3342,13 @@ async def test_dashboard_home_handles_empty_database(
         base_url="http://127.0.0.1",
     ) as client:
         response = await client.get("/")
+        reports = await client.get("/reports")
 
     assert response.status_code == 200
     assert "Nenhuma automação registrada" in response.text
     assert "Nenhuma run registrada" in response.text
     assert "Nenhum schedule registrado" in response.text
-    assert "Nenhuma observação financeira atribuída a uma automação" in response.text
+    assert "Nenhuma observação financeira atribuída a uma automação" in reports.text
     assert "Nenhuma automação registrada para calcular indicadores" in response.text
 
 
@@ -3251,10 +3439,7 @@ async def test_dashboard_reviews_and_approves_the_final_video_gate(
         )
 
     assert home.status_code == 200
-    assert (
-        f'href="/approvals/{final_approval_id}/review">'
-        "review_content_final_video_a7</a>"
-    ) in home.text
+    _assert_review_link(home.text, final_approval_id, "review_content_final_video_a7")
     assert detail.status_code == 200
     assert FINAL_REVIEW_APPROVAL_ACTION in detail.text
     assert "Nenhum upload" in detail.text
@@ -3471,14 +3656,14 @@ async def test_dashboard_narration_review_streams_only_verified_audio(
         )
 
     assert home.status_code == 200
-    assert (
-        f'href="/approvals/{narration_approval_id}/review">'
-        f"{NARRATION_REVIEW_APPROVAL_ACTION}</a>"
-    ) in home.text
+    _assert_review_link(home.text, narration_approval_id, NARRATION_REVIEW_APPROVAL_ACTION)
     assert review.status_code == 200
     assert review.headers["cache-control"] == "no-store"
     assert audio_sha256 in review.text
-    assert f">{expected_visual_count()} PNGs<" in review.text
+    assert (
+        f">{expected_visual_count()} a {expected_visual_count() + 1} PNGs<"
+        in review.text
+    )
     assert "1080x1920" in review.text
     assert str(storage_root) not in review.text
     assert media.status_code == 200
@@ -3487,6 +3672,40 @@ async def test_dashboard_narration_review_streams_only_verified_audio(
     assert media.headers["x-content-type-options"] == "nosniff"
     assert media.content == audio_path.read_bytes()
     assert wrong_gate.status_code == 404
+    assert "Manifesto conferido agora" in review.text
+    assert "Plano de imagens" in review.text
+    assert "rehearsal-001.png" in review.text
+
+    write_synthetic_visual_import(
+        import_root,
+        count=expected_visual_count() + 2,
+        width=1080,
+        height=1920,
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        unready_review = await client.get(f"/approvals/{narration_approval_id}/review")
+        refused = await client.post(
+            f"/approvals/{narration_approval_id}/approve",
+            data={
+                "csrf_token": "test-csrf-token",
+                "confirmation": "approve-approval",
+                "actor": "local-owner",
+                "reason": "áudio aprovado antes das imagens",
+            },
+        )
+    async with session_factory() as session:
+        still_open = await session.get(Approval, narration_approval_id)
+        assert still_open is not None
+        assert still_open.status == ApprovalStatus.PENDING.value
+
+    assert unready_review.status_code == 200
+    assert "O manifesto ainda não está pronto" in unready_review.text
+    assert "CONTENT_VISUALS_COUNT_MISMATCH" in unready_review.text
+    assert refused.status_code == 409
+    assert "CONTENT_VISUALS_COUNT_MISMATCH" in refused.json()["detail"]
 
     audio_path.write_bytes(audio_path.read_bytes() + b"tampered")
     async with AsyncClient(
@@ -3880,17 +4099,12 @@ async def test_dashboard_a8_serves_verified_pngs_and_persists_exact_selection(
             data={
                 "csrf_token": "test-csrf-token",
                 "confirmation": "approve-approval",
-                "actor": "local-owner",
-                "reason": "melhor representação visual do vídeo",
                 "thumbnail_artifact_id": str(selected.id),
             },
         )
 
     assert home.status_code == 200
-    assert (
-        f'href="/approvals/{approval_id}/review">'
-        "select_content_thumbnail_a8</a>"
-    ) in home.text
+    _assert_review_link(home.text, approval_id, "select_content_thumbnail_a8")
     assert detail.status_code == 200
     assert "Escolher uma thumbnail entre os PNGs A3 verificados" in detail.text
     assert "A aprovação A8 exige uma escolha" in detail.text
@@ -4140,6 +4354,61 @@ async def test_dashboard_a8_rejects_arbitrary_id_and_tampered_candidate(
     assert persisted.decision_payload is None
 
 
+async def test_dashboard_reviews_and_approves_the_operations_brief(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(
+        brief_executor,
+        "settings",
+        SimpleNamespace(storage_root=str(storage_root)),
+    )
+    async with session_factory() as session:
+        result = await brief_executor.execute_operations_brief_run(
+            session,
+            idempotency_key="dashboard-operations-brief",
+            input_payload={"window_days": 7, "window_end": "2026-10-08"},
+            storage_root=storage_root,
+            clock=lambda: datetime(2026, 10, 8, 12, 0, 0),
+        )
+        await session.commit()
+    assert result.approval_id is not None
+
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        home = await client.get("/")
+        detail = await client.get(f"/runs/{result.run_id}")
+        review = await client.get(f"/approvals/{result.approval_id}/review")
+        brief_file = next(storage_root.rglob("brief.md"))
+        brief_file.write_text(
+            brief_file.read_text(encoding="utf-8") + "adulterado", encoding="utf-8"
+        )
+        tampered = await client.get(f"/approvals/{result.approval_id}/review")
+
+    assert home.status_code == 200
+    _assert_review_link(home.text, result.approval_id, "review_operations_brief")
+    assert "Abrir o brief completo e verificado" in detail.text
+    assert review.status_code == 200
+    assert review.headers["cache-control"] == "no-store"
+    assert "# Brief operacional do Automation Foundry" in review.text
+    assert "Nada foi enviado, publicado ou gasto" in review.text
+    assert f'action="/approvals/{result.approval_id}/approve"' in review.text
+    assert f'action="/approvals/{result.approval_id}/reject"' in review.text
+    assert 'value="test-csrf-token"' in review.text
+    assert tampered.status_code == 409
+
+
 async def test_javascript_media_type_does_not_depend_on_the_operating_system(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4157,3 +4426,71 @@ async def test_javascript_media_type_does_not_depend_on_the_operating_system(
 
     assert asset.status_code == 200
     assert asset.headers["content-type"].startswith("text/javascript")
+
+
+async def _fetch_home(session_factory: async_sessionmaker[AsyncSession]) -> str:
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.get("/")
+    assert response.status_code == 200
+    return response.text
+
+
+async def test_dashboard_home_puts_pending_decisions_and_alerts_first(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _seed_dashboard(session_factory)
+
+    html = await _fetch_home(session_factory)
+
+    attention = html.index('id="precisa-de-voce"')
+    assert attention < html.index('id="runs"') < html.index('id="automacoes"')
+    assert "Approval pendente" in html
+    assert "Worker unavailable" in html
+    assert "Nada precisa de você agora" not in html
+    assert "Tudo em ordem" not in html
+    assert re.search(r"\d+ itens? pedem? atenção", html)
+
+
+async def test_dashboard_home_shows_a_good_empty_state_when_nothing_needs_attention(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    html = await _fetch_home(session_factory)
+
+    assert "Nada precisa de você agora" in html
+    assert "Nenhuma aprovação pendente e nenhum alerta ativo." in html
+    assert "Tudo em ordem" in html
+    assert "pedem atenção" not in html
+
+
+async def test_dashboard_home_has_unique_ids_and_a_dialog_per_manual_executor(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _seed_dashboard(session_factory)
+
+    html = await _fetch_home(session_factory)
+
+    ids = re.findall(r'\sid="([^"]+)"', html)
+    duplicated = sorted({value for value in ids if ids.count(value) > 1})
+    assert duplicated == []
+    manual_slugs = [
+        executor.slug
+        for executor in list_automation_executors()
+        if executor.supports_manual_start
+    ]
+    assert manual_slugs
+    for slug in manual_slugs:
+        assert f'id="executar-{slug}"' in html
+        assert f'action="/automations/{slug}/runs"' in html
+    # Cada ação de escrita continua sendo um POST com token CSRF e confirmação.
+    assert html.count('name="csrf_token"') == html.count("<form ")
+    assert html.count('name="confirmation"') == html.count("<form ")

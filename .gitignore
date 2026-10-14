@@ -47,6 +47,8 @@ storage/*
 
 # Imports locais escolhidos pelo operador também são mídia privada, não código.
 imports/content-visuals/*
+# A lista de pautas do disparo rápido é conteúdo editorial do operador.
+imports/content-pautas.txt
 
 # ── Alembic (revisions são versionadas; o banco local não) ───────────────────
 

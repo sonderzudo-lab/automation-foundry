@@ -196,6 +196,55 @@ def test_assembly_backend_remains_fail_closed_until_ffmpeg_audit() -> None:
         Settings(_env_file=None, content_assembly_backend="ffmpeg")
 
 
+def test_qwen3_clone_quality_test_requires_its_profile_and_local_paths() -> None:
+    paths = {
+        "content_tts_qwen3_python_path": "D:/labs/tts-qwen3/venv/Scripts/python.exe",
+        "content_tts_qwen3_model_dir": "D:/labs/tts-qwen3/model",
+        "content_tts_reference_audio_path": "D:/voice/owner-reference.wav",
+        "content_tts_reference_text_path": "D:/voice/owner-reference.txt",
+    }
+    settings = Settings(
+        _env_file=None,
+        content_tts_backend="qwen3_tts_clone_quality_test",
+        content_tts_voice_id="owner-reference",
+        content_tts_language_code="pt",
+        **paths,
+    )
+    assert settings.content_tts_backend == "qwen3_tts_clone_quality_test"
+
+    with pytest.raises(ValidationError, match="language code 'pt'"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="qwen3_tts_clone_quality_test",
+            content_tts_voice_id="owner-reference",
+            content_tts_language_code="p",
+            **paths,
+        )
+    with pytest.raises(ValidationError, match="not a Kokoro voice"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="qwen3_tts_clone_quality_test",
+            content_tts_voice_id="pm_alex",
+            content_tts_language_code="pt",
+            **paths,
+        )
+    with pytest.raises(ValidationError, match="content_tts_reference_text_path is required"):
+        Settings(
+            _env_file=None,
+            content_tts_backend="qwen3_tts_clone_quality_test",
+            content_tts_voice_id="owner-reference",
+            content_tts_language_code="pt",
+            **{**paths, "content_tts_reference_text_path": " "},
+        )
+
+
+def test_assembly_edit_defaults_to_static_and_accepts_only_known_edits() -> None:
+    assert Settings(_env_file=None).content_assembly_edit == "static"
+    assert Settings(_env_file=None, content_assembly_edit="motion").content_assembly_edit == "motion"
+    with pytest.raises(ValidationError, match="content_assembly_edit"):
+        Settings(_env_file=None, content_assembly_edit="zoompan")
+
+
 def test_ffmpeg_quality_test_requires_pinned_binary_hashes() -> None:
     digest = "a" * 64
     settings = Settings(
@@ -357,3 +406,55 @@ def test_retention_inventory_limits_are_bounded() -> None:
 
     assert settings.retention_inventory_max_files == 200_000
     assert settings.retention_inventory_max_items == 200
+
+
+def _audiovisual_settings(**overrides: object) -> Settings:
+    """A configuration with every stage the A3 review gate guards enabled."""
+    values: dict[str, object] = {
+        "content_tts_backend": "kokoro_quality_test",
+        "content_tts_voice_id": "pm_alex",
+        "content_visual_backend": "local_assets_quality_test",
+        "content_caption_backend": "approved_text_timing_quality_test",
+        "content_assembly_backend": "ffmpeg_quality_test",
+        "content_ffmpeg_expected_sha256": "a" * 64,
+        "content_ffprobe_expected_sha256": "b" * 64,
+    }
+    return Settings(_env_file=None, **{**values, **overrides})  # type: ignore[arg-type]
+
+
+def test_visual_review_requires_visuals_captions_and_assembly() -> None:
+    assert _audiovisual_settings().content_visual_review_enabled is False
+    assert (
+        _audiovisual_settings(content_visual_review_enabled=True).content_visual_review_enabled
+        is True
+    )
+    for disabled in (
+        "content_visual_backend",
+        "content_caption_backend",
+        "content_assembly_backend",
+    ):
+        with pytest.raises(ValidationError, match="A3 visual review requires"):
+            _audiovisual_settings(**{disabled: "disabled", "content_visual_review_enabled": True})
+
+
+def test_generated_visuals_require_the_review_gate_and_local_paths() -> None:
+    generated = {"content_visual_backend": "flux2_klein_quality_test"}
+    paths = {
+        "content_visual_flux2_python_path": "D:/labs/venv/Scripts/python.exe",
+        "content_visual_flux2_model_dir": "D:/labs/model",
+    }
+    with pytest.raises(ValidationError, match="A3 visual review gate"):
+        _audiovisual_settings(**generated, **paths)
+    with pytest.raises(ValidationError, match="content_visual_flux2_python_path is required"):
+        _audiovisual_settings(**generated, content_visual_review_enabled=True)
+    with pytest.raises(ValidationError, match="content_visual_flux2_model_dir is required"):
+        _audiovisual_settings(
+            **generated,
+            content_visual_review_enabled=True,
+            content_visual_flux2_python_path=paths["content_visual_flux2_python_path"],
+            content_visual_flux2_model_dir="  ",
+        )
+    settings = _audiovisual_settings(**generated, **paths, content_visual_review_enabled=True)
+    assert settings.content_visual_backend == "flux2_klein_quality_test"
+    with pytest.raises(ValidationError, match="content_visual_backend"):
+        _audiovisual_settings(content_visual_backend="flux2_klein")

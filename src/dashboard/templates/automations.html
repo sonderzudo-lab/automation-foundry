@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% import "_sections.html" as sec %}
+{% set active_page = "automations" %}
+
+{% block title %}Automações · Automation Foundry{% endblock %}
+{% block breadcrumb %}<li><span aria-current="page">Automações</span></li>{% endblock %}
+
+{% block content %}
+  {% if notice %}
+  <div class="alert alert-warning" role="status">
+    <span class="alert-icon">{{ ui.icon("triangle-alert") }}</span>
+    <div class="alert-body"><p class="alert-title">{{ notice }}</p></div>
+  </div>
+  {% endif %}
+
+  {{ sec.page_head("Gestão", "Automações", "Execução recente por automação: a janela considera apenas resultados succeeded e failed; runs em andamento e canceladas ficam fora do denominador. Aqui também ficam o disparo manual, a habilitação administrativa e o kill switch.") }}
+
+  {% if snapshot.automations %}
+  <div class="grid grid-cards">
+    {% for automation in snapshot.automations %}
+    {% set executor = executors|selectattr("slug", "equalto", automation.slug)|first %}
+    {% set summary = snapshot.execution_summaries|selectattr("automation_slug", "equalto", automation.slug)|first %}
+    {% set last_run = snapshot.recent_runs|selectattr("automation_slug", "equalto", automation.slug)|first %}
+    {{ sec.automation_card(automation, executor, summary, last_run, csrf_token) }}
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="card"><div class="card-content">
+    {{ ui.empty("bot", "Nenhuma automação registrada", "Nenhuma automação registrada para calcular indicadores.") }}
+  </div></div>
+  {% endif %}
+{% endblock %}
+
+{% block dialogs %}
+  {% include "_dialogs_run.html" %}
+  {% include "_dialogs_manage.html" %}
+{% endblock %}

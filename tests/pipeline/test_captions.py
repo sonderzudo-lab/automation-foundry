@@ -910,3 +910,166 @@ async def test_a4_marks_run_failed_when_evidence_registration_fails(
     assert run.error is not None
     assert run.error["code"] == "CONTENT_CAPTIONS_EVIDENCE_PERSIST_FAILED"
     assert caption_artifacts == []
+
+
+def _timed_words(text: str) -> tuple[CaptionWord, ...]:
+    return tuple(
+        CaptionWord(
+            text=word,
+            start_seconds=Decimal(index) / 2,
+            end_seconds=Decimal(index + 1) / 2,
+        )
+        for index, word in enumerate(text.split())
+    )
+
+
+def _block_texts(text: str, *, max_characters: int = 42) -> list[str]:
+    return [
+        " ".join(word.text for word in block)
+        for block in captions._caption_blocks(
+            _timed_words(text),
+            max_characters=max_characters,
+        )
+    ]
+
+
+def test_caption_blocks_follow_sentences_and_clauses() -> None:
+    blocks = _block_texts(
+        "Descubra sugestões práticas para organizar sua mesa antes de começar um "
+        "projeto criativo. Primeiro, separa só os itens que você vai usar. O resto, "
+        "põe em outro lugar. E soltar a mente."
+    )
+
+    assert blocks == [
+        "Descubra sugestões práticas para",
+        "organizar sua mesa antes",
+        "de começar um projeto criativo.",
+        "Primeiro, separa só os itens",
+        "que você vai usar.",
+        "O resto, põe em outro lugar.",
+        "E soltar a mente.",
+    ]
+
+
+def test_caption_blocks_respect_limits_and_keep_every_word_once() -> None:
+    text = (
+        "Uma frase bem comprida sem nenhuma vírgula que precisa ser dividida em "
+        "partes parecidas para caber na tela. Não. Extraordinariamente "
+        "incompreensibilíssimas circunstâncias, afinal."
+    )
+    blocks = _block_texts(text)
+
+    assert " ".join(blocks).split() == text.split()
+    assert all(len(block.split()) <= 6 for block in blocks)
+    assert all(len(block) <= 42 or len(block.split()) == 1 for block in blocks)
+    assert "Não." in blocks
+    # Eighteen words without a comma are cut into even parts, not 6 + 6 + 6 by luck
+    # of a fixed step: the same rule gives 4 + 5 for nine words.
+    assert [len(block.split()) for block in blocks[:3]] == [6, 6, 6]
+    assert [
+        len(block.split())
+        for block in _block_texts("Um dois três quatro cinco seis sete oito nove.")
+    ] == [4, 5]
+
+
+def test_rendered_ass_keeps_word_timings_inside_each_block() -> None:
+    rendered = captions._render_ass(
+        _timed_words("Primeiro, separa os itens. Depois, guarda o resto."),
+        video_format="short",
+    )
+    dialogues = [line for line in rendered.splitlines() if line.startswith("Dialogue:")]
+
+    assert len(dialogues) == 2
+    assert dialogues[0].startswith("Dialogue: 0,0:00:00.00,0:00:02.00,")
+    assert dialogues[1].startswith("Dialogue: 0,0:00:02.00,0:00:04.00,")
+    assert rendered.count("{\\kf50}") == 8
+
+
+def _restored_texts(heard: str, approved: str) -> list[str]:
+    restored = captions._restore_approved_wording(_timed_words(heard), approved)
+    assert all(
+        earlier.start_seconds < earlier.end_seconds <= later.start_seconds
+        for earlier, later in zip(restored, restored[1:], strict=False)
+    )
+    return [word.text for word in restored]
+
+
+def test_captions_show_the_approved_spelling_over_the_heard_timings() -> None:
+    heard = _timed_words("terceiro, abre um caderno e deixa a mao. nao e para tarefas.")
+    restored = captions._restore_approved_wording(
+        heard,
+        "Terceiro, abre um caderno e deixa à mão. Não é pra tarefas.",
+    )
+
+    assert [word.text for word in restored] == [
+        "Terceiro,", "abre", "um", "caderno", "e", "deixa", "à", "mão.",
+        "Não", "é", "pra", "tarefas.",
+    ]
+    assert [(word.start_seconds, word.end_seconds) for word in restored] == [
+        (word.start_seconds, word.end_seconds) for word in heard
+    ]
+
+
+def test_approved_wording_spreads_over_a_different_number_of_heard_words() -> None:
+    heard = _timed_words("cerca de dez por cento das mesas")
+    restored = captions._restore_approved_wording(heard, "Cerca de 10% das mesas")
+
+    assert [word.text for word in restored] == ["Cerca", "de", "10%", "das", "mesas"]
+    assert (restored[2].start_seconds, restored[2].end_seconds) == (
+        heard[2].start_seconds,
+        heard[4].end_seconds,
+    )
+
+
+def test_approved_wording_keeps_unmatched_speech_and_short_missed_words() -> None:
+    # A word only the transcription heard stays; a short approved run the
+    # transcription missed borrows time from the word before it.
+    assert _restored_texts("separa ahn os itens", "Separa os itens.") == [
+        "Separa", "ahn", "os", "itens.",
+    ]
+    assert _restored_texts("separa os itens", "Separa só os itens.") == [
+        "Separa", "só", "os", "itens.",
+    ]
+    assert _restored_texts("os itens", "Separa os itens.") == ["Separa", "os", "itens."]
+    # A long approved run with no speech behind it is not invented on screen.
+    assert _restored_texts(
+        "separa os itens",
+        "Separa os itens. Depois guarda tudo no lugar certo.",
+    ) == ["Separa", "os", "itens."]
+
+
+def test_approved_wording_glues_lone_dashes_and_rejects_unsafe_text() -> None:
+    assert _restored_texts("um prato. o importante", "um prato — o importante") == [
+        "um", "prato —", "o", "importante",
+    ]
+    # A lone dash is glued to the word before it and does not count as a word.
+    assert _block_texts("um prato — o importante é isso.") == [
+        "um prato — o importante é isso."
+    ]
+    assert _block_texts("— um prato só.") == ["um prato só."]
+    assert _restored_texts("uma {tag} aqui", "Uma {tag} aqui") == ["Uma", "{tag}", "aqui"]
+    heard = _timed_words("so palavras")
+    assert captions._restore_approved_wording(heard, "— …") == heard
+
+
+def test_caption_blocks_never_show_a_list_number_or_punctuation_alone() -> None:
+    """Na run 17 a tela mostrou blocos só com "1.", "2.", "3." e "?’"."""
+    words = _timed_words(
+        "mas você não consegue começar? ?’ A resposta não está na urgência. "
+        "1. O que é mais fácil começar? Em 2024. Ela voltou."
+    )
+    blocks = captions._caption_blocks(words, max_characters=42)
+    texts = [" ".join(word.text for word in block) for block in blocks]
+
+    assert texts == [
+        "mas você não consegue começar?",
+        "A resposta não está na urgência.",
+        "1. O que é mais fácil começar?",
+        "Em 2024.",
+        "Ela voltou.",
+    ]
+    # The punctuation the transcription heard keeps its time on screen with the
+    # word before it, so speech coverage does not drop.
+    assert blocks[0][-1].end_seconds == words[5].end_seconds
+    assert blocks[2][0].start_seconds == words[12].start_seconds
+

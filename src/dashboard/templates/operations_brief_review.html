@@ -1,0 +1,26 @@
+{% extends "review_base.html" %}
+{% import "_macros.html" as ui %}
+{% set review_effect = "Nada é enviado, publicado ou gasto: aprovar apenas conclui a run local." %}
+{% block title %}Revisão do brief #{{ review.approval_id }} · Automation Foundry{% endblock %}
+{% block review_title %}Revisão do brief operacional{% endblock %}
+{% block review_kicker %}brief #{{ review.brief_artifact_id }} · run #{{ review.run_id }}{% endblock %}
+{% block review_verify %}O brief e a evidência foram lidos do storage local, conferidos contra o tamanho e o SHA-256 registrados e reconstruídos: o texto é exatamente o que a evidência gera. Nada é enviado, publicado ou gasto.{% endblock %}
+{% block review_hashes %}
+<span>Brief: {{ ui.hash_chip(review.brief_sha256, "SHA-256 do brief") }}</span>
+<span>Evidência #{{ review.evidence_artifact_id }}: {{ ui.hash_chip(review.evidence_sha256, "SHA-256 da evidência") }}</span>
+{% endblock %}
+{% block review_body %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Janela analisada</h2></div>
+  <div class="card-content">
+    <dl class="kv">
+      <dt>Janela</dt><dd>{{ review.window_days }} dia(s), de {{ review.window_start }} a {{ review.window_end_exclusive }} (exclusive, UTC)</dd>
+      <dt>Evidência</dt><dd>artefato #{{ review.evidence_artifact_id }}</dd>
+    </dl>
+  </div>
+</section>
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Brief</h2><p class="card-description">Texto Markdown completo, exatamente como será registrado.</p></div>
+  <div class="card-content"><pre class="prose-mono">{{ review.markdown }}</pre></div>
+</section>
+{% endblock %}

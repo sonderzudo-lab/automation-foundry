@@ -60,6 +60,8 @@ class LocalExportPackage:
     thumbnail_review_approval_id: int | None
     video: LocalExportFile
     thumbnail: LocalExportFile | None
+    # "quality-test-only" when the video must not be treated as monetizable.
+    visual_usage_scope: str | None
     manifest: dict[str, object]
     manifest_bytes: bytes
     manifest_sha256: str
@@ -125,6 +127,10 @@ async def load_local_export_package(
         storage_root=storage_root,
         final_review=final_review,
     )
+    if output.get("visual_usage_scope") != final_review.visual_usage_scope:
+        raise LocalExportIntegrityError(
+            "local export usage scope conflicts with the reviewed video"
+        )
     files = [
         _manifest_file(video),
         *([] if thumbnail is None else [_manifest_file(thumbnail)]),
@@ -139,6 +145,9 @@ async def load_local_export_package(
         },
         "files": files,
     }
+    if final_review.visual_usage_scope is not None:
+        manifest["usage_scope"] = final_review.visual_usage_scope
+        manifest["monetizable"] = False
     manifest_bytes = json.dumps(
         manifest,
         ensure_ascii=False,
@@ -151,6 +160,7 @@ async def load_local_export_package(
         thumbnail_review_approval_id=thumbnail_review_approval_id,
         video=video,
         thumbnail=thumbnail,
+        visual_usage_scope=final_review.visual_usage_scope,
         manifest=manifest,
         manifest_bytes=manifest_bytes,
         manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),

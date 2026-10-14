@@ -4,8 +4,11 @@ A1 — Geração de roteiro (ARQUITETURA.md Seção A1).
 Pipeline de 4 etapas encadeadas via Ollama (cliente OpenAI-compatível):
   1. Ângulo editorial específico
   2. Outline estruturado
-  3. Roteiro completo seção por seção
-  4. Hook dos primeiros 15–30 segundos
+  3. Hook — a abertura que será narrada
+  4. Restante do roteiro, que continua a partir do hook
+
+O roteiro final é montado no código como hook + restante, de modo que o hook
+revisado no gate A1 é exatamente a abertura que chega ao TTS.
 
 Cada etapa usa retry exponencial em caso de timeout, falha de conexão
 ou resposta vazia do Ollama.
@@ -20,12 +23,13 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
 import structlog
 from openai import APIConnectionError, APITimeoutError, OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from tenacity import (
     before_sleep_log,
     retry,
@@ -49,12 +53,151 @@ class ScriptResult(BaseModel):
     angle: str        # Ângulo editorial específico e diferenciado
     outline: str      # Estrutura/outline do vídeo
     full_script: str  # Roteiro completo com formatação do modelo (para revisão humana)
-    hook: str         # Abertura dos primeiros 15–30 segundos
+    hook: str         # Abertura narrada: o início de full_script, já sem formatação
     narration: str    # Texto puro para TTS: sem emojis, markdown, stage directions
+    # Frases da narração com número, proporção ou apelo a estudo que a pauta não sustenta.
+    # None significa que a verificação não rodou, como nos bundles anteriores a ela.
+    unsourced_claims: list[str] | None = None
+    # Estilo de abertura e estrutura pedidos para esta geração; None quando não houve pedido.
+    opening_style: str | None = None
+    # False quando o hook final não seguiu o estilo mesmo depois das novas tentativas.
+    opening_style_met: bool | None = None
+    structure: str | None = None
+
+
+class SourcedFact(BaseModel):
+    """Fato fornecido pelo operador na pauta, com a fonte que o sustenta."""
+
+    claim: str = Field(min_length=3, max_length=500)
+    source: str = Field(min_length=3, max_length=500)
 
 
 class EmptyResponseError(RuntimeError):
     """Lançada quando o Ollama retorna resposta vazia ou só whitespace."""
+
+
+class ScriptLengthError(RuntimeError):
+    """Lançada quando a narração segue fora da faixa de palavras após todas as tentativas."""
+
+
+# Faixa de palavras faladas aceita por formato, a mesma prometida em _FORMAT_CONTEXT.
+# O formato long ainda não atravessou uma run real e segue sem faixa verificada.
+_NARRATION_WORD_RANGE: dict[str, tuple[int, int]] = {"short": (100, 150)}
+_LENGTH_ATTEMPTS = 3
+
+
+# ── Variedade: estilo de abertura e estrutura ─────────────────────────────────
+
+OpeningStyle = Literal["question", "contrarian", "scene", "mistake", "promise"]
+Structure = Literal["direct", "myth_fact", "list", "story"]
+
+# A ordem define a rotação automática feita pelo executor.
+OPENING_STYLES: tuple[OpeningStyle, ...] = (
+    "contrarian",
+    "scene",
+    "mistake",
+    "promise",
+    "question",
+)
+OPENING_STYLE_LABELS: dict[OpeningStyle, str] = {
+    "question": "Pergunta ao espectador",
+    "contrarian": "Afirmação contra o senso comum",
+    "scene": "Cena do cotidiano",
+    "mistake": "Erro comum",
+    "promise": "Promessa do vídeo",
+}
+STRUCTURE_LABELS: dict[Structure, str] = {
+    "direct": "Direto: gancho, desenvolvimento e fecho",
+    "myth_fact": "Mito vs. fato",
+    "list": "Lista de itens",
+    "story": "História curta",
+}
+
+_OPENING_STYLE_RULES: dict[OpeningStyle, str] = {
+    "question": (
+        "Abra com uma pergunta direta ao espectador sobre uma situação que ele reconhece."
+    ),
+    "contrarian": (
+        "Abra com uma afirmação que contraria uma crença comum sobre o tema. "
+        "Não faça pergunta."
+    ),
+    "scene": (
+        "Abra descrevendo uma cena concreta e curta do cotidiano, como se a câmera já "
+        "estivesse nela. Não faça pergunta e não comece com 'Você'."
+    ),
+    "mistake": (
+        "Abra apontando um erro comum que as pessoas cometem sobre o tema e sinalize "
+        "que existe um jeito melhor. Não faça pergunta."
+    ),
+    "promise": (
+        "Abra dizendo o que o espectador vai conseguir fazer ao final do vídeo, sem "
+        "exagero e sem números. Não faça pergunta."
+    ),
+}
+_OPENING_ATTEMPTS = 3
+
+_STRUCTURE_OUTLINE: dict[Structure, dict[str, str]] = {
+    "direct": {
+        "short": "Crie 3 blocos curtos: gancho, desenvolvimento rápido e call-to-action.",
+        "long": "Crie 3–5 seções com títulos e 2–3 pontos-chave por seção.",
+    },
+    "myth_fact": {
+        "short": (
+            "Crie 3 blocos curtos: o mito em que muita gente acredita, por que ele engana "
+            "e o fato, com uma ação prática."
+        ),
+        "long": (
+            "Crie 3–5 seções, cada uma com um mito comum, por que ele engana e o fato "
+            "correspondente; feche com uma ação prática."
+        ),
+    },
+    "list": {
+        "short": "Crie exatamente 3 itens curtos e paralelos, um por bloco, e um fecho.",
+        "long": (
+            "Crie uma lista de 5 itens, um por seção, com 2–3 pontos-chave cada, "
+            "e uma conclusão."
+        ),
+    },
+    "story": {
+        "short": (
+            "Crie 3 blocos curtos de uma história ilustrativa: personagem e situação, "
+            "a virada e a lição prática."
+        ),
+        "long": (
+            "Crie 3–5 seções de uma história ilustrativa: personagem e situação, "
+            "complicação, virada e lições práticas."
+        ),
+    },
+}
+_STRUCTURE_BODY: dict[Structure, str] = {
+    "direct": "",
+    "myth_fact": " Deixe claro na fala o que é o mito e o que é o fato.",
+    "list": " Anuncie a lista e marque cada item na fala (primeiro, segundo, terceiro).",
+    "story": (
+        " A história é ilustrativa: use um personagem genérico, nunca uma pessoa real, "
+        "e não a apresente como caso documentado."
+    ),
+}
+# Quantidade de itens que a própria estrutura pede; não é um dado sem fonte.
+_STRUCTURE_SUPPORTED_NUMBERS: dict[Structure, dict[str, str]] = {
+    "list": {"short": "3 três", "long": "5 cinco"},
+}
+
+
+def _opening_style_problem(hook: str, style: OpeningStyle) -> str | None:
+    """Motivo determinístico pelo qual o hook não seguiu o estilo, ou None se seguiu."""
+    if style == "question":
+        return None if "?" in hook else "não faz uma pergunta"
+    if "?" in hook:
+        return "contém uma pergunta"
+    if style == "scene" and hook.casefold().startswith("você"):
+        return "começa com 'Você'"
+    return None
+
+
+def _opening_style_met(hook: str, style: OpeningStyle) -> bool:
+    """Verificação determinística mínima de que o hook seguiu o estilo pedido."""
+    return _opening_style_problem(hook, style) is None
 
 
 # ── Constante de idioma ───────────────────────────────────────────────────────
@@ -89,8 +232,13 @@ _THINK_RE = _THINK_COMPLETE_RE
 # Emojis — cobre os principais blocos Unicode
 _EMOJI_RE = re.compile(
     "["
+    "\U0001F000-\U0001F2FF"   # Peças de jogo, letras em caixa e indicadores regionais (bandeiras)
     "\U0001F300-\U0001F9FF"   # Emoticons, misc symbols, transport, flags, etc.
     "\U0001FA00-\U0001FAFF"   # Símbolos e pictogramas recentes
+    "\U000E0020-\U000E007F"   # Tags invisíveis de bandeiras regionais
+    "\U0000FE00-\U0000FE0F"   # Seletores de variação (o U+FE0F que sobra de "⚠️")
+    "\U0000200D"              # Zero-width joiner de sequências compostas
+    "\U000020E3"              # Keycap combinante de "1️⃣"
     "\U00002600-\U000026FF"   # Símbolos miscelâneos (☀️☔etc)
     "\U00002700-\U000027BF"   # Dingbats
     "\U00002B00-\U00002BFF"   # Símbolos e setas miscelâneos
@@ -124,6 +272,32 @@ _TIMING_ANNOTATION_RE = re.compile(
     r"|\[\d+:\d{2}\]",
     re.UNICODE,
 )
+
+# Rótulos entre colchetes ([10-40 segundos], [Desenvolvimento]) e a contagem que o
+# modelo anota ao receber uma faixa de tamanho: (100 palavras), (Total: ~120 palavras).
+# Hashtags no fim do roteiro: sem isto o "#" some e as palavras são narradas.
+_HASHTAG_RE = re.compile(r"(?<!\w)#\w+")
+_BRACKET_LABEL_RE = re.compile(r"\[[^\]\n]{0,60}\]")
+_WORD_COUNT_NOTE_RE = re.compile(r"\([^)\n]{0,20}\d+\s+palavras[^)\n]{0,20}\)", re.IGNORECASE)
+
+# Marcadores de lista no início da linha. A voz lê "1." como "um" e a legenda, que
+# copia a grafia da narração, mostra "1." sozinho na tela (run 17).
+_NUMBERED_MARKER_RE = re.compile(r"^(\d{1,2})[.)]\s+(?=\S)")
+_BULLET_MARKER_RE = re.compile(r"^[-•]\s+(?=\S)")
+_SPOKEN_ORDINALS = (
+    "Primeiro", "Segundo", "Terceiro", "Quarto", "Quinto",
+    "Sexto", "Sétimo", "Oitavo", "Nono", "Décimo",
+)
+_FIRST_WORD_RE = re.compile(r"^(\w+)(?=\W|$)")
+
+# "Ex:" e "Ex.:" — a transcrição não ouve a abreviação e o trecho fica sem legenda.
+_EXAMPLE_ABBREVIATION_RE = re.compile(r"(?<!\w)([Ee])x\.?:(?=\s)")
+
+# Aspas: as que fecham ou abrem sem par na mesma linha são removidas (na run 17 o
+# modelo abriu aspas num parágrafo e fechou noutro). Apóstrofo entre letras fica.
+_OPENING_QUOTES = {"“": "”", "‘": "’", "«": "»"}
+_CLOSING_QUOTES = {closing: opening for opening, closing in _OPENING_QUOTES.items()}
+_SYMMETRIC_QUOTES = frozenset("\"'")
 
 
 # ── Funções de limpeza ────────────────────────────────────────────────────────
@@ -189,6 +363,8 @@ def _normalize_markdown(text: str) -> str:
     text = _MD_UNDERLINE_RE.sub(r"\1", text)       # __texto__ → texto
     text = _STAGE_DIRECTION_RE.sub("", text)       # *stage* → remove
     text = _TIMING_ANNOTATION_RE.sub("", text)     # (0-5s) → remove
+    text = _BRACKET_LABEL_RE.sub("", text)         # [10-40 segundos] → remove
+    text = _WORD_COUNT_NOTE_RE.sub("", text)       # (100 palavras) → remove
     text = re.sub(r"[*#_]+", "", text)             # asteriscos/hashes soltos
     return text.strip()
 
@@ -213,7 +389,10 @@ def _extract_narration(text: str) -> str:
       5. Formatação Markdown (**negrito**, __sublinhado__) — mantém o texto.
       6. Anotações de tempo — (0-5s), [00:30].
       7. Emojis.
-      8. Whitespace extra e linhas em branco múltiplas.
+      8. O que a voz não deve ler como está escrito: "Ex:" vira "Por exemplo,",
+         aspas sem par na mesma linha somem e marcadores de lista viram fala
+         ("1." → "Primeiro,") ou somem ("-", "•", números acima de 10).
+      9. Whitespace extra e linhas em branco múltiplas.
 
     Args:
         text: full_script gerado pelo LLM.
@@ -261,8 +440,11 @@ def _extract_narration(text: str) -> str:
         line = _MD_BOLD_RE.sub(r"\1", line)
         line = _MD_UNDERLINE_RE.sub(r"\1", line)
 
-        # 6. Remove anotações de tempo
+        # 6. Remove anotações de tempo, rótulos entre colchetes e contagem de palavras
         line = _TIMING_ANNOTATION_RE.sub("", line)
+        line = _BRACKET_LABEL_RE.sub("", line)
+        line = _WORD_COUNT_NOTE_RE.sub("", line)
+        line = _HASHTAG_RE.sub("", line)
 
         # 7. Remove emojis
         line = _EMOJI_RE.sub("", line)
@@ -270,8 +452,17 @@ def _extract_narration(text: str) -> str:
         # Remove asteriscos/hashes soltos que sobraram
         line = re.sub(r"[*#_]+", "", line)
 
+        # 8. Escreve como a voz deve falar: "Ex:" por extenso, sem aspas sem par
+        #    e sem marcador de lista com hífen ou bolinha.
+        line = _EXAMPLE_ABBREVIATION_RE.sub(
+            lambda match: "Por exemplo," if match.group(1) == "E" else "por exemplo,",
+            line,
+        )
+        line = _drop_unpaired_quotes(line)
+
         # Normaliza espaços internos
         line = re.sub(r"  +", " ", line).strip()
+        line = _BULLET_MARKER_RE.sub("", line)
 
         if line:
             cleaned.append(line)
@@ -279,7 +470,66 @@ def _extract_narration(text: str) -> str:
     # Reconstrói, colapsando sequências de linhas em branco para no máximo uma
     result = "\n".join(cleaned)
     result = re.sub(r"\n{3,}", "\n\n", result)
-    return result.strip()
+    return _speak_list_markers(result.strip())
+
+
+def _drop_unpaired_quotes(line: str) -> str:
+    """Remove as aspas que não abrem e fecham na mesma linha."""
+    open_positions: dict[str, list[int]] = {}
+    unpaired: set[int] = set()
+    for index, char in enumerate(line):
+        before = line[index - 1] if index else ""
+        after = line[index + 1] if index + 1 < len(line) else ""
+        if char in "'’" and before.isalnum() and after.isalnum():
+            continue  # apóstrofo: d'água
+        if char in _SYMMETRIC_QUOTES:
+            kind = char
+            opening = not before or before.isspace() or before in "([{—–"
+        elif char in _OPENING_QUOTES:
+            kind, opening = char, True
+        elif char in _CLOSING_QUOTES:
+            kind, opening = _CLOSING_QUOTES[char], False
+        else:
+            continue
+        stack = open_positions.setdefault(kind, [])
+        if opening:
+            stack.append(index)
+        elif stack:
+            stack.pop()
+        else:
+            unpaired.add(index)
+    for stack in open_positions.values():
+        unpaired.update(stack)
+    return "".join(char for index, char in enumerate(line) if index not in unpaired)
+
+
+def _speak_list_markers(text: str) -> str:
+    """Troca "1." no início da linha por "Primeiro," (até 10) ou remove o número.
+
+    A inicial da palavra seguinte só vira minúscula quando o próprio texto já usa
+    essa palavra em minúscula ("O que" → "o que"); um nome próprio fica como está.
+    """
+    lines: list[str] = []
+    for line in text.split("\n"):
+        marker = _NUMBERED_MARKER_RE.match(line)
+        if marker is None:
+            lines.append(line)
+            continue
+        rest = line[marker.end():]
+        number = int(marker.group(1))
+        if not 1 <= number <= len(_SPOKEN_ORDINALS):
+            lines.append(rest)
+            continue
+        first = _FIRST_WORD_RE.match(rest)
+        if first is not None:
+            word = first.group(1)
+            lowered = word.lower()
+            if word[0].isupper() and word[1:] == lowered[1:] and re.search(
+                rf"(?<!\w){re.escape(lowered)}(?!\w)", text
+            ):
+                rest = lowered + rest[len(word):]
+        lines.append(f"{_SPOKEN_ORDINALS[number - 1]}, {rest}")
+    return "\n".join(lines)
 
 
 # ── Cliente ───────────────────────────────────────────────────────────────────
@@ -391,6 +641,91 @@ def _system_base(persona: str, fmt: Literal["short", "long"]) -> str:
     )
 
 
+def _facts_rule(facts: Sequence[SourcedFact]) -> str:
+    """Bloco anexado a todos os system prompts: só entra dado que o operador forneceu."""
+    if not facts:
+        return (
+            "\n\nFATOS – REGRA ABSOLUTA:\n"
+            "Você não recebeu fontes para esta pauta. NÃO cite números, percentuais, "
+            "proporções (como 'o dobro' ou 'três vezes mais'), estatísticas, estudos, "
+            "pesquisas, instituições ou especialistas. Explique o tema de forma "
+            "qualitativa, com exemplos do cotidiano."
+        )
+    listed = "\n".join(f"  • {fact.claim} (fonte: {fact.source})" for fact in facts)
+    return (
+        "\n\nFATOS – REGRA ABSOLUTA:\n"
+        "Os únicos números, estatísticas e estudos que você pode citar são os da lista "
+        "abaixo, sem alterar os valores. NÃO invente nenhum outro dado.\n"
+        f"{listed}"
+    )
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|\n+")
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+_NUMBER_WORDS: dict[str, str] = {
+    "um": "1", "uma": "1", "dois": "2", "duas": "2", "três": "3", "quatro": "4",
+    "cinco": "5", "seis": "6", "sete": "7", "oito": "8", "nove": "9", "dez": "10",
+}
+# Proporções por extenso: as duas afirmações inventadas na run 11 tinham esta forma.
+_PROPORTION_RE = re.compile(
+    r"\b(?:dobr[ao]m?|dobrar|triplo|triplicam?|metade|por cento|milh(?:ão|ões)|bilh(?:ão|ões)"
+    r"|(?:duas|três|quatro|cinco|seis|sete|oito|nove|dez|cem)\s+vezes\s+"
+    r"(?:mais|menos|maior|menor|melhor|pior))\b",
+    re.IGNORECASE,
+)
+_AUTHORITY_RE = re.compile(
+    r"\b(?:estudos?|pesquisas?|cientistas|pesquisadores|especialistas|a ciência|dados)\s+"
+    r"(?:já\s+)?(?:mostr|revel|indic|comprov|apont|diz|afirm|suger|confirm|prov|descobr)\w*"
+    r"|\b(?:segundo|de acordo com)\s+(?:\w+\s+){0,2}(?:estudos?|pesquisas?|cientistas"
+    r"|pesquisadores|especialistas|a ciência)\b",
+    re.IGNORECASE,
+)
+_MAX_UNSOURCED_CLAIMS = 20
+
+
+def find_unsourced_claims(
+    narration: str,
+    *,
+    topic: str,
+    facts: Sequence[SourcedFact],
+    also_supported: str = "",
+) -> list[str]:
+    """
+    Lista as frases da narração com dado que nem a pauta nem os fatos sustentam.
+
+    É uma heurística determinística para orientar a revisão humana, não uma
+    checagem de fatos: marca números ausentes da pauta e dos fatos, proporções
+    por extenso e, quando nenhum fato foi fornecido, apelos a estudos.
+    also_supported traz números que o próprio pedido introduz, como a quantidade
+    de itens de uma lista.
+    """
+    supported = " ".join(
+        [topic, also_supported, *(fact.claim for fact in facts)]
+    ).casefold()
+    allowed_numbers = set(_NUMBER_RE.findall(supported))
+    allowed_numbers.update(
+        digit for word, digit in _NUMBER_WORDS.items() if re.search(rf"\b{word}\b", supported)
+    )
+    claims: list[str] = []
+    for raw in _SENTENCE_SPLIT_RE.split(narration):
+        sentence = raw.strip()
+        if not sentence or sentence in claims:
+            continue
+        unsupported_number = any(
+            number not in allowed_numbers for number in _NUMBER_RE.findall(sentence)
+        )
+        unsupported_proportion = any(
+            match.group(0).casefold() not in supported
+            for match in _PROPORTION_RE.finditer(sentence)
+        )
+        appeals_to_authority = not facts and _AUTHORITY_RE.search(sentence) is not None
+        if unsupported_number or unsupported_proportion or appeals_to_authority:
+            claims.append(sentence)
+        if len(claims) == _MAX_UNSOURCED_CLAIMS:
+            break
+    return claims
+
+
 # ── Prompts das 4 etapas ──────────────────────────────────────────────────────
 
 
@@ -418,12 +753,10 @@ def _prompts_outline(
     angle: str,
     persona: str,
     fmt: Literal["short", "long"],
+    structure: Structure = "direct",
 ) -> tuple[str, str]:
     """Etapa 2: outline estruturado com base no ângulo."""
-    if fmt == "long":
-        structure_hint = "Crie 3–5 seções com títulos e 2–3 pontos-chave por seção."
-    else:
-        structure_hint = "Crie 3 blocos curtos: gancho, desenvolvimento rápido e call-to-action."
+    structure_hint = _STRUCTURE_OUTLINE[structure][fmt]
 
     system = (
         f"{_system_base(persona, fmt)}\n\n"
@@ -438,20 +771,41 @@ def _prompts_outline(
     return system, user
 
 
-def _prompts_full_script(
+_HOOK_LENGTH: dict[str, str] = {
+    "short": "uma ou duas frases curtas, com no máximo 25 palavras",
+    "long": "os primeiros 15–30 segundos de fala, entre 40 e 80 palavras",
+}
+
+
+def _prompts_hook(
     topic: str,
     angle: str,
     outline: str,
     persona: str,
     fmt: Literal["short", "long"],
     recent_openings: list[str] | None,
+    *,
+    opening_style: OpeningStyle | None = None,
+    refused: tuple[str, str] | None = None,
 ) -> tuple[str, str]:
     """
-    Etapa 3: roteiro completo, seção por seção.
+    Etapa 3: hook — a abertura que será narrada antes do restante do roteiro.
 
     Se recent_openings for fornecido, o system prompt instrui o modelo a
     NÃO repetir nenhuma dessas aberturas (variação anti-template).
+    opening_style pede um tipo de abertura; refused traz o hook recusado na
+    tentativa anterior e o motivo.
     """
+    style_block = ""
+    if opening_style is not None:
+        style_block = f"\n\nESTILO DA ABERTURA – OBRIGATÓRIO:\n{_OPENING_STYLE_RULES[opening_style]}"
+        if refused is not None:
+            # Só "não seguiu o estilo" não bastou: o modelo repetiu a pergunta três vezes.
+            style_block += (
+                f" A tentativa anterior foi recusada porque {refused[1]}: «{refused[0]}». "
+                "Escreva uma abertura diferente dessa."
+            )
+
     openings_block = ""
     if recent_openings:
         listed = "\n".join(f"  • {o}" for o in recent_openings)
@@ -464,38 +818,100 @@ def _prompts_full_script(
 
     system = (
         f"{_system_base(persona, fmt)}\n\n"
-        "Sua tarefa: escrever o ROTEIRO COMPLETO, seção por seção, seguindo o outline. "
-        "Inclua falas naturais, transições e linguagem coloquial PT-BR. "
-        "Escreva APENAS o texto falado — sem didascálias de câmera ou stage directions."
+        "Sua tarefa: escrever o HOOK — a abertura falada do vídeo, que prende a atenção "
+        "do espectador imediatamente, cria curiosidade e deixa claro por que vale "
+        f"assistir até o fim. Tamanho: {_HOOK_LENGTH[fmt]}.\n"
+        "Este texto será narrado exatamente como você escrever: responda APENAS com o "
+        "texto falado, sem emojis, rótulos, aspas em volta ou comentários extras."
+        f"{style_block}"
         f"{openings_block}"
     )
     user = (
         f"Tema: {topic}\n"
         f"Ângulo editorial: {angle}\n"
         f"Outline:\n{outline}\n\n"
-        "Escreva o roteiro completo."
+        "Escreva o hook."
     )
     return system, user
 
 
-def _prompts_hook(
-    full_script: str,
+def _prompts_full_script(
+    topic: str,
+    angle: str,
+    outline: str,
+    hook: str,
     persona: str,
     fmt: Literal["short", "long"],
+    *,
+    structure: Structure = "direct",
+    body_words: tuple[int, int] | None = None,
+    previous_words: int | None = None,
 ) -> tuple[str, str]:
-    """Etapa 4: hook — os primeiros 15–30 segundos do vídeo."""
+    """
+    Etapa 4: restante do roteiro, que continua a partir do hook já escrito.
+
+    body_words é a faixa de palavras que cabe ao restante depois de descontado o
+    hook; previous_words informa o tamanho de uma tentativa recusada.
+    """
+    length_block = ""
+    if body_words is not None:
+        length_block = (
+            f"\n\nTAMANHO OBRIGATÓRIO: escreva entre {body_words[0]} e {body_words[1]} "
+            "palavras faladas, sem contar a abertura. Não anote a contagem na resposta."
+        )
+        if previous_words is not None:
+            # Só o número recusado não bastou: o modelo devolveu o mesmo tamanho três vezes.
+            if previous_words < body_words[0]:
+                correction = (
+                    f"curta demais: escreva pelo menos {body_words[0] - previous_words} "
+                    "palavras a mais"
+                )
+            else:
+                correction = (
+                    f"longa demais: corte pelo menos {previous_words - body_words[1]} palavras"
+                )
+            length_block += (
+                f" A tentativa anterior ficou com {previous_words} palavras e foi recusada "
+                f"por estar {correction}."
+            )
+
     system = (
         f"{_system_base(persona, fmt)}\n\n"
-        "Sua tarefa: extrair/refinar o HOOK do roteiro — os primeiros 15–30 segundos "
-        "de fala que prendem a atenção do espectador imediatamente. "
-        "O hook deve criar curiosidade e deixar claro por que vale assistir o vídeo inteiro.\n"
-        "Responda APENAS com o texto do hook, sem comentários extras."
+        "Sua tarefa: escrever o RESTANTE DO ROTEIRO, seção por seção, seguindo o outline. "
+        "A abertura do vídeo já está escrita e será narrada antes do seu texto: "
+        "continue a partir dela, sem repeti-la nem reescrevê-la. "
+        "Inclua falas naturais, transições e linguagem coloquial PT-BR. "
+        "Escreva APENAS o texto falado — sem didascálias de câmera ou stage directions, "
+        "sem rótulos de seção, marcações de tempo ou aspas em volta do texto."
+        f"{_STRUCTURE_BODY[structure]}"
+        f"{length_block}"
     )
     user = (
-        f"Roteiro completo:\n{full_script}\n\n"
-        "Extraia ou refine o hook (abertura de 15–30 segundos)."
+        f"Tema: {topic}\n"
+        f"Ângulo editorial: {angle}\n"
+        f"Outline:\n{outline}\n"
+        f"Abertura já escrita:\n{hook}\n\n"
+        "Escreva o restante do roteiro."
     )
     return system, user
+
+
+def _drop_repeated_opening(body: str, hook: str) -> str:
+    """Remove o hook quando o modelo o repete no início do restante do roteiro."""
+    words = hook.split()
+    if not words:
+        return body
+    repeated = re.match(
+        r"[\s\"“”*_]*" + r"\s+".join(re.escape(word) for word in words) + r"[\s\"“”*_]*",
+        body,
+        re.IGNORECASE,
+    )
+    return body[repeated.end():] if repeated else body
+
+
+def _count_words(text: str) -> int:
+    """Conta as palavras faladas: tokens com ao menos uma letra ou dígito."""
+    return sum(1 for token in text.split() if any(char.isalnum() for char in token))
 
 
 # ── Função principal ──────────────────────────────────────────────────────────
@@ -507,6 +923,9 @@ def generate_script(
     fmt: Literal["short", "long"],
     recent_openings: list[str] | None = None,
     *,
+    facts: Sequence[SourcedFact] = (),
+    opening_style: OpeningStyle | None = None,
+    structure: Structure | None = None,
     client: OpenAI | None = None,
 ) -> ScriptResult:
     """
@@ -517,34 +936,122 @@ def generate_script(
         persona: Identidade editorial do canal (tom, estilo, público-alvo).
         fmt: Formato — 'short' (até 60s) ou 'long' (10+ min).
         recent_openings: Aberturas usadas em vídeos recentes (anti-template).
+        facts: Fatos com fonte fornecidos na pauta; são os únicos dados citáveis.
+        opening_style: Tipo de abertura pedido para o hook; None não pede nenhum.
+        structure: Estrutura do roteiro; None usa a estrutura direta.
         client: Cliente OpenAI injetável para testes. Se None, cria do settings.
 
     Returns:
         ScriptResult com angle, outline, full_script, hook e narration.
         O campo `narration` é o texto limpo para o TTS (sem markdown/emojis/think).
+        `unsourced_claims` lista as frases que a revisão humana precisa conferir.
     """
     if client is None:
         client = _make_client()
 
-    log.info("script_gen_start", topic=topic, fmt=fmt)
+    log.info("script_gen_start", topic=topic, fmt=fmt, facts=len(facts))
+    facts_rule = _facts_rule(facts)
 
     sys1, usr1 = _prompts_angle(topic, persona, fmt)
-    angle = _call_llm(client, system=sys1, user=usr1, step="angle")
+    angle = _call_llm(client, system=sys1 + facts_rule, user=usr1, step="angle")
 
-    sys2, usr2 = _prompts_outline(topic, angle, persona, fmt)
-    outline = _call_llm(client, system=sys2, user=usr2, step="outline")
+    script_structure: Structure = structure or "direct"
+    sys2, usr2 = _prompts_outline(topic, angle, persona, fmt, script_structure)
+    outline = _call_llm(client, system=sys2 + facts_rule, user=usr2, step="outline")
 
-    sys3, usr3 = _prompts_full_script(topic, angle, outline, persona, fmt, recent_openings)
-    full_script = _call_llm(client, system=sys3, user=usr3, step="full_script")
+    # Um hook fora do estilo pedido é refeito; se continuar fora, segue marcado para
+    # a revisão humana em vez de derrubar a run.
+    opening_style_met: bool | None = None
+    refused: tuple[str, str] | None = None
+    for attempt in range(1, _OPENING_ATTEMPTS + 1):
+        sys3, usr3 = _prompts_hook(
+            topic,
+            angle,
+            outline,
+            persona,
+            fmt,
+            recent_openings,
+            opening_style=opening_style,
+            refused=refused,
+        )
+        # O hook passa pela mesma limpeza da narração: o texto revisado é o texto falado.
+        # Aspas em volta do hook inteiro são do modelo, não da fala.
+        hook = _extract_narration(
+            _call_llm(client, system=sys3 + facts_rule, user=usr3, step="hook")
+        ).strip("\"“”")
+        if opening_style is None:
+            break
+        problem = _opening_style_problem(hook, opening_style)
+        opening_style_met = problem is None
+        if problem is None:
+            break
+        log.warning("script_opening_style_missed", style=opening_style, attempt=attempt)
+        refused = (hook, problem)
 
-    sys4, usr4 = _prompts_hook(full_script, persona, fmt)
-    hook = _call_llm(client, system=sys4, user=usr4, step="hook")
+    # O prompt sozinho não segura o tamanho: a narração é contada e, fora da faixa,
+    # só o restante do roteiro é refeito, com o tamanho recusado informado ao modelo.
+    word_range = _NARRATION_WORD_RANGE.get(fmt)
+    hook_words = _count_words(hook)
+    body_range = (
+        None
+        if word_range is None
+        else (max(1, word_range[0] - hook_words), max(1, word_range[1] - hook_words))
+    )
+    previous_words: int | None = None
+    for attempt in range(1, _LENGTH_ATTEMPTS + 1):
+        sys4, usr4 = _prompts_full_script(
+            topic,
+            angle,
+            outline,
+            hook,
+            persona,
+            fmt,
+            structure=script_structure,
+            body_words=body_range,
+            previous_words=previous_words,
+        )
+        body = _drop_repeated_opening(
+            _call_llm(client, system=sys4 + facts_rule, user=usr4, step="full_script"),
+            hook,
+        )
+        full_script = f"{hook}\n\n{body}"
 
-    # Limpeza programática: mais rápida, determinística e sem custo de GPU extra
-    # vs. uma 5ª chamada LLM (que adicionaria ~30s e poderia introduzir novos artefatos).
-    narration = _extract_narration(full_script)
+        # Limpeza programática: mais rápida, determinística e sem custo de GPU extra
+        # vs. uma 5ª chamada LLM (que adicionaria ~30s e poderia introduzir novos artefatos).
+        narration = _extract_narration(full_script)
+        words = _count_words(narration)
+        if word_range is None or word_range[0] <= words <= word_range[1]:
+            break
+        log.warning(
+            "script_length_out_of_range",
+            fmt=fmt,
+            attempt=attempt,
+            words=words,
+            minimum=word_range[0],
+            maximum=word_range[1],
+        )
+        previous_words = max(0, words - hook_words)
+    else:
+        raise ScriptLengthError(
+            f"narração com {words} palavras após {_LENGTH_ATTEMPTS} tentativas "
+            f"no formato '{fmt}'"
+        )
 
-    log.info("script_gen_done", topic=topic, fmt=fmt, narration_chars=len(narration))
+    unsourced_claims = find_unsourced_claims(
+        narration,
+        topic=topic,
+        facts=facts,
+        also_supported=_STRUCTURE_SUPPORTED_NUMBERS.get(script_structure, {}).get(fmt, ""),
+    )
+
+    log.info(
+        "script_gen_done",
+        topic=topic,
+        fmt=fmt,
+        narration_chars=len(narration),
+        narration_words=words,
+        unsourced_claims=len(unsourced_claims),
+    )
 
     return ScriptResult(
         angle=angle,
@@ -552,6 +1059,10 @@ def generate_script(
         full_script=full_script,
         hook=hook,
         narration=narration,
+        unsourced_claims=unsourced_claims,
+        opening_style=opening_style,
+        opening_style_met=opening_style_met,
+        structure=structure,
     )
 
 

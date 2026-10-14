@@ -23,13 +23,21 @@ from sqlalchemy.ext.asyncio import (
 from src.core.database import Base
 from src.pipeline import a1_executor
 from src.pipeline.a1_executor import (
+    ContentScriptInput,
     execute_content_script_run,
     finalize_content_script_approval,
     load_content_script_review,
     parse_content_script_form,
     prepare_content_script_run,
 )
-from src.pipeline.script_gen import EmptyResponseError, ScriptResult
+from src.pipeline.script_gen import (
+    OPENING_STYLE_LABELS,
+    OPENING_STYLES,
+    EmptyResponseError,
+    ScriptLengthError,
+    ScriptResult,
+    SourcedFact,
+)
 from src.platform.approval_service import approval_payload_digest, decide_approval
 from src.platform.control_service import request_run_cancellation
 from src.platform.models import (
@@ -90,6 +98,31 @@ def test_manual_form_is_typed_bounded_and_normalized() -> None:
         "format": "short",
         "recent_openings": ["Primeira abertura", "Segunda abertura"],
     }
+    with_facts = parse_content_script_form(
+        {
+            "topic": "Sono e memória",
+            "persona": "Ciência acessível",
+            "format": "short",
+            "recent_openings": "",
+            "facts": (
+                "Adultos precisam de 7 horas de sono | https://example.test/sono\n\n"
+                "  A | B dura 90 minutos |  Manual do sono, p. 12  "
+            ),
+        }
+    )
+    assert with_facts["facts"] == [
+        {"claim": "Adultos precisam de 7 horas de sono", "source": "https://example.test/sono"},
+        {"claim": "A | B dura 90 minutos", "source": "Manual do sono, p. 12"},
+    ]
+    with pytest.raises(ValueError, match="fato \\| fonte"):
+        parse_content_script_form(
+            {
+                "topic": "Sono e memória",
+                "persona": "Ciência acessível",
+                "format": "short",
+                "facts": "Número solto sem fonte",
+            }
+        )
     with pytest.raises(ValidationError):
         parse_content_script_form(
             {
@@ -203,6 +236,123 @@ async def test_a1_success_is_observable_idempotent_and_reviewable(
     assert ledger[0].currency == "BRL"
 
 
+async def test_a1_passes_sourced_facts_and_records_unsourced_claims(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    fact = {"claim": "Adultos precisam de 7 horas de sono", "source": "https://example.test/sono"}
+    received: list[object] = []
+
+    def generate(
+        _topic: str,
+        _persona: str,
+        _fmt: str,
+        _recent_openings: list[str] | None,
+        *,
+        facts: tuple[SourcedFact, ...],
+    ) -> ScriptResult:
+        received.extend(facts)
+        return _generated_script().model_copy(
+            update={"unsourced_claims": ["Quem dorme pouco erra o dobro."]}
+        )
+
+    result = await execute_content_script_run(
+        session,
+        idempotency_key="content-a1-facts",
+        input_payload={**_input_payload(), "facts": [fact]},
+        script_generator=generate,
+        storage_root=tmp_path / "storage",
+    )
+
+    run = await session.get(Run, result.run_id)
+    step = await session.get(StepRun, result.step_run_id)
+    artifact = await session.get(Artifact, result.artifact_id)
+    assert run is not None and step is not None and artifact is not None
+    assert received == [SourcedFact(**fact)]
+    assert run.input_payload == {**_input_payload(), "facts": [fact]}
+    assert step.output_payload is not None
+    assert step.output_payload["unsourced_claims"] == 1
+    bundle = json.loads(
+        (tmp_path / "storage" / artifact.relative_path).read_text(encoding="utf-8")
+    )
+    assert bundle["facts"] == [fact]
+    assert bundle["result"]["unsourced_claims"] == ["Quem dorme pouco erra o dobro."]
+
+    approval = await session.get(Approval, result.approval_id)
+    assert approval is not None
+    review = await load_content_script_review(
+        session,
+        approval=approval,
+        storage_root=tmp_path / "storage",
+    )
+    assert review.facts == (SourcedFact(**fact),)
+    assert review.unsourced_claims == ("Quem dorme pouco erra o dobro.",)
+
+
+async def test_a1_rotates_the_automatic_opening_style_and_shows_what_was_asked(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    received: list[dict[str, object]] = []
+
+    def generate(*_args: object, **options: object) -> ScriptResult:
+        received.append(options)
+        return _generated_script().model_copy(
+            update={
+                "opening_style": options["opening_style"],
+                "opening_style_met": False,
+                "structure": options["structure"],
+            }
+        )
+
+    results = [
+        await execute_content_script_run(
+            session,
+            idempotency_key=f"content-a1-variety-{index}",
+            input_payload={**_input_payload(), "opening_style": "auto", "structure": "list"},
+            script_generator=generate,
+            storage_root=tmp_path / "storage",
+        )
+        for index in range(2)
+    ]
+
+    styles = [options["opening_style"] for options in received]
+    assert all(style in OPENING_STYLES for style in styles)
+    # Runs consecutivas recebem estilos diferentes, e cada run guarda o que recebeu.
+    assert styles[0] != styles[1]
+    assert all(options["structure"] == "list" for options in received)
+    assert all("facts" not in options for options in received)
+    run = await session.get(Run, results[0].run_id)
+    step = await session.get(StepRun, results[0].step_run_id)
+    approval = await session.get(Approval, results[0].approval_id)
+    assert run is not None and step is not None and approval is not None
+    assert run.input_payload == {
+        **_input_payload(),
+        "opening_style": "auto",
+        "structure": "list",
+    }
+    assert step.output_payload is not None
+    assert step.output_payload["opening_style"] == styles[0]
+    assert step.output_payload["structure"] == "list"
+    review = await load_content_script_review(
+        session,
+        approval=approval,
+        storage_root=tmp_path / "storage",
+    )
+    assert review.opening_style == OPENING_STYLE_LABELS[styles[0]]  # type: ignore[index]
+    assert review.opening_style_met is False
+    assert review.structure == "Lista de itens"
+
+
+def test_a1_input_without_facts_keeps_the_payload_of_earlier_runs() -> None:
+    """Runs anteriores ao campo `facts` precisam continuar idempotentes."""
+    assert ContentScriptInput.model_validate(_input_payload()).as_payload() == _input_payload()
+    with pytest.raises(ValidationError):
+        ContentScriptInput.model_validate(
+            {**_input_payload(), "facts": [{"claim": "Número sem fonte", "source": ""}]}
+        )
+
+
 async def test_a1_failure_is_structured_retryable_and_has_no_artifact(
     session: AsyncSession,
     tmp_path: Path,
@@ -235,6 +385,39 @@ async def test_a1_failure_is_structured_retryable_and_has_no_artifact(
     }
     assert step is not None and step.error == run.error
     assert artifacts == []
+    assert not (tmp_path / "storage").exists()
+
+
+async def test_a1_script_outside_the_word_range_fails_retryable_without_artifact(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    def too_short(*_args: object) -> ScriptResult:
+        raise ScriptLengthError("private narration detail")
+
+    result = await execute_content_script_run(
+        session,
+        idempotency_key="content-a1-length",
+        input_payload=_input_payload(),
+        script_generator=too_short,
+        storage_root=tmp_path / "storage",
+    )
+
+    run = await session.get(Run, result.run_id)
+    step = await session.get(StepRun, result.step_run_id)
+    artifacts = list((await session.scalars(select(Artifact))).all())
+    approvals = list((await session.scalars(select(Approval))).all())
+    assert run is not None and run.status == RunStatus.FAILED.value
+    assert step is not None and step.status == RunStatus.FAILED.value
+    assert run.error == step.error == {
+        "code": "CONTENT_SCRIPT_LENGTH_OUT_OF_RANGE",
+        "exception_type": "RetryableTaskError",
+        "retryable": True,
+        "timed_out": False,
+    }
+    assert artifacts == []
+    assert approvals == []
+    assert "private narration detail" not in str(run.error)
     assert not (tmp_path / "storage").exists()
 
 
@@ -367,6 +550,7 @@ async def test_a1_approval_reviews_exact_bundle_and_finalizes_idempotently(
         "content_caption_alignment_gate_enabled",
         False,
     )
+    monkeypatch.setattr(a1_executor.settings, "content_visual_review_enabled", False)
     result = await execute_content_script_run(
         session,
         idempotency_key="content-a1-approved",
@@ -384,6 +568,9 @@ async def test_a1_approval_reviews_exact_bundle_and_finalizes_idempotently(
     )
     assert review.full_script == _generated_script().full_script
     assert review.narration == _generated_script().narration
+    # Um roteiro sem a verificação não é o mesmo que um roteiro sem frases marcadas.
+    assert review.unsourced_claims is None
+    assert review.facts == ()
     assert not hasattr(review, "persona")
 
     await decide_approval(

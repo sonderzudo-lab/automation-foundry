@@ -15,10 +15,11 @@ from pathlib import Path
 import psutil
 from celery import Celery
 from redis.asyncio import Redis
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import Settings, settings
+from src.platform.models import DispatchStatus, RunDispatch
 
 type HealthMetric = str | int | float | bool | None
 
@@ -74,6 +75,7 @@ async def collect_health_report(
                 celery,
                 timeout=timeout,
                 assumed_queues=assumed_worker_queues,
+                busy_queues=await _busy_dispatch_queues(session),
             ),
         )
     else:
@@ -220,13 +222,38 @@ async def probe_redis(configuration: Settings) -> HealthCheck:
     )
 
 
+async def _busy_dispatch_queues(session: AsyncSession) -> frozenset[str]:
+    """Queues whose worker holds a live claim on a dispatch right now.
+
+    A Windows worker runs one task at a time in its main thread and cannot answer
+    the inspect request until the task ends, so a long A2 or A3 step would look
+    like a missing worker. A claim with an unexpired lease is durable evidence that
+    the worker is alive and busy. Any failure reading it assumes nothing.
+    """
+    try:
+        queues = await session.scalars(
+            select(RunDispatch.queue).where(
+                RunDispatch.status == DispatchStatus.CLAIMED.value,
+                RunDispatch.lease_expires_at > datetime.now(UTC).replace(tzinfo=None),
+            )
+        )
+        return frozenset(queues.all())
+    except Exception:
+        return frozenset()
+
+
 async def probe_workers(
     celery: Celery,
     *,
     timeout: float,
     assumed_queues: frozenset[str] = frozenset(),
+    busy_queues: frozenset[str] = frozenset(),
 ) -> HealthCheck:
-    """Inspect active queue bindings without exposing worker hostnames."""
+    """Inspect active queue bindings without exposing worker hostnames.
+
+    A queue whose worker did not answer but holds a live claim counts as busy,
+    not missing.
+    """
 
     def inspect() -> object:
         return celery.control.inspect(timeout=timeout).active_queues()
@@ -235,17 +262,21 @@ async def probe_workers(
         asyncio.to_thread(inspect),
         timeout=timeout + _CELERY_INSPECT_TIMEOUT_MARGIN_SECONDS,
     )
-    counts = _worker_queue_counts(replies, assumed_queues=assumed_queues)
+    answered = _worker_queue_counts(replies, assumed_queues=assumed_queues)
+    busy = [queue for queue in ("gpu", "cpu", "io") if answered[queue] == 0 and queue in busy_queues]
+    counts = _worker_queue_counts(replies, assumed_queues=assumed_queues | frozenset(busy))
     missing = [queue for queue in ("gpu", "cpu", "io") if counts[queue] == 0]
     status = HealthStatus.PASS if not missing else HealthStatus.FAIL
+    if missing:
+        summary = "filas sem worker: " + ", ".join(missing)
+    elif busy:
+        summary = "todas as filas possuem worker; ocupado com tarefa em execução: " + ", ".join(busy)
+    else:
+        summary = "todas as filas possuem worker"
     return HealthCheck(
         name="workers",
         status=status,
-        summary=(
-            "todas as filas possuem worker"
-            if not missing
-            else "filas sem worker: " + ", ".join(missing)
-        ),
+        summary=summary,
         metrics={f"{queue}_workers": counts[queue] for queue in ("gpu", "cpu", "io")},
     )
 

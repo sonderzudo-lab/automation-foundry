@@ -1,0 +1,70 @@
+{% import "_macros.html" as ui %}
+{# Requer: executors, snapshot (experiments, automations), csrf_token. #}
+{# ===== Executar módulo: um diálogo por executor com disparo manual ===== #}
+{% for executor in executors if executor.supports_manual_start %}
+  {% set registered = snapshot.automations|selectattr("slug", "equalto", executor.slug)|first %}
+  {% if not (registered and not registered.enabled) %}
+  <div class="dialog-backdrop" id="executar-{{ executor.slug }}">
+    <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="executar-{{ executor.slug }}-title" tabindex="-1">
+      <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar">{{ ui.icon("x") }}</a>
+      <header class="dialog-header"><h2 id="executar-{{ executor.slug }}-title">Executar · {{ executor.name }}</h2><p>Roda localmente; runs, steps e evidências ficam registrados no banco.</p></header>
+      {% set quick = executor.slug == "content-engine" and quick_run is defined %}
+      {% if executor.slug == "content-engine" %}
+      <p><a class="btn btn-outline btn-sm" href="/automations/content-engine/readiness">{{ ui.icon("circle-check") }}Verificar preparação</a> <span class="hint">Abre a página de diagnóstico; nada é consultado até você confirmar lá. Não dispara uma run.</span></p>
+      {% endif %}
+      {% if quick %}
+      <form class="form-stack" method="post" action="/automations/content-engine/quick-run">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="confirmation" value="start-quick-run">
+        {% if quick_run.available %}
+        <p class="text-sm">Sorteia uma pauta da sua lista ({{ quick_run.unused_count }} de {{ quick_run.topic_count }} ainda não usadas), a estrutura e o estilo visual, e usa a persona padrão. Roda só localmente; nada é publicado.</p>
+        <div class="dialog-footer"><button class="btn" type="submit">{{ ui.icon("play") }}Disparar run aleatória</button></div>
+        {% else %}
+        <p class="text-sm">Disparo rápido indisponível: {{ quick_run.problem }}. Confira <code>CONTENT_QUICK_TOPICS_PATH</code> e <code>CONTENT_DEFAULT_PERSONA</code>.</p>
+        {% endif %}
+      </form>
+      <details>
+        <summary class="btn btn-outline btn-sm">Preencher manualmente</summary>
+      {% endif %}
+      <form class="form-stack" method="post" action="/automations/{{ executor.slug }}/runs">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="field">
+          <label for="idempotency-key-{{ executor.slug }}">Chave de idempotência{% if quick %} <span class="muted">(opcional)</span>{% endif %}</label>
+          <input class="input mono" id="idempotency-key-{{ executor.slug }}" type="text" name="idempotency_key" maxlength="255"{% if not quick %} required{% endif %}>
+          <span class="hint">{% if quick %}Em branco, o painel gera uma. {% endif %}Repetir a mesma chave não cria uma segunda run.</span>
+        </div>
+        {% for field in executor.manual_input_fields %}
+        <div class="field">
+          <label for="manual-{{ executor.slug }}-{{ field.name }}">{{ field.label }}</label>
+          {% if field.control == "select" %}
+          <select class="select" id="manual-{{ executor.slug }}-{{ field.name }}" name="{{ field.name }}" {% if field.required %}required{% endif %}>
+            {% for value, label in field.options %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+          </select>
+          {% elif field.control == "textarea" %}
+          <textarea class="textarea" id="manual-{{ executor.slug }}-{{ field.name }}" name="{{ field.name }}" maxlength="{{ field.max_length }}" {% if field.required %}required{% endif %}>{% if quick and field.name == "persona" %}{{ quick_run.persona }}{% endif %}</textarea>
+          {% else %}
+          <input class="input" id="manual-{{ executor.slug }}-{{ field.name }}" type="text" name="{{ field.name }}" maxlength="{{ field.max_length }}" {% if field.required %}required{% endif %}>
+          {% endif %}
+        </div>
+        {% endfor %}
+        <div class="field">
+          <label for="experiment-{{ executor.slug }}">Experimento ativo <span class="muted">(opcional)</span></label>
+          <select class="select" id="experiment-{{ executor.slug }}" name="experiment_id">
+            <option value="">Sem experimento</option>
+            {% for experiment in snapshot.experiments if experiment.automation_slug == executor.slug and experiment.status == "running" %}
+            <option value="{{ experiment.id }}">{{ experiment.name }} · {{ experiment.control_variant }} vs {{ experiment.candidate_variant }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="start-example-run" required> Confirmo a execução local sem publicação, mensagem ou gasto externo.</label>
+        <div class="dialog-footer">
+          <a class="btn btn-outline" href="#">Cancelar</a>
+          <button class="btn" type="submit">{{ ui.icon("play") }}Executar módulo</button>
+        </div>
+      </form>
+      {% if quick %}</details>{% endif %}
+    </section>
+  </div>
+  {% endif %}
+{% endfor %}
