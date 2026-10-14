@@ -332,16 +332,14 @@
     <a class="dialog-scrim" href="#" aria-label="Fechar diálogo" tabindex="-1"></a>
     <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="decidir-{{ approval.id }}-title" tabindex="-1">
       <a class="btn btn-ghost btn-icon btn-sm dialog-close" href="#" aria-label="Fechar">{{ ui.icon("x") }}</a>
-      <header class="dialog-header"><h2 id="decidir-{{ approval.id }}-title">Approval #{{ approval.id }} · {{ approval.action }}</h2><p>A decisão é imutável e fica registrada com actor e motivo.</p></header>
+      <header class="dialog-header"><h2 id="decidir-{{ approval.id }}-title">Approval #{{ approval.id }} · {{ approval.action }}</h2><p>A decisão é imutável e fica registrada com data e observação.</p></header>
       {% if approval.review_payload %}
       <details class="disclosure neutral">
         <summary>{{ ui.icon("circle-check") }}Aprovar approval<span class="chev">{{ ui.icon("chevron-right") }}</span></summary>
         <form class="form-stack" method="post" action="/approvals/{{ approval.id }}/approve">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <div class="field"><label for="approve-actor-{{ approval.id }}">Actor local</label><input class="input" id="approve-actor-{{ approval.id }}" type="text" name="actor" maxlength="200" autocomplete="username" required></div>
-          <div class="field"><label for="approve-reason-{{ approval.id }}">Motivo da aprovação</label><textarea class="textarea" id="approve-reason-{{ approval.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
-          <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="approve-approval" required> Confirmo a aprovação desta ação conforme a revisão acima.</label>
-          <div><button class="btn btn-success" type="submit">{{ ui.icon("circle-check") }}Aprovar approval</button></div>
+          <div class="field"><label for="approve-reason-{{ approval.id }}">Observação (opcional)</label><textarea class="textarea" id="approve-reason-{{ approval.id }}" name="reason" maxlength="500"></textarea></div>
+          <div><button class="btn btn-success" type="submit" name="confirmation" value="approve-approval">{{ ui.icon("circle-check") }}Confirmar aprovação</button></div>
         </form>
       </details>
       {% endif %}
@@ -349,10 +347,8 @@
         <summary>{{ ui.icon("circle-x") }}Rejeitar approval<span class="chev">{{ ui.icon("chevron-right") }}</span></summary>
         <form class="form-stack" method="post" action="/approvals/{{ approval.id }}/reject">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <div class="field"><label for="actor-{{ approval.id }}">Actor local</label><input class="input" id="actor-{{ approval.id }}" type="text" name="actor" maxlength="200" autocomplete="username" required></div>
-          <div class="field"><label for="approval-reason-{{ approval.id }}">Motivo da rejeição</label><textarea class="textarea" id="approval-reason-{{ approval.id }}" name="reason" minlength="1" maxlength="500" required></textarea></div>
-          <label class="check-row"><input class="checkbox" type="checkbox" name="confirmation" value="reject-approval" required> Confirmo a rejeição definitiva desta approval.</label>
-          <div><button class="btn btn-destructive" type="submit">{{ ui.icon("circle-x") }}Rejeitar approval</button></div>
+          <div class="field"><label for="approval-reason-{{ approval.id }}">Observação (opcional)</label><textarea class="textarea" id="approval-reason-{{ approval.id }}" name="reason" maxlength="500"></textarea></div>
+          <div><button class="btn btn-destructive" type="submit" name="confirmation" value="reject-approval">{{ ui.icon("circle-x") }}Confirmar rejeição</button></div>
         </form>
       </details>
     </section>

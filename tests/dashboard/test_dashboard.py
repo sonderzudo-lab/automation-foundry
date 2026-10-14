@@ -2870,7 +2870,9 @@ async def test_dashboard_approval_rejection_is_confirmed_immutable_and_audited(
 
     assert detail.status_code == 200
     assert f'action="/approvals/{approval_id}/reject"' in detail.text
-    assert "Confirmo a rejeição definitiva" in detail.text
+    assert "Confirmar rejeição" in detail.text
+    assert 'name="confirmation" value="reject-approval"' in detail.text
+    assert "Actor local" not in detail.text.split("Approval #")[-1]
     assert "Aprovar approval" not in detail.text
     assert "/approve" not in detail.text
     assert "private protected approval summary" not in detail.text
@@ -3166,7 +3168,7 @@ async def test_dashboard_approval_requeues_enabled_tts_continuation_once(
     (
         ("wrong-token", "reject-approval", "local-owner", 403),
         ("test-csrf-token", "not-confirmed", "local-owner", 400),
-        ("test-csrf-token", "reject-approval", "", 400),
+        ("test-csrf-token", "", "local-owner", 400),
     ),
 )
 async def test_dashboard_approval_rejection_fails_closed_for_invalid_requests(
@@ -3216,6 +3218,59 @@ async def test_dashboard_approval_rejection_fails_closed_for_invalid_requests(
     assert approval is not None
     assert approval.status == ApprovalStatus.PENDING.value
     assert events == []
+
+
+@pytest.mark.parametrize(
+    ("decision", "note", "expected_status", "expected_reason"),
+    (
+        ("approve", None, ApprovalStatus.APPROVED, "Aprovado sem observação."),
+        ("approve", "  legenda conferida  ", ApprovalStatus.APPROVED, "legenda conferida"),
+        ("reject", None, ApprovalStatus.REJECTED, "Rejeitado sem observação."),
+        ("reject", "", ApprovalStatus.REJECTED, "Rejeitado sem observação."),
+    ),
+)
+async def test_dashboard_decision_needs_only_the_confirm_button_and_an_optional_note(
+    session_factory: async_sessionmaker[AsyncSession],
+    decision: str,
+    note: str | None,
+    expected_status: ApprovalStatus,
+    expected_reason: str,
+) -> None:
+    _, approval_id = await _seed_pending_approval(
+        session_factory,
+        with_review_projection=True,
+    )
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    data = {
+        "csrf_token": "test-csrf-token",
+        "confirmation": f"{decision}-approval",
+    }
+    if note is not None:
+        data["reason"] = note
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.post(f"/approvals/{approval_id}/{decision}", data=data)
+        unexpected = await client.post(
+            f"/approvals/{approval_id}/{decision}",
+            data={**data, "extra": "field"},
+        )
+
+    assert response.status_code == 303
+    assert unexpected.status_code == 400
+    async with session_factory() as session:
+        approval = await session.get(Approval, approval_id)
+    assert approval is not None
+    assert approval.status == expected_status.value
+    assert approval.decided_by == "local-owner"
+    assert approval.decision_reason == expected_reason
 
 
 async def test_dashboard_approval_rejection_conflicts_with_invalid_run_state(
@@ -4037,8 +4092,6 @@ async def test_dashboard_a8_serves_verified_pngs_and_persists_exact_selection(
             data={
                 "csrf_token": "test-csrf-token",
                 "confirmation": "approve-approval",
-                "actor": "local-owner",
-                "reason": "melhor representação visual do vídeo",
                 "thumbnail_artifact_id": str(selected.id),
             },
         )

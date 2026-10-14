@@ -31,11 +31,8 @@
 {% endblock %}
 {% block review_decision %}
   {% with effect="Aprovar registra apenas a escolha local com published=false; nenhum upload, envio ou gasto existe.",
-          approve_label="Aprovar thumbnail selecionada",
-          reject_label="Rejeitar approval A8",
-          approve_reason_label="Motivo da escolha",
-          approve_confirm="Confirmo a escolha de exatamente uma thumbnail deste conjunto verificado.",
-          reject_confirm="Confirmo que nenhum candidato deve ser aceito e que a run será cancelada.",
+          approve_label="Confirmar thumbnail selecionada",
+          reject_label="Confirmar rejeição de todas",
           reject_heading="Rejeitar todos os candidatos",
           reject_note="Use esta opção se nenhuma imagem representar adequadamente o vídeo. A rejeição cancela a run.",
           pick_hint="Escolha exatamente uma thumbnail à esquerda; ela é enviada junto com este formulário." %}

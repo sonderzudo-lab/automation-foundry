@@ -1285,14 +1285,38 @@ async def _parse_retry_form(request: Request) -> tuple[str, str, str, str, str]:
     return csrf_token, confirmation, idempotency_key, actor, reason
 
 
+# The dashboard is bound to loopback and has one operator, so a decision does
+# not ask who is deciding; the note is optional and a default keeps the audit
+# record non-empty.
+_LOCAL_DECISION_ACTOR = "local-owner"
+_DECISION_WITHOUT_NOTE = {
+    "approve-approval": "Aprovado sem observação.",
+    "reject-approval": "Rejeitado sem observação.",
+}
+
+
+def _decision_actor_and_reason(
+    fields: dict[str, list[str]],
+    *,
+    confirmation: str,
+) -> tuple[str, str]:
+    actor = _optional_single_form_value(fields, "actor", maximum_length=200)
+    reason = _optional_single_form_value(fields, "reason", maximum_length=500)
+    return (
+        actor or _LOCAL_DECISION_ACTOR,
+        reason or _DECISION_WITHOUT_NOTE.get(confirmation, "Decisão sem observação."),
+    )
+
+
 async def _parse_approval_rejection_form(
     request: Request,
 ) -> tuple[str, str, str, str]:
     fields = await _parse_form_fields(request, maximum_fields=4)
+    if set(fields) - {"csrf_token", "confirmation", "actor", "reason"}:
+        raise HTTPException(status_code=400, detail="unexpected approval decision field")
     csrf_token = _single_form_value(fields, "csrf_token", maximum_length=128)
     confirmation = _single_form_value(fields, "confirmation", maximum_length=32)
-    actor = _single_form_value(fields, "actor", maximum_length=200)
-    reason = _single_form_value(fields, "reason", maximum_length=500)
+    actor, reason = _decision_actor_and_reason(fields, confirmation=confirmation)
     return csrf_token, confirmation, actor, reason
 
 
@@ -1330,19 +1354,12 @@ async def _parse_thumbnail_approval_form(
     request: Request,
 ) -> tuple[str, str, str, str, int]:
     fields = await _parse_form_fields(request, maximum_fields=5)
-    expected = {
-        "csrf_token",
-        "confirmation",
-        "actor",
-        "reason",
-        "thumbnail_artifact_id",
-    }
-    if set(fields) != expected:
+    required = {"csrf_token", "confirmation", "thumbnail_artifact_id"}
+    if not required <= set(fields) <= required | {"actor", "reason"}:
         raise HTTPException(status_code=400, detail="invalid thumbnail selection form")
     csrf_token = _single_form_value(fields, "csrf_token", maximum_length=128)
     confirmation = _single_form_value(fields, "confirmation", maximum_length=32)
-    actor = _single_form_value(fields, "actor", maximum_length=200)
-    reason = _single_form_value(fields, "reason", maximum_length=500)
+    actor, reason = _decision_actor_and_reason(fields, confirmation=confirmation)
     artifact_value = _single_form_value(
         fields,
         "thumbnail_artifact_id",

@@ -782,7 +782,8 @@ a.kpi { color: inherit; } a.kpi:hover { text-decoration: none; border-color: col
 /* Thumbnails */
 .thumb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 1rem; }
 .thumb { overflow: hidden; }
-.thumb .thumb-art { display: block; width: 100%; aspect-ratio: 16 / 9; background: var(--muted); border-bottom: 1px solid var(--border); }
+/* A miniatura mantém a proporção do próprio arquivo: 9:16 no short, 16:9 no long. */
+.thumb .thumb-art { display: block; width: 100%; height: auto; background: var(--muted); border-bottom: 1px solid var(--border); }
 .thumb .thumb-body { padding: 0.75rem 1rem 1rem; display: grid; gap: 0.375rem; font-size: 0.8125rem; }
 .thumb .thumb-body strong { font-weight: 600; }
 .thumb .hash-wrap { position: relative; z-index: 2; display: inline-flex; align-items: center; }
