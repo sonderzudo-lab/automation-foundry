@@ -37,6 +37,7 @@ from src.pipeline.script_gen import (
     ScriptLengthError,
     ScriptResult,
     SourcedFact,
+    TextModelUse,
 )
 from src.platform.approval_service import approval_payload_digest, decide_approval
 from src.platform.control_service import request_run_cancellation
@@ -342,6 +343,70 @@ async def test_a1_rotates_the_automatic_opening_style_and_shows_what_was_asked(
     assert review.opening_style == OPENING_STYLE_LABELS[styles[0]]  # type: ignore[index]
     assert review.opening_style_met is False
     assert review.structure == "Lista de itens"
+
+
+async def test_a1_records_the_model_that_actually_wrote_the_script(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    uses = [
+        TextModelUse(provider="codex_exec", model_id="codex-default", calls=3),
+        TextModelUse(
+            provider="ollama", model_id="qwen3:14b", fallback_from="codex_exec", calls=1
+        ),
+    ]
+    generated = _generated_script().model_copy(update={"text_models": uses})
+
+    result = await execute_content_script_run(
+        session,
+        idempotency_key="content-a1-attribution",
+        input_payload=_input_payload(),
+        script_generator=lambda *_args: generated,
+        storage_root=tmp_path / "storage",
+    )
+
+    step = await session.get(StepRun, result.step_run_id)
+    artifact = await session.get(Artifact, result.artifact_id)
+    metrics = list((await session.scalars(select(MetricPoint))).all())
+    assert step is not None and step.output_payload is not None and artifact is not None
+    expected = "codex_exec:codex-default+qwen3:14b"
+    assert step.output_payload["model"] == expected
+    assert [metric.dimensions["model"] for metric in metrics] == [expected]
+    bundle = json.loads(
+        (tmp_path / "storage" / artifact.relative_path).read_text(encoding="utf-8")
+    )
+    assert bundle["model"] == expected
+    assert bundle["result"]["text_models"] == [use.model_dump(mode="json") for use in uses]
+
+    approval = await session.get(Approval, result.approval_id)
+    assert approval is not None
+    review = await load_content_script_review(
+        session, approval=approval, storage_root=tmp_path / "storage"
+    )
+    assert review.hook == generated.hook
+
+
+async def test_a1_without_attribution_keeps_the_configured_ollama_model(
+    session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.pipeline import a1_executor
+
+    monkeypatch.setattr(a1_executor.settings, "ollama_model", "qwen3:14b")
+    result = await execute_content_script_run(
+        session,
+        idempotency_key="content-a1-legacy-attribution",
+        input_payload=_input_payload(),
+        script_generator=lambda *_args: _generated_script(),
+        storage_root=tmp_path / "storage",
+    )
+
+    step = await session.get(StepRun, result.step_run_id)
+    metrics = list((await session.scalars(select(MetricPoint))).all())
+    assert step is not None and step.output_payload is not None
+    assert step.output_payload["model"] == "qwen3:14b"
+    assert [metric.dimensions["model"] for metric in metrics] == ["qwen3:14b"]
 
 
 def test_a1_input_without_facts_keeps_the_payload_of_earlier_runs() -> None:

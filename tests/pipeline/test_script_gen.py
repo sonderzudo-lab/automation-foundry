@@ -36,6 +36,7 @@ from src.pipeline.script_gen import (
     ScriptLengthError,
     ScriptResult,
     SourcedFact,
+    TextModelUse,
     _call_llm,
     _count_words,
     _extract_narration,
@@ -45,6 +46,7 @@ from src.pipeline.script_gen import (
     generate_script,
     sanitize_llm_output,
     save_script,
+    script_model_label,
 )
 from src.pipeline.text_model import (
     TextModelPermanentError,
@@ -1487,3 +1489,56 @@ def test_without_an_injected_client_the_script_uses_the_native_api(
     assert len(bodies) == 4
     assert all(body["options"] == {"num_ctx": 8192} and body["think"] is False for body in bodies)
     assert result.full_script == "hook\n\nroteiro"
+
+
+class _FallingBackTextModel(_ScriptedTextModel):
+    """Responde pelo plano nas duas primeiras etapas e pela reserva local depois."""
+
+    def complete(self, request: TextModelRequest) -> TextModelResult:
+        result = super().complete(request)
+        if len(self.requests) <= 2:
+            return TextModelResult(
+                text=result.text,
+                provider="codex_exec",
+                model_id="codex-default",
+                duration_seconds=result.duration_seconds,
+            )
+        return TextModelResult(
+            text=result.text,
+            provider="ollama",
+            model_id="qwen3:14b",
+            duration_seconds=result.duration_seconds,
+            fallback_from="codex_exec",
+        )
+
+
+def test_the_result_records_who_answered_each_step() -> None:
+    model = _FallingBackTextModel("ângulo", "outline", "hook", "roteiro")
+
+    result = generate_script(topic="Sono", persona="Ciência", fmt="long", text_model=model)
+
+    assert result.text_models == [
+        TextModelUse(provider="codex_exec", model_id="codex-default", calls=2),
+        TextModelUse(
+            provider="ollama", model_id="qwen3:14b", fallback_from="codex_exec", calls=2
+        ),
+    ]
+    assert script_model_label(result, default="x") == "codex_exec:codex-default+qwen3:14b"
+
+
+def test_a_single_ollama_model_keeps_the_label_used_before() -> None:
+    model = _ScriptedTextModel("ângulo", "outline", "hook", "roteiro")
+
+    result = generate_script(topic="Sono", persona="Ciência", fmt="long", text_model=model)
+
+    assert result.text_models == [TextModelUse(provider="ollama", model_id="qwen3:14b", calls=4)]
+    assert script_model_label(result, default="x") == "qwen3:14b"
+
+
+def test_the_legacy_client_leaves_the_attribution_to_the_caller() -> None:
+    client = _client_with("ângulo", "outline", "hook", "roteiro")
+
+    result = generate_script(topic="Sono", persona="Ciência", fmt="long", client=client)
+
+    assert result.text_models is None
+    assert script_model_label(result, default="qwen3:14b") == "qwen3:14b"

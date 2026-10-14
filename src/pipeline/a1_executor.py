@@ -64,6 +64,7 @@ from src.pipeline.script_gen import (
     SourcedFact,
     Structure,
     generate_script,
+    script_model_label,
 )
 from src.pipeline.thumbnail_review import (
     THUMBNAIL_REVIEW_APPROVAL_ACTION,
@@ -439,19 +440,21 @@ async def execute_content_script_run(
             # Outra geração pode acertar o tamanho, então um retry explícito é permitido.
             raise RetryableTaskError("CONTENT_SCRIPT_LENGTH_OUT_OF_RANGE") from exc
         _validate_script_result(generated)
+        # Quem de fato escreveu: o provider configurado, ou a reserva após o limite de uso.
+        model = script_model_label(generated, default=settings.ollama_model)
         try:
             _write_script_bundle(
                 artifact_path,
                 input_data=input_data,
                 result=generated,
-                model=settings.ollama_model,
+                model=model,
             )
         except OSError as exc:
             raise RetryableTaskError("CONTENT_STORAGE_WRITE_FAILED") from exc
         return {
             "artifact_relative_path": artifact_path.relative_to(root.resolve()).as_posix(),
             "format": input_data.format,
-            "model": settings.ollama_model,
+            "model": model,
             "full_script_characters": len(generated.full_script),
             "narration_characters": len(generated.narration),
             "unsourced_claims": len(generated.unsourced_claims or []),
@@ -545,7 +548,7 @@ async def execute_content_script_run(
                 source=_SOURCE,
                 dimensions={
                     "format": input_data.format,
-                    "model": settings.ollama_model,
+                    "model": str(output.get("model") or settings.ollama_model),
                 },
             )
             await record_ledger_entry(

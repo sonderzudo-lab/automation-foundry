@@ -48,6 +48,7 @@ from src.pipeline.text_model import (
     TextModel,
     TextModelQuotaError,
     TextModelRequest,
+    TextModelResult,
     TextModelRetryableError,
 )
 from src.pipeline.text_model_factory import configured_text_model
@@ -60,6 +61,16 @@ _std_log = logging.getLogger(__name__)
 
 
 # ── Tipos ─────────────────────────────────────────────────────────────────────
+
+
+class TextModelUse(BaseModel):
+    """Quem respondeu às chamadas de uma geração: provider, modelo e reserva usada."""
+
+    provider: str = Field(min_length=1, max_length=40)
+    model_id: str = Field(min_length=1, max_length=100)
+    # Provider pedido primeiro, que atingiu o limite de uso, quando a reserva respondeu.
+    fallback_from: str | None = Field(default=None, max_length=40)
+    calls: int = Field(ge=1)
 
 
 class ScriptResult(BaseModel):
@@ -78,6 +89,25 @@ class ScriptResult(BaseModel):
     # False quando o hook final não seguiu o estilo mesmo depois das novas tentativas.
     opening_style_met: bool | None = None
     structure: str | None = None
+    # Modelos que de fato escreveram o roteiro, na ordem do primeiro uso. None quando a
+    # geração não passou pelo modelo de texto (bundles antigos, cliente legado injetado).
+    text_models: list[TextModelUse] | None = None
+
+
+def script_model_label(result: ScriptResult, *, default: str) -> str:
+    """Rótulo curto do modelo que escreveu o roteiro, para bundle, step e métricas.
+
+    O Ollama aparece só pelo nome do modelo, como antes; outros providers levam o
+    prefixo (``codex_exec:...``). Uma geração que caiu na reserva no meio lista os dois.
+    """
+    if not result.text_models:
+        return default
+    labels: list[str] = []
+    for use in result.text_models:
+        label = use.model_id if use.provider == "ollama" else f"{use.provider}:{use.model_id}"
+        if label not in labels:
+            labels.append(label)
+    return "+".join(labels)
 
 
 class SourcedFact(BaseModel):
@@ -589,7 +619,9 @@ def _is_transient(exc: BaseException) -> bool:
     before_sleep=before_sleep_log(_std_log, logging.WARNING),
     reraise=True,
 )
-def _complete_step(model: TextModel, *, system: str, user: str, step: str) -> str:
+def _complete_step(
+    model: TextModel, *, system: str, user: str, step: str
+) -> tuple[str, TextModelResult]:
     """Uma etapa pelo modelo de texto, com a mesma política de retry de ``_call_llm``."""
     log.info("llm_step_start", step=step, provider=model.provider, model=model.model_id)
     result = model.complete(TextModelRequest(purpose=f"script_{step}", system=system, user=user))
@@ -606,10 +638,12 @@ def _complete_step(model: TextModel, *, system: str, user: str, step: str) -> st
         model=result.model_id,
         fallback_from=result.fallback_from,
     )
-    return content
+    return content, result
 
 
-def _ask_text_model(model: TextModel, *, system: str, user: str, step: str) -> str:
+def _ask_text_model(
+    model: TextModel, *, system: str, user: str, step: str
+) -> tuple[str, TextModelResult]:
     try:
         return _complete_step(model, system=system, user=user, step=step)
     except TextModelRetryableError as exc:
@@ -957,6 +991,8 @@ def generate_script(
         O campo `narration` é o texto limpo para o TTS (sem markdown/emojis/think).
         `unsourced_claims` lista as frases que a revisão humana precisa conferir.
     """
+    # (provider, modelo, reserva de) -> chamadas respondidas; None no cliente legado.
+    uses: dict[tuple[str, str, str | None], int] | None = None
     if client is not None:
         legacy_client = client
 
@@ -965,9 +1001,14 @@ def generate_script(
 
     else:
         model = text_model if text_model is not None else configured_text_model()
+        uses = {}
+        answered = uses
 
         def ask(*, system: str, user: str, step: str) -> str:
-            return _ask_text_model(model, system=system, user=user, step=step)
+            content, result = _ask_text_model(model, system=system, user=user, step=step)
+            key = (result.provider, result.model_id, result.fallback_from)
+            answered[key] = answered.get(key, 0) + 1
+            return content
 
     log.info("script_gen_start", topic=topic, fmt=fmt, facts=len(facts))
     facts_rule = _facts_rule(facts)
@@ -1083,6 +1124,12 @@ def generate_script(
         opening_style=opening_style,
         opening_style_met=opening_style_met,
         structure=structure,
+        text_models=None
+        if uses is None
+        else [
+            TextModelUse(provider=provider, model_id=model_id, fallback_from=origin, calls=calls)
+            for (provider, model_id, origin), calls in uses.items()
+        ],
     )
 
 
