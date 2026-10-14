@@ -310,10 +310,6 @@ def scene_text_model() -> TextModel:
     return configured_text_model(ollama_timeout_seconds=SCENE_MODEL_TIMEOUT_SECONDS)
 
 
-# The name the A1 executor still uses to build the adapter.
-ollama_scene_model = scene_text_model
-
-
 SCENE_PLAN_ATTEMPTS = 4
 # ``validate_generated_visuals`` refuses a longer generation prompt.
 MAX_GENERATION_PROMPT_CHARS = 2000

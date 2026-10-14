@@ -1,8 +1,12 @@
 # Content Engine — contratos v1 (etapa 0)
 
 Decididos com o proprietário em 2026-10-14. Este documento e os quatro módulos abaixo são a
-fronteira combinada antes de as faixas de implementação começarem. **Nenhum deles está
-ligado à pipeline ainda:** A1, A3 e A5 continuam funcionando exatamente como antes.
+fronteira combinada antes de as faixas de implementação começarem.
+
+Estado em 2026-10-14, depois da junção da faixa A: o modelo de texto e o plano de cenas
+estão ligados ao A1 e ao A3 (adapters em `text_model_ollama.py`, `text_model_codex.py` e
+`text_model_factory.py`), com `ollama` como padrão. O timeline e o perfil de canal ainda não
+estão ligados a nada.
 
 | Contrato | Código | Testes |
 | --- | --- | --- |
@@ -47,20 +51,35 @@ Providers previstos (`TEXT_MODEL_PROVIDERS`):
 - `ollama`: o adapter atual (`qwen3:14b`), sempre pela API nativa com contexto fixo.
   Continua sendo o padrão e o reserva.
 - `codex_exec`: o plano do ChatGPT do proprietário via `codex exec`, que a documentação da
-  OpenAI prevê para scripts com login do ChatGPT. Chamada prevista (Codex CLI 0.159.3,
-  instalado em 2026-10-14):
+  OpenAI prevê para scripts com login do ChatGPT. Chamada implementada
+  (`src/pipeline/text_model_codex.py`, Codex CLI 0.159.3):
 
   ```text
   codex exec --sandbox read-only --skip-git-repo-check --ephemeral --ignore-rules
-             -C <pasta temporária vazia> [-m <modelo>] [--output-schema <arquivo>]
-             -o <arquivo da resposta> -
+             --color never --json -C <pasta temporária vazia> [-m <modelo>]
+             [--output-schema <arquivo>] -o <arquivo da resposta> -
   ```
 
   O prompt vai pelo stdin e a resposta é lida do arquivo `-o`. A pasta vazia impede que o
   agente leia o projeto ou o `AGENTS.md`. O processo nunca recebe credencial pelo pedido, e
-  prompt e resposta não vão para log. Pendente na faixa de implementação: confirmar a
-  mensagem de limite de uso que vira `TextModelQuotaError`, e se `--output-schema` aceita o
-  schema do plano de cenas como está.
+  prompt e resposta não vão para log. Diferenças em relação à chamada combinada na etapa 0:
+
+  - `--json` e `--color never`: as falhas são lidas dos eventos `error` e `turn.failed`, nunca
+    da saída do console, que repete o prompt.
+  - Antes de cada pedido, `codex login status` precisa informar login com ChatGPT; sem isso a
+    chamada falha como `TextModelPermanentError`. `OPENAI_API_KEY` e `CODEX_API_KEY` são
+    removidas do ambiente do processo, para que nenhuma chamada seja cobrada na API.
+  - No Windows, o atalho `codex.cmd` do npm é trocado pelo binário nativo, porque o atalho
+    exige `cmd.exe` e deixaria o processo real rodando depois de um timeout.
+  - `/no_think` (opção do Qwen3) é retirado das instruções enviadas ao Codex.
+
+  Verificado em 2026-10-14, com autorização do proprietário, por um teste real opt-in
+  (`tests/integration/test_codex_exec_text_model.py`): resposta em 19 s com login ChatGPT, e
+  `--output-schema` aceitou o schema do plano de cenas. **Ainda não confirmado:** o texto que
+  o Codex usa ao atingir o limite de uso. Hoje ele é reconhecido por padrão (`usage limit`,
+  `rate limit`, `quota`, `429`) só nos eventos de erro; até ver um limite real, a troca para o
+  reserva não foi observada. Também falta confirmar que o runtime, que roda como tarefa
+  agendada, enxerga o login do Codex do usuário.
 
 O plano do Claude não é usado pela pipeline: a documentação do Agent SDK proíbe produtos de
 terceiros de usar login do claude.ai, e o proprietário reserva esse plano para

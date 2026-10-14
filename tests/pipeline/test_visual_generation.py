@@ -374,7 +374,7 @@ def test_scene_model_uses_the_native_api_with_a_fixed_context(
                 httpx.Response(200, json={"message": {"content": "   "}}),
             ]
         )
-        model = visual_generation.ollama_scene_model()
+        model = visual_generation.scene_text_model()
         request = TextModelRequest(purpose="scene_plan", system="system text", user="user")
         assert model.complete(request).text == "A desk"
         with pytest.raises(RuntimeError, match="empty"):

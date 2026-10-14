@@ -89,8 +89,8 @@ from src.pipeline.visual_generation import (
     FLUX2_KLEIN_QUALITY_TEST_BACKEND,
     Flux2KleinQualityTestConfig,
     build_flux2_klein_quality_test_adapter,
-    ollama_scene_model,
     release_ollama_scene_model,
+    scene_text_model,
 )
 from src.pipeline.visual_prompts import DEFAULT_VISUAL_STYLE, VISUAL_STYLES, VisualStyle
 from src.pipeline.visual_review import (
@@ -1373,7 +1373,7 @@ def _configured_visual_adapter(
             # The same step also writes the scene descriptions and hashes the weights.
             timeout_seconds=max(1.0, float(settings.celery_soft_time_limit_seconds - 90)),
         ),
-        scene_model=ollama_scene_model(),
+        scene_model=scene_text_model(),
         topic=input_data.topic,
         style=input_data.visual_style or DEFAULT_VISUAL_STYLE,
         release_scene_model=release_ollama_scene_model,
