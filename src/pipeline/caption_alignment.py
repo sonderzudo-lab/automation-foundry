@@ -44,10 +44,22 @@ from src.platform.models import (
 # duplicated instead of imported to keep this module free of the A1 import chain.
 _AUTOMATION_SLUG = "content-engine"
 _SOURCE = "content-engine:a4-alignment"
-_ALGORITHM = "rms-window-energy-vs-ass-events-v2"
+_ALGORITHM = "rms-window-energy-vs-ass-events-v3"
 # v1 paired the i-th caption block with the i-th speech segment and only when
-# both counts happened to match. Its reports stay readable; new ones are v2.
-_READABLE_ALGORITHMS = frozenset({"rms-window-energy-vs-ass-events-v1", _ALGORITHM})
+# both counts happened to match. v2 compared every block with the closest
+# speech resumption, which flagged a block split at a comma the narrator barely
+# paused on (run 16). v3 leaves such continuation blocks out. Older reports stay
+# readable.
+_READABLE_ALGORITHMS = frozenset(
+    {
+        "rms-window-energy-vs-ass-events-v1",
+        "rms-window-energy-vs-ass-events-v2",
+        _ALGORITHM,
+    }
+)
+# A block that opens this soon after the previous one ends, while speech is still
+# going on, continues the same sentence: there is no pause for it to line up with.
+_CONTINUATION_GAP_SECONDS = Decimal("0.60")
 _REPORT_SCHEMA_VERSION = 1
 _RETENTION_DAYS = resolve_retention_days("caption_alignment_report")
 _CAPTION_ARTIFACT_TYPE = "caption_ass"
@@ -281,8 +293,16 @@ def measure_caption_alignment(
     block_offset: Decimal | None = None
     if profile.onsets:
         block_offset = max(
-            min((block[0] - onset).copy_abs() for onset in profile.onsets)
-            for block in blocks
+            (
+                min((block[0] - onset).copy_abs() for onset in profile.onsets)
+                for index, block in enumerate(blocks)
+                if not (
+                    index > 0
+                    and block[0] - blocks[index - 1][1] <= _CONTINUATION_GAP_SECONDS
+                    and any(start < block[0] < end for start, end in speech)
+                )
+            ),
+            default=Decimal("0"),
         )
     tolerance = parameters.boundary_tolerance_seconds
     reasons: list[str] = []

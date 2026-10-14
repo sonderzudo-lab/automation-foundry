@@ -202,7 +202,8 @@ def test_measurement_flags_a_block_that_opens_in_the_middle_of_speech(
     tmp_path: Path,
 ) -> None:
     # Three speech segments against two caption blocks: the counts differ, and
-    # the second block still has to be compared with the audio.
+    # the second block still has to be compared with the audio. The captions
+    # leave 1.5 s of speech uncovered before it, so it is not a continuation.
     audio_path = tmp_path / "audio.wav"
     _write_wav(
         audio_path,
@@ -213,7 +214,7 @@ def test_measurement_flags_a_block_that_opens_in_the_middle_of_speech(
     measurement = measure_caption_alignment(
         audio_path=audio_path,
         caption_text=_ass(
-            (("0:00:00.00", "0:00:02.50"), ("0:00:03.00", "0:00:12.00"))
+            (("0:00:00.00", "0:00:01.50"), ("0:00:03.00", "0:00:12.00"))
         ),
         parameters=_parameters(),
     )
@@ -224,6 +225,27 @@ def test_measurement_flags_a_block_that_opens_in_the_middle_of_speech(
     assert REASON_BLOCK_ONSET_OFFSET in measurement.reasons
     assert measurement.max_block_onset_offset_seconds is not None
     assert measurement.max_block_onset_offset_seconds >= Decimal("2.5")
+
+
+def test_measurement_accepts_a_block_that_continues_the_same_sentence(
+    tmp_path: Path,
+) -> None:
+    # Run 16: a caption split at a comma the narrator barely paused on. The second
+    # block opens 0.36 s after the first, while speech is still going on.
+    audio_path = tmp_path / "audio.wav"
+    _write_wav(audio_path, duration_seconds=6.0, bursts=((0.0, 6.0),))
+
+    measurement = measure_caption_alignment(
+        audio_path=audio_path,
+        caption_text=_ass(
+            (("0:00:00.00", "0:00:02.80"), ("0:00:03.16", "0:00:06.00"))
+        ),
+        parameters=_parameters(),
+    )
+
+    assert measurement.caption_block_count == 2
+    assert measurement.status == STATUS_PASS
+    assert measurement.max_block_onset_offset_seconds == Decimal("0")
 
 
 def test_measurement_flags_shifted_captions(tmp_path: Path) -> None:
@@ -801,7 +823,7 @@ async def test_report_projection_still_reads_reports_of_the_previous_algorithm(
     assert report is not None
     report_path = tmp_path / report.relative_path
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["algorithm"] == "rms-window-energy-vs-ass-events-v2"
+    assert payload["algorithm"] == "rms-window-energy-vs-ass-events-v3"
     payload["algorithm"] = "rms-window-energy-vs-ass-events-v1"
     del payload["parameters"]["onset_pause_seconds"]
     encoded = (
