@@ -302,3 +302,31 @@ def test_scene_model_uses_the_native_api_with_a_fixed_context(
     assert body["think"] is False and body["stream"] is False
     assert body["options"] == {"num_ctx": visual_generation.SCENE_MODEL_NUM_CTX}
     assert [message["role"] for message in body["messages"]] == ["system", "user"]
+
+
+def test_adapter_rewrites_only_the_images_sent_back_from_the_notes(
+    environment: tuple[Flux2KleinQualityTestConfig, Path],
+) -> None:
+    config, destination = environment
+    seen: list[str] = []
+
+    def scene_model(_system: str, user: str) -> str:
+        seen.append(user)
+        return _SCENES[1]
+
+    adapter = build_flux2_klein_quality_test_adapter(
+        config,
+        scene_model=scene_model,
+        topic="Mesa",
+        style="dark",
+        revisions={2: (_SCENES[0], "Mostre um pote, não um caderno")},
+        narration="Pega só o que vai usar. Põe tudo num pote.",
+        kept_scenes=(_SCENES[0],),
+    )
+    results = adapter(_requests()[1:], destination)
+
+    assert [result.file_name for result in results] == ["visual-002.png"]
+    assert "«Mostre um pote, não um caderno»" in seen[0]
+    assert "Pega só o que vai usar. Põe tudo num pote." in seen[0]
+    with pytest.raises(VisualPermanentAdapterError, match="CONTENT_VISUALS_REVISION_MISSING"):
+        adapter(_requests()[:1], destination)

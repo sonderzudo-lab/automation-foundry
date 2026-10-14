@@ -86,3 +86,50 @@ def test_every_style_forbids_text_and_has_an_operator_label() -> None:
     assert all("no text" in style and "no logos" in style for style in VISUAL_STYLES.values())
     assert all("style of" not in style for style in VISUAL_STYLES.values())
     assert styled_prompt(_GOOD, "dark") == f"{_GOOD}, {VISUAL_STYLES['dark']}"
+
+
+def test_revised_description_carries_the_note_the_old_scene_and_the_kept_ones() -> None:
+    from src.pipeline.visual_prompts import revise_scene_prompt, revise_scene_prompt_request
+
+    system, user = revise_scene_prompt_request(
+        topic="Mesa",
+        narration=_NARRATION,
+        stretch=_STRETCHES[0],
+        previous_scene=_OTHER,
+        note="Tire a pessoa, só a mesa",
+        other_scenes=(_GOOD,),
+    )
+    assert "visual style is added separately" in system
+    assert f"«{_OTHER}»" in user and "«Tire a pessoa, só a mesa»" in user
+    assert f"- {_GOOD}" in user and _STRETCHES[0] in user
+
+    call = MagicMock(side_effect=["A desk with a laptop on it and a few pens nearby here", _GOOD])
+    assert (
+        revise_scene_prompt(
+            call,
+            topic="Mesa",
+            narration=_NARRATION,
+            stretch=_STRETCHES[0],
+            previous_scene=_OTHER,
+            note="só a mesa",
+            other_scenes=(),
+        )
+        == _GOOD
+    )
+    assert "refused because it mentions 'laptop'" in call.call_args_list[1].args[1]
+    with pytest.raises(ScenePromptError):
+        revise_scene_prompt(
+            MagicMock(return_value="Uma mesa de madeira com lápis e papéis no centro dela"),
+            topic="Mesa",
+            narration=_NARRATION,
+            stretch=_STRETCHES[0],
+            previous_scene=_OTHER,
+            note="só a mesa",
+            other_scenes=(),
+        )
+
+
+def test_scene_is_recovered_from_a_styled_prompt() -> None:
+    from src.pipeline.visual_prompts import scene_from_prompt
+
+    assert scene_from_prompt(styled_prompt(_GOOD, "cartoon"), "cartoon") == _GOOD

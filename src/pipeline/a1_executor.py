@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
@@ -79,6 +79,11 @@ from src.pipeline.tts import (
     execute_approved_tts_step,
     get_configured_tts_synthesizer,
 )
+from src.pipeline.visual_drafts import (
+    PreviousRound,
+    build_approved_draft_adapter,
+    execute_visual_draft_round,
+)
 from src.pipeline.visual_generation import (
     FLUX2_KLEIN_QUALITY_TEST_BACKEND,
     Flux2KleinQualityTestConfig,
@@ -86,13 +91,16 @@ from src.pipeline.visual_generation import (
     ollama_scene_model,
     release_ollama_scene_model,
 )
-from src.pipeline.visual_prompts import DEFAULT_VISUAL_STYLE, VisualStyle
+from src.pipeline.visual_prompts import DEFAULT_VISUAL_STYLE, VISUAL_STYLES, VisualStyle
 from src.pipeline.visual_review import (
     VISUAL_REVIEW_APPROVAL_ACTION,
     VisualReview,
+    VisualReviewImage,
     finalize_visual_approval,
+    load_reviewed_assets,
     load_visual_review,
     request_visual_approval,
+    requested_redo,
 )
 from src.pipeline.visuals import (
     LOCAL_ASSETS_QUALITY_TEST_BACKEND,
@@ -102,6 +110,7 @@ from src.pipeline.visuals import (
     execute_approved_visual_step,
     get_configured_visual_adapter,
     inspect_local_asset_manifest,
+    plan_visual_requests,
     plan_visual_slots,
 )
 from src.platform.approval_service import approval_payload_digest, request_approval
@@ -673,8 +682,32 @@ async def execute_content_script_run(
                 storage_root=root,
             )
         visual_result = None
+        a3_adapter: VisualAdapter | None = None
         if (
-            _visuals_enabled()
+            _generated_visuals_reviewed()
+            and audio_artifact is not None
+            and RunStatus(run.status) is RunStatus.RUNNING
+        ):
+            # Generated images are reviewed as numbered rounds of drafts first;
+            # A3 then imports exactly the round the reviewer approved.
+            approved_drafts = await _review_generated_drafts(
+                session,
+                run=run,
+                approval=approval,
+                approval_input=approval_input,
+                script_artifact=artifact,
+                audio_artifact=audio_artifact,
+                idempotency_key=idempotency_key,
+                storage_root=root,
+                input_data=input_data,
+                draft_adapter=visual_adapter,
+            )
+            if approved_drafts is not None:
+                a3_adapter = build_approved_draft_adapter(approved_drafts)
+        elif _visuals_enabled():
+            a3_adapter = visual_adapter or _configured_visual_adapter(input_data)
+        if (
+            a3_adapter is not None
             and audio_artifact is not None
             and RunStatus(run.status) is RunStatus.RUNNING
         ):
@@ -687,7 +720,7 @@ async def execute_content_script_run(
                 audio_artifact=audio_artifact,
                 idempotency_key=idempotency_key,
                 storage_root=root,
-                adapter=visual_adapter or _configured_visual_adapter(input_data),
+                adapter=a3_adapter,
                 allow_quality_test_assets=(
                     _visuals_backend() == FLUX2_KLEIN_QUALITY_TEST_BACKEND
                 ),
@@ -715,6 +748,7 @@ async def execute_content_script_run(
             visual_replayed = visual_result.replayed
             if (
                 _visual_review_enabled()
+                and not _generated_visuals_reviewed()
                 and visual_result.manifest_artifact_id is not None
                 and RunStatus(run.status) is RunStatus.RUNNING
             ):
@@ -1213,7 +1247,103 @@ def _visuals_enabled() -> bool:
     return _visuals_backend() != "disabled"
 
 
-def _configured_visual_adapter(input_data: ContentScriptInput) -> VisualAdapter:
+def _generated_visuals_reviewed() -> bool:
+    return (
+        _visuals_backend() == FLUX2_KLEIN_QUALITY_TEST_BACKEND and _visual_review_enabled()
+    )
+
+
+async def _review_generated_drafts(
+    session: AsyncSession,
+    *,
+    run: Run,
+    approval: Approval,
+    approval_input: dict[str, object],
+    script_artifact: Artifact,
+    audio_artifact: Artifact,
+    idempotency_key: str,
+    storage_root: Path,
+    input_data: ContentScriptInput,
+    draft_adapter: VisualAdapter | None,
+) -> tuple[tuple[VisualReviewImage, dict[str, object]], ...] | None:
+    """Run draft rounds until one is approved; None while a decision is pending.
+
+    Every delivery replays the rounds already decided, so the loop resumes at
+    the first round without a decision. A round sent back with notes leads to
+    the next round; there is no limit on the number of rounds.
+    """
+    plan = plan_visual_requests(
+        run=run,
+        approval=approval,
+        approval_input_payload=approval_input,
+        script_artifact=script_artifact,
+        audio_artifact=audio_artifact,
+        storage_root=storage_root,
+    )
+    style = input_data.visual_style or DEFAULT_VISUAL_STYLE
+
+    def adapter_factory(
+        revisions: Mapping[int, tuple[str, str]] | None,
+        narration: str,
+        kept_scenes: Sequence[str],
+    ) -> VisualAdapter:
+        if draft_adapter is not None:
+            return draft_adapter
+        return _configured_visual_adapter(
+            input_data, revisions=revisions, narration=narration, kept_scenes=kept_scenes
+        )
+
+    previous: PreviousRound | None = None
+    round_number = 1
+    while True:
+        draft = await execute_visual_draft_round(
+            session,
+            run=run,
+            approval_input_payload=approval_input,
+            plan=plan,
+            round_number=round_number,
+            previous=previous,
+            idempotency_key=idempotency_key,
+            storage_root=storage_root,
+            adapter_factory=adapter_factory,
+            style_prompt_suffix=f", {VISUAL_STYLES[style]}",
+            timeout_seconds=max(1.0, float(settings.celery_soft_time_limit_seconds - 15)),
+        )
+        if draft.manifest_artifact_id is None or RunStatus(run.status) is not RunStatus.RUNNING:
+            return None
+        await request_visual_approval(
+            session,
+            run=run,
+            idempotency_key=idempotency_key,
+            storage_root=storage_root,
+            round_number=round_number,
+        )
+        if RunStatus(run.status) is not RunStatus.RUNNING:
+            return None
+        gate = await session.scalar(
+            select(Approval).where(
+                Approval.run_id == run.id,
+                Approval.idempotency_key
+                == f"{idempotency_key}:visual-review-r{round_number}",
+            )
+        )
+        if gate is None:
+            raise ContentScriptRunNotRunnableError("A3 draft round is missing its review")
+        images = await load_reviewed_assets(session, approval=gate, storage_root=storage_root)
+        notes = requested_redo(gate)
+        if not notes:
+            return images
+        previous = PreviousRound(images=images, notes=notes)
+        round_number += 1
+
+
+def _configured_visual_adapter(
+    input_data: ContentScriptInput,
+    *,
+    revisions: Mapping[int, tuple[str, str]] | None = None,
+    narration: str | None = None,
+    kept_scenes: Sequence[str] = (),
+) -> VisualAdapter:
     """Build the visual adapter the settings name, with this run's topic and style."""
     if _visuals_backend() != FLUX2_KLEIN_QUALITY_TEST_BACKEND:
         return get_configured_visual_adapter(
@@ -1244,6 +1374,9 @@ def _configured_visual_adapter(input_data: ContentScriptInput) -> VisualAdapter:
         topic=input_data.topic,
         style=input_data.visual_style or DEFAULT_VISUAL_STYLE,
         release_scene_model=release_ollama_scene_model,
+        revisions=revisions,
+        narration=narration,
+        kept_scenes=kept_scenes,
     )
 
 

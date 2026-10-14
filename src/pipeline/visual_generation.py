@@ -18,7 +18,7 @@ import json
 import os
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -31,6 +31,7 @@ from src.pipeline.visual_prompts import (
     SceneModelCall,
     ScenePromptError,
     VisualStyle,
+    revise_scene_prompt,
     styled_prompt,
     write_scene_prompts,
 )
@@ -132,11 +133,17 @@ def build_flux2_klein_quality_test_adapter(
     topic: str,
     style: VisualStyle,
     release_scene_model: Callable[[], None] | None = None,
+    revisions: Mapping[int, tuple[str, str]] | None = None,
+    narration: str | None = None,
+    kept_scenes: Sequence[str] = (),
 ) -> VisualAdapter:
     """Build an adapter that generates one image per stretch of narration.
 
     ``scene_model`` writes the scene descriptions; ``release_scene_model`` is
     called before the image model loads so both do not hold the GPU at once.
+    With ``revisions`` (request index -> previous scene and reviewer's note) every
+    request is an image the reviewer sent back: its description is rewritten from
+    the note, with the full ``narration`` and the ``kept_scenes`` as context.
     """
 
     def generate(
@@ -153,13 +160,32 @@ def build_flux2_klein_quality_test_adapter(
         if not all(stretches):
             raise VisualPermanentAdapterError("CONTENT_VISUALS_NARRATION_STRETCH_MISSING")
 
+        context = narration or " ".join(stretches)
         try:
-            scenes = write_scene_prompts(
-                scene_model,
-                topic=topic,
-                narration=" ".join(stretches),
-                stretches=stretches,
-            )
+            if revisions is None:
+                scenes = write_scene_prompts(
+                    scene_model,
+                    topic=topic,
+                    narration=context,
+                    stretches=stretches,
+                )
+            else:
+                if any(request.index not in revisions for request in requests):
+                    raise VisualPermanentAdapterError("CONTENT_VISUALS_REVISION_MISSING")
+                scenes = tuple(
+                    revise_scene_prompt(
+                        scene_model,
+                        topic=topic,
+                        narration=context,
+                        stretch=stretch,
+                        previous_scene=revisions[request.index][0],
+                        note=revisions[request.index][1],
+                        other_scenes=kept_scenes,
+                    )
+                    for request, stretch in zip(requests, stretches, strict=True)
+                )
+        except VisualPermanentAdapterError:
+            raise
         except ScenePromptError as exc:
             raise VisualPermanentAdapterError(
                 "CONTENT_VISUALS_SCENE_PROMPT_REJECTED"

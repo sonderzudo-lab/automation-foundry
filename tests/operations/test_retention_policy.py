@@ -86,6 +86,8 @@ def test_current_policy_preserves_the_ninety_day_pipeline_baseline() -> None:
         "narration_audio": 90,
         "visual_manifest": 90,
         "visual_image": 90,
+        "visual_draft_manifest": 90,
+        "visual_draft_image": 90,
         "caption_ass": 90,
         "caption_alignment_report": 90,
         "final_video": 90,

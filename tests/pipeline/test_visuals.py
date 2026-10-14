@@ -168,8 +168,8 @@ def _png_chunk(kind: bytes, data: bytes) -> bytes:
     )
 
 
-def _write_png(path: Path, *, width: int, height: int) -> None:
-    row = b"\x00" + (b"\x22\x44\x66" * width)
+def _write_png(path: Path, *, width: int, height: int, shade: int = 0x22) -> None:
+    row = b"\x00" + (bytes((shade, 0x44, 0x66)) * width)
     encoded = (
         b"\x89PNG\r\n\x1a\n"
         + _png_chunk(

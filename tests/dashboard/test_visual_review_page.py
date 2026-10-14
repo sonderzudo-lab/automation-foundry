@@ -49,14 +49,14 @@ async def test_dashboard_visual_review_shows_and_serves_only_verified_images(
             (
                 await session.scalars(
                     select(Artifact)
-                    .where(Artifact.run_id == run.id, Artifact.artifact_type == "visual_image")
+                    .where(Artifact.run_id == run.id, Artifact.artifact_type == "visual_draft_image")
                     .order_by(Artifact.id)
                 )
             ).all()
         )
         manifest = await session.scalar(
             select(Artifact).where(
-                Artifact.run_id == run.id, Artifact.artifact_type == "visual_manifest"
+                Artifact.run_id == run.id, Artifact.artifact_type == "visual_draft_manifest"
             )
         )
         assert manifest is not None and images
@@ -137,3 +137,83 @@ async def test_dashboard_visual_review_shows_and_serves_only_verified_images(
         finished = await session.get(Run, run_id)
         assert decided is not None and decided.status == ApprovalStatus.REJECTED.value
         assert finished is not None and finished.status == RunStatus.CANCELLED.value
+
+
+async def test_dashboard_sends_marked_images_back_with_notes(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from src.dashboard import main as dashboard_main
+
+    async with session_factory() as session:
+        run, _storage_root = await run_to_visual_gate(
+            session, tmp_path, monkeypatch, idempotency_key="dashboard-content-a3-redo"
+        )
+        approval_id = (await pending_approval(session, run, VISUAL_REVIEW_APPROVAL_ACTION)).id
+        await session.commit()
+
+    requeued: list[int] = []
+
+    async def fake_requeue(_session: AsyncSession, *, run_id: int, actor: str) -> object:
+        requeued.append(run_id)
+        return SimpleNamespace(should_publish=False, dispatch_id=None)
+
+    # These runs were executed directly, without a durable dispatch to requeue.
+    monkeypatch.setattr(dashboard_main, "requeue_completed_run_dispatch", fake_requeue)
+    application = create_app(csrf_token="test-csrf-token")
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    form = {
+        "csrf_token": "test-csrf-token",
+        "confirmation": "redo-visuals",
+        "redo": "1",
+        "note_1": "Tire a pessoa e mostre só a mesa",
+        "note_2": "não marcada, ignorada",
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://127.0.0.1"
+    ) as client:
+        page = await client.get(f"/approvals/{approval_id}/review")
+        forged = await client.post(
+            f"/approvals/{approval_id}/visual-redo", data={**form, "csrf_token": "x"}
+        )
+        unconfirmed = await client.post(
+            f"/approvals/{approval_id}/visual-redo", data={**form, "confirmation": "approve"}
+        )
+        none_marked = await client.post(
+            f"/approvals/{approval_id}/visual-redo",
+            data={key: value for key, value in form.items() if key != "redo"},
+        )
+        unknown_field = await client.post(
+            f"/approvals/{approval_id}/visual-redo", data={**form, "topic": "x"}
+        )
+        sent = await client.post(f"/approvals/{approval_id}/visual-redo", data=form)
+        again = await client.post(f"/approvals/{approval_id}/visual-redo", data=form)
+        after = await client.get(f"/approvals/{approval_id}/review")
+
+    assert "Refazer imagens marcadas" in page.text
+    assert 'name="note_1"' in page.text and 'form="form-redo"' in page.text
+    assert forged.status_code == 403
+    assert unconfirmed.status_code == 400
+    assert none_marked.status_code == 400
+    assert unknown_field.status_code == 400
+    assert sent.status_code == 303 and sent.headers["location"] == f"/runs/{run.id}"
+    assert again.status_code == 409
+    assert requeued == [run.id]
+    assert "Ajustes pedidos nesta rodada" in after.text
+    assert "Imagem 1: Tire a pessoa e mostre só a mesa" in after.text
+    assert "Refazer imagens marcadas" not in after.text
+    async with session_factory() as session:
+        decided = await session.get(Approval, approval_id)
+        assert decided is not None and decided.status == ApprovalStatus.APPROVED.value
+        assert decided.decision_payload == {
+            "choice": "redo",
+            "note_1": "Tire a pessoa e mostre só a mesa",
+        }

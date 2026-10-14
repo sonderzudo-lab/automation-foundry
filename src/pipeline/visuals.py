@@ -856,6 +856,76 @@ async def execute_approved_visual_step(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class VisualRequestPlan:
+    """The verified sources and the exact requests A3 would build for a run."""
+
+    script_artifact_id: int
+    script_artifact_sha256: str
+    audio_artifact_id: int
+    audio_artifact_sha256: str
+    duration_seconds: Decimal
+    format: Literal["short", "long"]
+    narration: str
+    requests: tuple[VisualRequest, ...]
+
+
+def plan_visual_requests(
+    *,
+    run: Run,
+    approval: Approval,
+    approval_input_payload: dict[str, object],
+    script_artifact: Artifact,
+    audio_artifact: Artifact,
+    storage_root: Path,
+) -> VisualRequestPlan:
+    """Verify the approved script and WAV and return the requests A3 will use.
+
+    Generated drafts are built from the same requests, so the bundle A3 later
+    imports from an approved draft has exactly the count and prompts A3 expects.
+    """
+    context = _load_visual_context(
+        run=run,
+        approval=approval,
+        approval_input_payload=approval_input_payload,
+        script_artifact=script_artifact,
+        audio_artifact=audio_artifact,
+        storage_root=storage_root,
+    )
+    directory = _visual_directory(storage_root, run_id=_persisted_id(run.id, "run"))
+    requests = _build_visual_requests(
+        context, count=_resolve_visual_count(context, directory, None)
+    )
+    return VisualRequestPlan(
+        script_artifact_id=context.script_artifact_id,
+        script_artifact_sha256=context.script_artifact_sha256,
+        audio_artifact_id=context.audio_artifact_id,
+        audio_artifact_sha256=context.audio_artifact_sha256,
+        duration_seconds=context.duration_seconds,
+        format=context.format,
+        narration=context.narration,
+        requests=requests,
+    )
+
+
+def validate_generated_visuals(
+    results: tuple[VisualAssetResult, ...],
+    requests: tuple[VisualRequest, ...],
+    directory: Path,
+) -> list[dict[str, object]]:
+    """Validate generated files with the A3 rules, accepting the quality-test scope."""
+    return _validate_visual_results(
+        results, requests, directory, allow_quality_test_assets=True
+    )
+
+
+def visual_draft_directory(storage_root: Path, *, run_id: int, round_number: int) -> Path:
+    """Where one round of generated drafts is published, next to the A3 bundle."""
+    return _visual_directory(storage_root, run_id=run_id).parent / "visual-drafts" / (
+        f"r{round_number}"
+    )
+
+
 def _load_visual_context(
     *,
     run: Run,

@@ -82,6 +82,24 @@ _POLICY: tuple[RetentionPolicyEntry, ...] = (
         ),
     ),
     RetentionPolicyEntry(
+        artifact_type="visual_draft_manifest",
+        retention_days=90,
+        producer="content-engine:a3",
+        rationale=(
+            "Manifesto de uma rodada de rascunhos gerados: o conjunto exato que o "
+            "operador revisou, com as descrições e os ajustes pedidos."
+        ),
+    ),
+    RetentionPolicyEntry(
+        artifact_type="visual_draft_image",
+        retention_days=90,
+        producer="content-engine:a3",
+        rationale=(
+            "Imagem de rascunho revisada no gate A3; a aprovada é copiada, conferida "
+            "por SHA-256, para o pacote oficial de A3."
+        ),
+    ),
+    RetentionPolicyEntry(
         artifact_type="caption_ass",
         retention_days=90,
         producer="content-engine:a4",

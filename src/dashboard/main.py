@@ -96,7 +96,11 @@ from src.pipeline.thumbnail_review import (
     ThumbnailReview,
     thumbnail_decision_payload,
 )
-from src.pipeline.visual_review import VisualReview
+from src.pipeline.visual_review import (
+    VisualReview,
+    VisualReviewGateError,
+    redo_decision_payload,
+)
 from src.platform.approval_service import decide_approval
 from src.platform.control_service import (
     request_run_cancellation,
@@ -1285,35 +1289,13 @@ def create_app(
                     review,
                     thumbnail_artifact_id=thumbnail_artifact_id,
                 )
-            await decide_approval(
+            await approve_and_continue(
                 session,
                 approval=approval,
-                decision=ApprovalStatus.APPROVED,
                 actor=actor,
                 reason=reason,
                 decision_payload=decision_payload,
             )
-            continuation_required = await finalize_registered_approval(
-                session,
-                approval=approval,
-            )
-            continuation_dispatch_id: int | None = None
-            if continuation_required:
-                requeued = await requeue_completed_run_dispatch(
-                    session,
-                    run_id=run_id,
-                    actor=actor,
-                )
-                if requeued.should_publish:
-                    continuation_dispatch_id = requeued.dispatch_id
-            await session.commit()
-            if continuation_dispatch_id is not None:
-                await publish_prepared_dispatch(
-                    session,
-                    dispatch_id=continuation_dispatch_id,
-                    publish=dispatch_publisher,
-                    only_if_pending=True,
-                )
         except DispatchPublishError as exc:
             raise HTTPException(
                 status_code=503,
@@ -1339,6 +1321,117 @@ def create_app(
             await session.rollback()
             raise
         return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    @application.post("/approvals/{approval_id}/visual-redo", response_class=HTMLResponse)
+    async def redo_visuals(
+        request: Request,
+        approval_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> RedirectResponse:
+        """Send specific draft images back with notes; the next round redoes them."""
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        fields = await _parse_form_fields(request, maximum_fields=130, maximum_bytes=16_384)
+        submitted_token = _single_form_value(fields, "csrf_token", maximum_length=128)
+        confirmation = _single_form_value(fields, "confirmation", maximum_length=40)
+        if not _csrf_token_matches(submitted_token, control_token):
+            raise HTTPException(status_code=403, detail="invalid csrf token")
+        if confirmation != "redo-visuals":
+            raise HTTPException(status_code=400, detail="explicit confirmation required")
+        if ApprovalStatus(approval.status) is not ApprovalStatus.PENDING:
+            raise HTTPException(status_code=409, detail="approval already decided")
+        if any(
+            name not in {"csrf_token", "confirmation", "redo"}
+            and not (name.startswith("note_") and name[5:].isdigit())
+            for name in fields
+        ):
+            raise HTTPException(status_code=400, detail="unexpected redo field")
+        try:
+            chosen = sorted({int(value) for value in fields.get("redo", [])})
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid redo field") from exc
+        notes = {
+            index: _optional_single_form_value(
+                fields, f"note_{index}", maximum_length=1_000
+            )
+            or ""
+            for index in chosen
+        }
+        run_id = approval.run_id
+        try:
+            review = await load_registered_approval_review(session, approval=approval)
+            if not isinstance(review, VisualReview):
+                raise HTTPException(status_code=404, detail="approval has no redoable images")
+            decision_payload = redo_decision_payload(review, notes)
+            await approve_and_continue(
+                session,
+                approval=approval,
+                actor="local-owner",
+                reason="Ajustes pedidos nas imagens " + ", ".join(map(str, chosen)),
+                decision_payload=decision_payload,
+            )
+        except HTTPException:
+            raise
+        except DispatchPublishError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="redo persisted; continuation broker unavailable",
+            ) from exc
+        except (IdempotencyConflictError, InvalidRunTransitionError) as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail="images cannot be redone") from exc
+        except VisualReviewGateError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=400, detail=f"invalid redo request: {exc}") from exc
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="approval has no redoable images") from exc
+        except ValueError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail="redo cannot continue") from exc
+        except Exception:
+            await session.rollback()
+            raise
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    async def approve_and_continue(
+        session: AsyncSession,
+        *,
+        approval: Approval,
+        actor: str,
+        reason: str,
+        decision_payload: dict[str, object] | None,
+    ) -> None:
+        """Record an approval and requeue the run when the domain asks to continue."""
+        await decide_approval(
+            session,
+            approval=approval,
+            decision=ApprovalStatus.APPROVED,
+            actor=actor,
+            reason=reason,
+            decision_payload=decision_payload,
+        )
+        continuation_required = await finalize_registered_approval(
+            session,
+            approval=approval,
+        )
+        continuation_dispatch_id: int | None = None
+        if continuation_required:
+            requeued = await requeue_completed_run_dispatch(
+                session,
+                run_id=approval.run_id,
+                actor=actor,
+            )
+            if requeued.should_publish:
+                continuation_dispatch_id = requeued.dispatch_id
+        await session.commit()
+        if continuation_dispatch_id is not None:
+            await publish_prepared_dispatch(
+                session,
+                dispatch_id=continuation_dispatch_id,
+                publish=dispatch_publisher,
+                only_if_pending=True,
+            )
 
     return application
 
@@ -1551,12 +1644,13 @@ async def _parse_form_fields(
     request: Request,
     *,
     maximum_fields: int,
+    maximum_bytes: int = 4_096,
 ) -> dict[str, list[str]]:
     content_type = request.headers.get("content-type", "").split(";", maxsplit=1)[0]
     if content_type.lower() != "application/x-www-form-urlencoded":
         raise HTTPException(status_code=415, detail="unsupported form content type")
     body = await request.body()
-    if len(body) > 4_096:
+    if len(body) > maximum_bytes:
         raise HTTPException(status_code=413, detail="form body too large")
     try:
         fields = parse_qs(

@@ -44,6 +44,7 @@ SCENE_PROMPT_ATTEMPTS = 4
 SCENE_PROMPT_WORD_RANGE = (8, 60)
 _MAX_TOPIC_CHARS = 500
 _MAX_NARRATION_CHARS = 20_000
+_MAX_NOTE_CHARS = 300
 
 _BANNED_RE = re.compile(
     r"\b(text|caption|headline|logo|brand|chart|graph|infographic|screenshot|watermark"
@@ -155,6 +156,74 @@ def write_scene_prompts(
         else:
             raise ScenePromptError(f"no acceptable scene description for stretch {index}")
     return tuple(prompts)
+
+
+def revise_scene_prompt_request(
+    *,
+    topic: str,
+    narration: str,
+    stretch: str,
+    previous_scene: str,
+    note: str,
+    other_scenes: Sequence[str],
+    refused: tuple[str, str] | None = None,
+) -> tuple[str, str]:
+    """Ask for a new description of one image the reviewer sent back."""
+    system, _user = scene_prompt_request(
+        topic=topic, narration=narration, index=1, stretch=stretch, previous=other_scenes
+    )
+    used = "\n".join(f"- {scene}" for scene in other_scenes) or "- (none)"
+    user = (
+        f"Video topic: {topic[:_MAX_TOPIC_CHARS]}\n\n"
+        f"Full narration:\n{narration[:_MAX_NARRATION_CHARS]}\n\n"
+        f"Scenes of the other images, which stay as they are:\n{used}\n\n"
+        f"Stretch to illustrate:\n{stretch}\n\n"
+        "The image made from this description was sent back by the reviewer:\n"
+        f"«{previous_scene}»\n"
+        f"Reviewer's note (in Portuguese): «{note[:_MAX_NOTE_CHARS]}»\n"
+        "Write a new description that follows the note while keeping every rule."
+    )
+    if refused is not None:
+        user += (
+            f"\n\nYour previous answer was refused because it {refused[1]}: "
+            f"«{refused[0]}». Write a different prompt."
+        )
+    return system, user
+
+
+def revise_scene_prompt(
+    call: SceneModelCall,
+    *,
+    topic: str,
+    narration: str,
+    stretch: str,
+    previous_scene: str,
+    note: str,
+    other_scenes: Sequence[str],
+) -> str:
+    """Rewrite one description from the reviewer's note, with the same checks."""
+    refused: tuple[str, str] | None = None
+    for _attempt in range(SCENE_PROMPT_ATTEMPTS):
+        system, user = revise_scene_prompt_request(
+            topic=topic,
+            narration=narration,
+            stretch=stretch,
+            previous_scene=previous_scene,
+            note=note,
+            other_scenes=other_scenes,
+            refused=refused,
+        )
+        prompt = " ".join(call(system, user).split()).strip("\"“”")
+        problem = scene_prompt_problem(prompt)
+        if problem is None:
+            return prompt
+        refused = (prompt, problem)
+    raise ScenePromptError("no acceptable revised scene description")
+
+
+def scene_from_prompt(prompt: str, style: VisualStyle) -> str:
+    """Recover the scene description from a final prompt built by ``styled_prompt``."""
+    return prompt.removesuffix(f", {VISUAL_STYLES[style]}")
 
 
 def styled_prompt(scene: str, style: VisualStyle) -> str:

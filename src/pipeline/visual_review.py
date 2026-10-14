@@ -4,13 +4,21 @@ The gate binds a human decision to the exact A3 manifest and to every image it
 lists, and shows each image next to the stretch of narration it covers. It is
 where a person checks what no code checks: a real person's likeness, brands,
 readable text, visual defects and whether the image fits what is said. It never
-publishes, uploads, copies, regenerates or modifies the reviewed images.
+publishes, uploads, copies or modifies the reviewed images.
+
+For generated images the gate reviews numbered rounds of drafts instead of the
+A3 bundle. Besides approving or rejecting, the reviewer may send specific
+images back with a note; the decision is then an approval whose payload carries
+choice=redo and one note_<index> per image, and the executor generates the
+next round. Only the round finally approved is imported into A3.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +37,12 @@ from src.platform.models import (
 )
 
 VISUAL_REVIEW_APPROVAL_ACTION = "review_content_visuals_a3"
+VISUAL_DRAFT_STEP_PREFIX = "draft-visuals-a3-r"
+REDO_CHOICE = "redo"
+# The decision payload holds at most eight fields: the choice and seven notes.
+MAX_REDO_IMAGES_PER_ROUND = 7
+MAX_REDO_NOTE_CHARS = 250
+_ROUND_KEY_RE = re.compile(r":visual-review-r([1-9][0-9]{0,3})$")
 _MAX_MANIFEST_BYTES = 1024 * 1024
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
 _MAX_IMAGES = 60
@@ -64,6 +78,8 @@ class VisualReviewImage:
     generation_prompt: str
     source_type: str
     image_path: Path
+    # The reviewer's note that produced this image in a later round, if any.
+    revision_note: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +96,14 @@ class VisualReview:
     usage_scope: str | None
     licenses: tuple[str, ...]
     images: tuple[VisualReviewImage, ...]
+    # Draft round under review; None when the gate reviews the A3 bundle.
+    round_number: int | None = None
+    # Images this decision sent back, with the reviewer's notes.
+    requested_redo: tuple[tuple[int, str], ...] = ()
+
+    @property
+    def can_redo(self) -> bool:
+        return self.round_number is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +114,8 @@ class _VerifiedVisuals:
     usage_scope: str | None
     licenses: tuple[str, ...]
     images: tuple[VisualReviewImage, ...]
+    assets: tuple[dict[str, object], ...]
+    round_number: int | None
 
 
 async def request_visual_approval(
@@ -98,15 +124,22 @@ async def request_visual_approval(
     run: Run,
     idempotency_key: str,
     storage_root: Path,
+    round_number: int | None = None,
 ) -> VisualReviewRequestResult:
-    """Open A3 review after verifying the manifest and every image it lists."""
+    """Open A3 review after verifying the manifest and every image it lists.
+
+    With round_number the gate reviews that round of generated drafts.
+    """
     if RunStatus(run.status) is not RunStatus.RUNNING:
         raise VisualReviewGateError("A3 review requires a running run")
-    evidence = await _verify_evidence(session, run=run, storage_root=storage_root)
+    evidence = await _verify_evidence(
+        session, run=run, storage_root=storage_root, round_number=round_number
+    )
+    suffix = "" if round_number is None else f"-r{round_number}"
     creation = await request_approval(
         session,
         run=run,
-        idempotency_key=f"{idempotency_key}:visual-review",
+        idempotency_key=f"{idempotency_key}:visual-review{suffix}",
         action=VISUAL_REVIEW_APPROVAL_ACTION,
         summary="Conferir as imagens A3 ao lado da narração antes de legendar e montar",
         input_payload=_approval_input(run=run, evidence=evidence),
@@ -132,7 +165,12 @@ async def load_visual_review(
     run = await session.get(Run, approval.run_id)
     if run is None:
         raise VisualReviewGateError("approval run does not exist")
-    evidence = await _verify_evidence(session, run=run, storage_root=storage_root)
+    evidence = await _verify_evidence(
+        session,
+        run=run,
+        storage_root=storage_root,
+        round_number=approval_round(approval),
+    )
     if approval.payload_digest != approval_payload_digest(
         _approval_input(run=run, evidence=evidence)
     ):
@@ -147,7 +185,71 @@ async def load_visual_review(
         usage_scope=evidence.usage_scope,
         licenses=evidence.licenses,
         images=evidence.images,
+        round_number=evidence.round_number,
+        requested_redo=tuple(sorted(requested_redo(approval).items())),
     )
+
+
+async def load_reviewed_assets(
+    session: AsyncSession,
+    *,
+    approval: Approval,
+    storage_root: Path,
+) -> tuple[tuple[VisualReviewImage, dict[str, object]], ...]:
+    """The verified images of an approval with their manifest entries, in order."""
+    review = await load_visual_review(session, approval=approval, storage_root=storage_root)
+    run = await session.get(Run, approval.run_id)
+    if run is None:
+        raise VisualReviewGateError("approval run does not exist")
+    evidence = await _verify_evidence(
+        session, run=run, storage_root=storage_root, round_number=review.round_number
+    )
+    return tuple(zip(evidence.images, evidence.assets, strict=True))
+
+
+def approval_round(approval: Approval) -> int | None:
+    """The draft round an A3 approval reviews, read from its idempotency key."""
+    match = _ROUND_KEY_RE.search(approval.idempotency_key or "")
+    return int(match.group(1)) if match else None
+
+
+def requested_redo(approval: Approval) -> dict[int, str]:
+    """Images an approved decision sent back, with the notes; empty otherwise."""
+    payload = approval.decision_payload
+    if (
+        ApprovalStatus(approval.status) is not ApprovalStatus.APPROVED
+        or not isinstance(payload, dict)
+        or payload.get("choice") != REDO_CHOICE
+    ):
+        return {}
+    notes: dict[int, str] = {}
+    for key, value in payload.items():
+        if key.startswith("note_") and key[5:].isdigit() and isinstance(value, str):
+            notes[int(key[5:])] = value
+    return notes
+
+
+def redo_decision_payload(
+    review: VisualReview,
+    notes: Mapping[int, str],
+) -> dict[str, object]:
+    """Validate a request to redo specific images of a draft round."""
+    if not review.can_redo:
+        raise VisualReviewGateError("only generated drafts can be redone")
+    if not notes:
+        raise VisualReviewGateError("choose at least one image to redo")
+    if len(notes) > MAX_REDO_IMAGES_PER_ROUND:
+        raise VisualReviewGateError(
+            f"at most {MAX_REDO_IMAGES_PER_ROUND} images can be redone per round"
+        )
+    indexes = {image.index for image in review.images}
+    payload: dict[str, object] = {"choice": REDO_CHOICE}
+    for index, note in sorted(notes.items()):
+        text = " ".join(note.split())
+        if index not in indexes or len(text) > MAX_REDO_NOTE_CHARS:
+            raise VisualReviewGateError("redo request names an unknown image or a long note")
+        payload[f"note_{index}"] = text or "Refazer esta imagem com outra cena."
+    return payload
 
 
 async def finalize_visual_approval(
@@ -180,12 +282,25 @@ async def _verify_evidence(
     *,
     run: Run,
     storage_root: Path,
+    round_number: int | None = None,
 ) -> _VerifiedVisuals:
+    if round_number is None:
+        step_name, manifest_type, image_type = (
+            VISUAL_STEP_NAME,
+            "visual_manifest",
+            "visual_image",
+        )
+    else:
+        step_name, manifest_type, image_type = (
+            f"{VISUAL_DRAFT_STEP_PREFIX}{round_number}",
+            "visual_draft_manifest",
+            "visual_draft_image",
+        )
     step = await session.scalar(
         select(StepRun)
         .where(
             StepRun.run_id == run.id,
-            StepRun.name == VISUAL_STEP_NAME,
+            StepRun.name == step_name,
             StepRun.status == RunStatus.SUCCEEDED.value,
         )
         .order_by(StepRun.id.desc())
@@ -202,8 +317,8 @@ async def _verify_evidence(
             )
         ).all()
     )
-    manifests = [item for item in artifacts if item.artifact_type == "visual_manifest"]
-    visuals = [item for item in artifacts if item.artifact_type == "visual_image"]
+    manifests = [item for item in artifacts if item.artifact_type == manifest_type]
+    visuals = [item for item in artifacts if item.artifact_type == image_type]
     if len(manifests) != 1 or not 1 <= len(visuals) <= _MAX_IMAGES:
         raise VisualReviewGateError("A3 review evidence is missing or ambiguous")
 
@@ -220,6 +335,7 @@ async def _verify_evidence(
         or payload.get("schema_version") != 1
         or not isinstance(assets, list)
         or len(assets) != len(visuals)
+        or payload.get("round") != round_number
     ):
         raise VisualReviewGateError("A3 manifest does not describe the reviewed images")
     usage_scope = payload.get("usage_scope")
@@ -259,6 +375,7 @@ async def _verify_evidence(
                 generation_prompt=_optional_text(asset, "generation_prompt", max_length=2000),
                 source_type=_asset_text(asset, "source_type", max_length=20),
                 image_path=path,
+                revision_note=_optional_text(asset, "revision_note", max_length=2000),
             )
         )
     if len(dimensions) != 1:
@@ -273,6 +390,8 @@ async def _verify_evidence(
         usage_scope=usage_scope if isinstance(usage_scope, str) else None,
         licenses=tuple(sorted(licenses)),
         images=tuple(images),
+        assets=tuple(asset for asset in assets if isinstance(asset, dict)),
+        round_number=round_number,
     )
 
 
@@ -321,6 +440,8 @@ def _approval_input(*, run: Run, evidence: _VerifiedVisuals) -> dict[str, object
     }
     if evidence.usage_scope is not None:
         payload["usage_scope"] = evidence.usage_scope
+    if evidence.round_number is not None:
+        payload["round"] = evidence.round_number
     return payload
 
 
@@ -330,6 +451,7 @@ def _review_payload(evidence: _VerifiedVisuals) -> dict[str, str]:
         "visuals": (
             f"{len(evidence.images)} imagens de {evidence.width}x{evidence.height} · "
             f"manifesto #{evidence.manifest.id}"
+            + ("" if evidence.round_number is None else f" · rodada {evidence.round_number}")
         ),
         "provenance": provenance if len(provenance) <= 300 else f"{provenance[:297]}...",
         "manifest_sha256": evidence.manifest.sha256,
