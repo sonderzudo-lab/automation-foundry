@@ -143,6 +143,17 @@ templates.env.filters["utc_label"] = format_utc_label
 templates.env.filters["age_label"] = format_relative_label
 templates.env.filters["duration_label"] = format_duration_seconds
 templates.env.filters["byte_size"] = format_byte_size
+
+
+def _static_version(file_name: str) -> str:
+    """Change an asset's URL whenever the file changes, so no browser keeps a stale copy."""
+    try:
+        return format((_STATIC_DIRECTORY / file_name).stat().st_mtime_ns, "x")
+    except OSError:
+        return "0"
+
+
+templates.env.globals["static_version"] = _static_version
 HealthCollector = Callable[[AsyncSession], Awaitable[HealthReport]]
 RetentionCollector = Callable[[AsyncSession], Awaitable[RetentionInventory]]
 DispatchPublisher = Callable[[int, str, QueueClass], None]

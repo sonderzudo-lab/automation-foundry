@@ -820,6 +820,10 @@ async def test_connector_snapshot_and_htmx_fragment_are_latest_redacted_and_boun
     assert home.status_code == 200
     assert home.headers["cache-control"] == "no-store"
     assert '<script src="/static/htmx.min.js" defer></script>' in home.text
+    # The stylesheet and theme script carry a version that follows the file, so a
+    # changed asset is never served from a browser's stale copy.
+    assert re.search(r'href="/static/styles\.css\?v=[0-9a-f]+"', home.text)
+    assert re.search(r'src="/static/theme\.js\?v=[0-9a-f]+"', home.text)
     assert data_page.status_code == 200
     assert '<script src="/static/htmx.min.js" defer></script>' in data_page.text
     assert 'id="data-observability"' in data_page.text
