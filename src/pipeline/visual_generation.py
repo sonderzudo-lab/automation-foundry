@@ -23,10 +23,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from src.core.config import settings
 from src.pipeline.text_model import as_scene_model_call
-from src.pipeline.text_model_factory import ObservedTextModel
-from src.pipeline.text_model_ollama import OLLAMA_NUM_CTX, OllamaTextModel
+from src.pipeline.text_model_factory import configured_ollama_model, configured_text_model
+from src.pipeline.text_model_ollama import OLLAMA_NUM_CTX
 from src.pipeline.visual_prompts import (
     SceneModelCall,
     ScenePromptError,
@@ -276,24 +275,17 @@ SCENE_MODEL_NUM_CTX = OLLAMA_NUM_CTX
 SCENE_MODEL_TIMEOUT_SECONDS = 120.0
 
 
-def _scene_ollama_model() -> OllamaTextModel:
-    return OllamaTextModel(
-        base_url=settings.ollama_base_url,
-        model=settings.ollama_model,
-        num_ctx=SCENE_MODEL_NUM_CTX,
-        timeout_seconds=SCENE_MODEL_TIMEOUT_SECONDS,
-    )
-
-
 def ollama_scene_model() -> SceneModelCall:
-    """Scene descriptions written by the same local model that writes the script.
+    """Scene descriptions written by the configured text model.
 
-    Goes through the ``ollama`` text model: native chat API with a fixed context
-    window and thinking disabled. An empty answer is treated like any other
-    unreachable model: the step fails as retryable.
+    Ollama by default, the same local model that writes the script: native chat
+    API with a fixed context window and thinking disabled. With ``codex_exec`` the
+    ChatGPT plan writes them and Ollama answers only after its usage limit. An
+    unreachable model or an empty answer fails the step as retryable.
     """
     return as_scene_model_call(
-        ObservedTextModel(_scene_ollama_model()), purpose="scene_description"
+        configured_text_model(ollama_timeout_seconds=SCENE_MODEL_TIMEOUT_SECONDS),
+        purpose="scene_description",
     )
 
 
@@ -301,9 +293,10 @@ def release_ollama_scene_model() -> None:
     """Ask Ollama to unload the script model so the image model has the GPU.
 
     Best effort: if the request fails the image model may run short of memory,
-    which surfaces as a retryable inference failure.
+    which surfaces as a retryable inference failure. Harmless when the scenes
+    came from another provider and the local model was never loaded.
     """
-    _scene_ollama_model().release()
+    configured_ollama_model(timeout_seconds=SCENE_MODEL_TIMEOUT_SECONDS).release()
 
 
 def _seed(index: int, prompt: str) -> int:

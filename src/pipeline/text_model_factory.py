@@ -13,6 +13,7 @@ import structlog
 
 from src.core.config import settings
 from src.pipeline.text_model import (
+    FallbackTextModel,
     TextModel,
     TextModelPermanentError,
     TextModelProviderName,
@@ -20,6 +21,7 @@ from src.pipeline.text_model import (
     TextModelResult,
     TextModelRetryableError,
 )
+from src.pipeline.text_model_codex import CodexExecTextModel
 from src.pipeline.text_model_ollama import OllamaTextModel
 
 log = structlog.get_logger(__name__)
@@ -75,5 +77,19 @@ def configured_ollama_model(*, timeout_seconds: float | None = None) -> OllamaTe
 
 
 def configured_text_model(*, ollama_timeout_seconds: float | None = None) -> TextModel:
-    """The configured text model, wrapped so that every call is logged."""
-    return ObservedTextModel(configured_ollama_model(timeout_seconds=ollama_timeout_seconds))
+    """The configured text model, wrapped so that every call is logged.
+
+    ``codex_exec`` always comes with the local Ollama model as its reserve, used
+    only when the plan's usage limit is reached.
+    """
+    local = configured_ollama_model(timeout_seconds=ollama_timeout_seconds)
+    if settings.content_text_model_provider == "ollama":
+        return ObservedTextModel(local)
+    if settings.content_text_model_provider == "codex_exec":
+        codex = CodexExecTextModel(
+            executable=settings.content_text_model_codex_executable,
+            model=settings.content_text_model_codex_model,
+            timeout_seconds=float(settings.content_text_model_codex_timeout_seconds),
+        )
+        return ObservedTextModel(FallbackTextModel(primary=codex, fallback=local))
+    raise ValueError("unknown text model provider")

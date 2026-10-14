@@ -280,10 +280,17 @@ def test_scene_model_uses_the_native_api_with_a_fixed_context(
     import httpx
     import respx
 
+    from src.pipeline import text_model_factory
+
     monkeypatch.setattr(
-        visual_generation,
+        text_model_factory,
         "settings",
-        SimpleNamespace(ollama_base_url="http://127.0.0.1:11434/v1", ollama_model="qwen3:14b"),
+        SimpleNamespace(
+            ollama_base_url="http://127.0.0.1:11434/v1",
+            ollama_model="qwen3:14b",
+            ollama_timeout=999,
+            content_text_model_provider="ollama",
+        ),
     )
     with respx.mock(assert_all_called=True) as router:
         route = router.post("http://127.0.0.1:11434/api/chat").mock(
@@ -302,6 +309,9 @@ def test_scene_model_uses_the_native_api_with_a_fixed_context(
     assert body["think"] is False and body["stream"] is False
     assert body["options"] == {"num_ctx": visual_generation.SCENE_MODEL_NUM_CTX}
     assert [message["role"] for message in body["messages"]] == ["system", "user"]
+    # The scene calls keep their own timeout instead of OLLAMA_TIMEOUT.
+    timeout = route.calls[0].request.extensions["timeout"]
+    assert timeout["read"] == visual_generation.SCENE_MODEL_TIMEOUT_SECONDS
 
 
 def test_adapter_rewrites_only_the_images_sent_back_from_the_notes(

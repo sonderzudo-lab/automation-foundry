@@ -68,6 +68,22 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3:14b"
     ollama_timeout: int = 120
 
+    # ── Content Engine: modelo de texto ──────────────────────────────────────
+
+    # Quem escreve roteiro (A1) e cenas (A3). "codex_exec" usa o plano do ChatGPT do
+    # proprietário pelo Codex CLI, que precisa estar instalado e logado; quando o limite
+    # de uso do plano é atingido, o Ollama acima responde no lugar.
+    content_text_model_provider: Literal["ollama", "codex_exec"] = "ollama"
+    # Comando ou caminho do Codex CLI. O atalho do npm é trocado pelo binário nativo.
+    content_text_model_codex_executable: str = Field(
+        default="codex", min_length=1, max_length=1000
+    )
+    # Vazio usa o modelo padrão do Codex.
+    content_text_model_codex_model: str | None = Field(
+        default=None, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    )
+    content_text_model_codex_timeout_seconds: int = Field(default=300, ge=10, le=3600)
+
     # ── Content Engine TTS ───────────────────────────────────────────────────
 
     # Kokoro permanece apenas em modo de teste local até a qualidade PT-BR e o
