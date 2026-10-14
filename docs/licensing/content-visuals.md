@@ -16,7 +16,10 @@ um backend.
   padrão (o backend de importação local aceita uma faixa, descrita abaixo) e
   limite de 60.
 - Cada adapter precisa declarar provider, modelo, ID/URI da fonte, licença,
-  atribuição e `commercial_use=True` para cada arquivo.
+  atribuição e `commercial_use=True` para cada arquivo. A única exceção é o
+  escopo de teste descrito em "Geração local como teste de qualidade": um
+  arquivo com `commercial_use=False` só é aceito quando o executor pede esse
+  escopo, e o bundle inteiro passa a carregar `usage_scope: quality-test-only`.
 - O pipeline aceita apenas PNG completo, com CRC, dimensões, dados e fim do
   arquivo validados; short usa 1080x1920 e long usa 1920x1080.
 - Imagens e manifesto são publicados por rename atômico e registrados como
@@ -294,6 +297,80 @@ imagens geradas não entram em `imports/content-visuals/`, não têm
 a D4 valer. Não foi verificado se o pipeline `diffusers` aplica os filtros e o
 watermark do código de referência, nem o comportamento com prompts em
 português, pessoas ou marcas.
+
+### Descrições automáticas e pedido de revisão da D4 (2026-10-13)
+
+Em 2026-10-13 o proprietário pediu para rever a D4 e seguir com geração local.
+Isso ainda não é a aceitação do risco 3: ela precisa ser dada por escrito antes
+de qualquer vídeo monetizado, e até lá a decisão acima continua valendo.
+
+O experimento E9 repetiu o teste fora do pipeline para a narração da run 14,
+agora com as descrições escritas pelo `qwen3:14b` a partir de cada trecho do
+plano de imagens, em vez de à mão. As descrições passam por checagens em código
+que recusam texto, gráfico, logotipo, documento e captura de tela (risco 6). As
+seis imagens foram geradas offline com os mesmos parâmetros do teste anterior,
+em 18 a 42 s cada e pico de 8,3 GB de VRAM. Os pesos não foram reconferidos por
+hash nesta rodada. Saída em
+`storage/experiments/e9-imagens-automaticas/run14/`, não versionada; as imagens
+não têm `commercial_use` declarado e não entram em `imports/content-visuals/`.
+
+### Geração local como teste de qualidade (2026-10-13)
+
+A pedido do proprietário, a geração foi levada para o pipeline como
+`CONTENT_VISUAL_BACKEND=flux2_klein_quality_test`. `Settings` só aceita esse
+valor junto com `CONTENT_VISUAL_REVIEW_ENABLED=true` (o gate humano de imagens
+antes da montagem, exigido pelos limites acima), legendas, montagem e os dois
+caminhos `CONTENT_VISUAL_FLUX2_PYTHON_PATH` e `CONTENT_VISUAL_FLUX2_MODEL_DIR`.
+O padrão continua `disabled`.
+
+O que o código faz:
+
+- `src/pipeline/visual_prompts.py` escreve, com o modelo do roteiro, uma
+  descrição em inglês da cena de cada trecho da narração e a confere em código:
+  tamanho, inglês, e recusa de texto, gráfico, documento, logotipo, tela,
+  aparelho e "style of". Uma descrição recusada é refeita com o motivo até
+  quatro vezes; depois disso a etapa falha com
+  `CONTENT_VISUALS_SCENE_PROMPT_REJECTED` em vez de gerar a imagem. A checagem é
+  um filtro por palavras: não reconhece pessoa real nem marca pelo nome.
+- O estilo visual é escolhido por vídeo (`visual_style`: `photo`, `cartoon` ou
+  `dark`) e somado a toda cena. Nenhum estilo cita artista, estúdio, obra ou
+  personagem.
+- `src/pipeline/visual_generation.py` confere, antes de cada inferência, que a
+  pasta do modelo contém exatamente os 19 arquivos do inventário SHA-256 fixado
+  (pesos, configs, tokenizer e `LICENSE.md`; `README.md` e `.cache/` são
+  ignorados) e roda `scripts/visuals/flux2_klein_runner.py` em subprocess, no
+  ambiente virtual separado, offline, com 4 passos, `guidance_scale=1.0` e seed
+  derivada do prompt e gravada por arquivo.
+- Cada arquivo é declarado com `commercial_use=False` e licença
+  `Apache-2.0(weights; LICENSE.md pinned); training-data=undisclosed;
+  output-ownership=unaddressed; scope=quality-test-only`.
+- O escopo viaja com o vídeo: manifesto de A3 (`usage_scope`), saída de A5
+  (`visual_usage_scope`), digest e texto da approval A7, saída final da run,
+  e manifesto do export local (`usage_scope` e `monetizable: false`). Montagem
+  recusa imagem sem uso comercial em bundle que não esteja rotulado, e um
+  bundle rotulado não é reaproveitado por um backend comercial.
+
+O gate A3 (`src/pipeline/visual_review.py`) pausa a run depois das imagens e
+abre a approval `review_content_visuals_a3`. A página do painel mostra cada
+imagem ao lado do trecho narrado que ela cobre, a descrição usada para gerá-la,
+a proveniência e o que conferir (pessoa real, marca, texto legível, defeitos e
+se combina com o trecho). A decisão fica ligada ao manifesto e ao SHA-256 de
+cada imagem; imagem alterada depois da abertura é recusada pela página e pela
+continuação. Aprovar segue para legendas e montagem na mesma run; rejeitar
+cancela. O gate vale para qualquer backend de visuais, mas só é obrigatório
+para o de geração.
+
+O que foi verificado: testes com runner, modelo e imagens falsos cobrindo
+adapter, gate, página e escopo até o export, e uma execução do adapter real
+fora de uma run (duas imagens 1080×1920 em 120 s, incluindo o hash dos 16 GB,
+que fica em cache no processo). O que não foi verificado: uma run real pelo
+pipeline, a página do gate num navegador, o formato long, e se o pipeline
+`diffusers` aplica filtros ou watermark. Seis imagens levam cerca de
+200 s na primeira execução de um worker, perto do limite atual de 285 s da
+etapa; narrações mais longas exigem aumentar `CELERY_SOFT_TIME_LIMIT_SECONDS`.
+
+A aceitação escrita do risco 3 continua pendente. Um futuro gate de upload
+precisa recusar qualquer run com `visual_usage_scope`.
 
 Fontes primárias consultadas em 2026-10-10:
 
