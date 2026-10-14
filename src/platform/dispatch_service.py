@@ -490,10 +490,13 @@ async def execute_claimed_dispatch(
 
 
 async def _locked_dispatch(session: AsyncSession, dispatch_id: int) -> RunDispatch:
+    # The row may already be in this session's identity map with values read
+    # before another process changed it; a locked read must reflect the row.
     dispatch = await session.scalar(
         select(RunDispatch)
         .where(RunDispatch.id == dispatch_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     if dispatch is None:
         raise DispatchClaimError("dispatch does not exist")

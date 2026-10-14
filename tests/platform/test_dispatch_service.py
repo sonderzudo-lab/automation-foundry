@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import wave
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
@@ -172,6 +173,58 @@ async def test_broker_recovery_republishes_durable_dispatch_across_sessions(
         assert duplicate.terminal is True
         assert run_count == 1
         assert step_count == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_publish_outcome_does_not_overwrite_a_claim_made_during_publish(
+    tmp_path: Path,
+) -> None:
+    """A worker may claim the delivery before the publisher records its outcome."""
+    database_path = tmp_path / "publish-claim-race.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    def worker_claims_while_publishing(dispatch_id: int, *_args: object) -> None:
+        with sqlite3.connect(database_path) as worker_connection:
+            worker_connection.execute(
+                "UPDATE run_dispatches SET status = 'claimed', claimed_by = 'gpu-worker', "
+                "claim_token = 'worker-token' WHERE id = ?",
+                (dispatch_id,),
+            )
+
+    try:
+        async with factory() as publisher_session:
+            prepared = await publish_registered_dispatch(
+                publisher_session,
+                slug="platform-smoke",
+                idempotency_key="publish-claim-race-001",
+                publish=worker_claims_while_publishing,
+            )
+            dispatch = await publisher_session.get(RunDispatch, prepared.dispatch_id)
+            assert dispatch is not None
+            assert dispatch.status == "claimed"
+            assert dispatch.claim_token == "worker-token"
+            assert dispatch.publish_attempts == 1
+            outcome = await publisher_session.scalar(
+                select(RunDispatchEvent)
+                .where(RunDispatchEvent.dispatch_id == prepared.dispatch_id)
+                .order_by(RunDispatchEvent.id.desc())
+            )
+            assert outcome is not None
+            assert (outcome.from_status, outcome.to_status) == ("claimed", "claimed")
+
+        async with factory() as worker_session:
+            await finish_dispatch(
+                worker_session,
+                dispatch_id=prepared.dispatch_id,
+                claim_token="worker-token",
+                succeeded=True,
+            )
+            finished = await worker_session.get(RunDispatch, prepared.dispatch_id)
+            assert finished is not None and finished.status == "completed"
     finally:
         await engine.dispose()
 
