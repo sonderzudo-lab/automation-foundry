@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from src.pipeline import visual_generation
+from src.pipeline.scene_plan import parse_scene_plan, scene_image_prompt
+from src.pipeline.text_model import (
+    TextModelPermanentError,
+    TextModelProviderName,
+    TextModelRequest,
+    TextModelResult,
+)
 from src.pipeline.visual_generation import (
     FLUX2_KLEIN_MODEL_REVISION,
     Flux2KleinQualityTestConfig,
     build_flux2_klein_quality_test_adapter,
 )
-from src.pipeline.visual_prompts import VISUAL_STYLES
+from src.pipeline.visual_prompts import VISUAL_STYLES, ScenePromptError
 from src.pipeline.visuals import (
     VisualAdapter,
     VisualPermanentAdapterError,
@@ -27,6 +36,54 @@ _SCENES = (
     "A wooden desk seen from above with only a pencil, scissors and blank paper in the center",
     "A small ceramic tray on the edge of a desk holding pens and paper clips",
 )
+_SETTING = "A tidy home office with a wooden desk against a white wall and a single shelf"
+
+
+def _plan(*descriptions: str, setting: str = _SETTING) -> str:
+    """A plan answer with one scene per description, all in the same setting."""
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "characters": [],
+            "settings": [{"id": "office", "description": setting}],
+            "scenes": [
+                {
+                    "index": index,
+                    "description": description,
+                    "setting_id": "office",
+                    "character_ids": [],
+                    "shot": "wide" if index % 2 else "close_up",
+                }
+                for index, description in enumerate(descriptions, start=1)
+            ],
+        }
+    )
+
+
+def _image_prompts(answer: str) -> list[str]:
+    plan = parse_scene_plan(answer, scene_count=len(json.loads(answer)["scenes"]))
+    return [scene_image_prompt(plan, scene.index) for scene in plan.scenes]
+
+
+class _TextModel:
+    """Fake text model: answers or raises the scripted outcomes, repeating the last."""
+
+    provider: TextModelProviderName = "ollama"
+    model_id = "qwen3:14b"
+
+    def __init__(self, *outcomes: str | Exception) -> None:
+        self.outcomes = list(outcomes)
+        self.requests: list[TextModelRequest] = []
+
+    def complete(self, request: TextModelRequest) -> TextModelResult:
+        self.requests.append(request)
+        outcome = self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return TextModelResult(
+            text=outcome, provider="ollama", model_id="qwen3:14b", duration_seconds=Decimal(1)
+        )
+
 # Stands in for the real runner: writes a valid PNG of the requested size per request.
 _FAKE_RUNNER = '''
 import argparse, json, struct, sys, zlib
@@ -105,10 +162,9 @@ def _adapter(
     *,
     release_scene_model: Callable[[], None] | None = None,
 ) -> VisualAdapter:
-    answers = iter(scenes)
     return build_flux2_klein_quality_test_adapter(
         config,
-        scene_model=lambda _system, _user: next(answers),
+        scene_model=_TextModel(_plan(*scenes)),
         topic="Mesa organizada",
         style="cartoon",
         release_scene_model=release_scene_model,
@@ -139,7 +195,10 @@ def test_adapter_generates_one_non_commercial_image_per_stretch(
     assert "scope=quality-test-only" in first.license_id
     assert "training-data=undisclosed" in first.license_id
     assert FLUX2_KLEIN_MODEL_REVISION in first.model_id
-    assert first.generation_prompt == f"{_SCENES[0]}, {VISUAL_STYLES['cartoon']}"
+    assert first.generation_prompt == (
+        f"{_image_prompts(_plan(*_SCENES))[0]}, {VISUAL_STYLES['cartoon']}"
+    )
+    assert first.generation_prompt.startswith(_SCENES[0]) and _SETTING in first.generation_prompt
     assert first.seed is not None and 0 <= first.seed < 2**32
     assert first.source_uri.startswith("local-model://")
     assert not list(destination.parent.glob("flux2-klein-*"))
@@ -181,34 +240,34 @@ def test_adapter_refuses_a_model_directory_that_is_not_the_pinned_one(
         config = Flux2KleinQualityTestConfig(
             python_path=config.python_path, model_dir=str(model_dir / "nowhere")
         )
-    called: list[str] = []
-
-    def scene_model(_system: str, _user: str) -> str:
-        called.append("scene")
-        return _SCENES[0]
+    scene_model = _TextModel(_plan(*_SCENES))
 
     adapter = build_flux2_klein_quality_test_adapter(
         config, scene_model=scene_model, topic="Mesa", style="photo"
     )
     with pytest.raises(VisualPermanentAdapterError, match=code):
         adapter(_requests(), destination)
-    assert called == [] and not list(destination.iterdir())
+    assert scene_model.requests == [] and not list(destination.iterdir())
 
 
 def test_adapter_fails_closed_when_a_scene_description_is_refused(
     environment: tuple[Flux2KleinQualityTestConfig, Path],
 ) -> None:
     config, destination = environment
+    scene_model = _TextModel(
+        _plan(
+            "A desk with a laptop showing a chart about the sales of the quarter",
+            _SCENES[1],
+        )
+    )
     adapter = build_flux2_klein_quality_test_adapter(
-        config,
-        scene_model=lambda _system, _user: "A desk with a laptop showing a chart about sales",
-        topic="Mesa",
-        style="photo",
+        config, scene_model=scene_model, topic="Mesa", style="photo"
     )
     with pytest.raises(
         VisualPermanentAdapterError, match="CONTENT_VISUALS_SCENE_PROMPT_REJECTED"
     ):
         adapter(_requests(), destination)
+    assert len(scene_model.requests) == visual_generation.SCENE_PLAN_ATTEMPTS
     assert not list(destination.iterdir())
 
 
@@ -217,14 +276,30 @@ def test_adapter_reports_an_unreachable_scene_model_as_retryable(
 ) -> None:
     config, destination = environment
 
-    def unreachable(_system: str, _user: str) -> str:
-        raise ConnectionError("ollama down")
-
     adapter = build_flux2_klein_quality_test_adapter(
-        config, scene_model=unreachable, topic="Mesa", style="photo"
+        config,
+        scene_model=_TextModel(ConnectionError("ollama down")),
+        topic="Mesa",
+        style="photo",
     )
     with pytest.raises(
         VisualRetryableAdapterError, match="CONTENT_VISUALS_SCENE_MODEL_UNAVAILABLE"
+    ):
+        adapter(_requests(), destination)
+
+
+def test_adapter_reports_a_text_model_that_is_not_signed_in_as_permanent(
+    environment: tuple[Flux2KleinQualityTestConfig, Path],
+) -> None:
+    config, destination = environment
+    adapter = build_flux2_klein_quality_test_adapter(
+        config,
+        scene_model=_TextModel(TextModelPermanentError("not signed in")),
+        topic="Mesa",
+        style="photo",
+    )
+    with pytest.raises(
+        VisualPermanentAdapterError, match="CONTENT_VISUALS_SCENE_MODEL_MISCONFIGURED"
     ):
         adapter(_requests(), destination)
 
@@ -299,10 +374,11 @@ def test_scene_model_uses_the_native_api_with_a_fixed_context(
                 httpx.Response(200, json={"message": {"content": "   "}}),
             ]
         )
-        call = visual_generation.ollama_scene_model()
-        assert call("system text", "user text") == "A desk"
+        model = visual_generation.ollama_scene_model()
+        request = TextModelRequest(purpose="scene_plan", system="system text", user="user")
+        assert model.complete(request).text == "A desk"
         with pytest.raises(RuntimeError, match="empty"):
-            call("system text", "user text")
+            model.complete(request)
 
     body = json_module.loads(route.calls[0].request.content)
     assert body["model"] == "qwen3:14b"
@@ -318,12 +394,7 @@ def test_adapter_rewrites_only_the_images_sent_back_from_the_notes(
     environment: tuple[Flux2KleinQualityTestConfig, Path],
 ) -> None:
     config, destination = environment
-    seen: list[str] = []
-
-    def scene_model(_system: str, user: str) -> str:
-        seen.append(user)
-        return _SCENES[1]
-
+    scene_model = _TextModel(_SCENES[1])
     adapter = build_flux2_klein_quality_test_adapter(
         config,
         scene_model=scene_model,
@@ -336,7 +407,104 @@ def test_adapter_rewrites_only_the_images_sent_back_from_the_notes(
     results = adapter(_requests()[1:], destination)
 
     assert [result.file_name for result in results] == ["visual-002.png"]
+    seen = [request.user for request in scene_model.requests]
+    assert [request.purpose for request in scene_model.requests] == ["scene_revision"]
+    assert scene_model.requests[0].response_schema is None
     assert "«Mostre um pote, não um caderno»" in seen[0]
     assert "Pega só o que vai usar. Põe tudo num pote." in seen[0]
+    assert results[0].generation_prompt == f"{_SCENES[1]}, {VISUAL_STYLES['dark']}"
     with pytest.raises(VisualPermanentAdapterError, match="CONTENT_VISUALS_REVISION_MISSING"):
         adapter(_requests()[:1], destination)
+
+
+# ── Scene plan of the whole video ─────────────────────────────────────────────
+
+
+def test_one_plan_request_carries_every_stretch_and_the_schema(
+    environment: tuple[Flux2KleinQualityTestConfig, Path],
+) -> None:
+    config, destination = environment
+    scene_model = _TextModel(_plan(*_SCENES))
+    adapter = build_flux2_klein_quality_test_adapter(
+        config, scene_model=scene_model, topic="Mesa organizada", style="photo"
+    )
+
+    results = adapter(_requests(), destination)
+
+    (request,) = scene_model.requests
+    assert request.purpose == "scene_plan"
+    assert request.response_schema is not None
+    assert "1. Pega só o que vai usar.\n2. Põe tudo num pote." in request.user
+    assert "Exactly 2 scenes" in request.system
+    assert [result.generation_prompt for result in results] == [
+        f"{prompt}, {VISUAL_STYLES['photo']}" for prompt in _image_prompts(_plan(*_SCENES))
+    ]
+
+
+def test_a_refused_plan_is_asked_again_with_the_reason(
+    environment: tuple[Flux2KleinQualityTestConfig, Path],
+) -> None:
+    config, destination = environment
+    scene_model = _TextModel(
+        "Here is the plan: not JSON",
+        _plan(_SCENES[0]),
+        _plan(*_SCENES),
+    )
+    adapter = build_flux2_klein_quality_test_adapter(
+        config, scene_model=scene_model, topic="Mesa", style="photo"
+    )
+
+    results = adapter(_requests(), destination)
+
+    assert len(results) == 2
+    first_retry, second_retry = (request.user for request in scene_model.requests[1:])
+    assert "refused because it is not a single valid JSON object" in first_retry
+    assert "Here is the plan: not JSON" in first_retry
+    assert "refused because it has 1 scenes; it must have exactly 2" in second_retry
+
+
+def test_a_plan_whose_image_prompts_would_be_too_long_is_refused(
+    environment: tuple[Flux2KleinQualityTestConfig, Path],
+) -> None:
+    config, destination = environment
+    wordy = " ".join(["meticulously arranged mahogany bookshelves"] * 10)
+    too_long = json.dumps(
+        {
+            "schema_version": 1,
+            "characters": [
+                {"id": f"person_{n}", "description": f"A person number {n} beside {wordy}"}
+                for n in range(3)
+            ],
+            "settings": [{"id": "office", "description": f"An office with {wordy}"}],
+            "scenes": [
+                {
+                    "index": index,
+                    "description": f"{description} beside {wordy}",
+                    "setting_id": "office",
+                    "character_ids": ["person_0", "person_1", "person_2"],
+                    "shot": shot,
+                }
+                for index, (description, shot) in enumerate(
+                    zip(_SCENES, ("wide", "detail"), strict=True), start=1
+                )
+            ],
+        }
+    )
+    scene_model = _TextModel(too_long, _plan(*_SCENES))
+    adapter = build_flux2_klein_quality_test_adapter(
+        config, scene_model=scene_model, topic="Mesa", style="photo"
+    )
+
+    adapter(_requests(), destination)
+
+    retry = scene_model.requests[1].user
+    assert "image prompt of scene 1" in retry and "describe the characters" in retry
+
+
+def test_more_scenes_than_a_plan_holds_are_refused_without_asking() -> None:
+    scene_model = _TextModel(_plan(*_SCENES))
+    with pytest.raises(ScenePromptError):
+        visual_generation.write_scene_plan(
+            scene_model, topic="Mesa", stretches=["Trecho."] * 61, style="photo"
+        )
+    assert scene_model.requests == []

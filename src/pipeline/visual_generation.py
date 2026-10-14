@@ -1,9 +1,11 @@
 """Local image generation for A3 with FLUX.2 klein 4B, quality test only.
 
-The adapter writes one scene description per stretch of approved narration,
-checks it, and renders it with pinned local weights in a separate virtual
-environment. Nothing is downloaded: the whole model directory is compared with
-a SHA-256 inventory before each inference and the runner starts offline.
+The adapter asks the text model for the scene plan of the whole video in one
+answer (one scene per stretch of approved narration, with recurring characters
+and settings), checks it, and renders each scene with pinned local weights in a
+separate virtual environment. Nothing is downloaded: the whole model directory
+is compared with a SHA-256 inventory before each inference and the runner starts
+offline.
 
 Every asset is declared with ``commercial_use=False``. The model's training
 data is not disclosed and its licence does not address ownership of the
@@ -23,16 +25,29 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from src.pipeline.text_model import as_scene_model_call
+import structlog
+
+from src.pipeline.scene_plan import (
+    MAX_PLANNED_SCENES,
+    ScenePlanError,
+    parse_scene_plan,
+    scene_image_prompt,
+    scene_plan_response_schema,
+)
+from src.pipeline.text_model import (
+    TextModel,
+    TextModelPermanentError,
+    TextModelRequest,
+    as_scene_model_call,
+)
 from src.pipeline.text_model_factory import configured_ollama_model, configured_text_model
 from src.pipeline.text_model_ollama import OLLAMA_NUM_CTX
 from src.pipeline.visual_prompts import (
-    SceneModelCall,
     ScenePromptError,
     VisualStyle,
     revise_scene_prompt,
+    scene_plan_request,
     styled_prompt,
-    write_scene_prompts,
 )
 from src.pipeline.visuals import (
     VisualAdapter,
@@ -41,6 +56,8 @@ from src.pipeline.visuals import (
     VisualRequest,
     VisualRetryableAdapterError,
 )
+
+log = structlog.get_logger(__name__)
 
 FLUX2_KLEIN_QUALITY_TEST_BACKEND = "flux2_klein_quality_test"
 FLUX2_KLEIN_MODEL_REPOSITORY = "black-forest-labs/FLUX.2-klein-4B"
@@ -128,7 +145,7 @@ class Flux2KleinQualityTestConfig:
 def build_flux2_klein_quality_test_adapter(
     config: Flux2KleinQualityTestConfig,
     *,
-    scene_model: SceneModelCall,
+    scene_model: TextModel,
     topic: str,
     style: VisualStyle,
     release_scene_model: Callable[[], None] | None = None,
@@ -138,11 +155,12 @@ def build_flux2_klein_quality_test_adapter(
 ) -> VisualAdapter:
     """Build an adapter that generates one image per stretch of narration.
 
-    ``scene_model`` writes the scene descriptions; ``release_scene_model`` is
-    called before the image model loads so both do not hold the GPU at once.
-    With ``revisions`` (request index -> previous scene and reviewer's note) every
-    request is an image the reviewer sent back: its description is rewritten from
-    the note, with the full ``narration`` and the ``kept_scenes`` as context.
+    ``scene_model`` writes the scene plan of the whole video in one answer;
+    ``release_scene_model`` is called before the image model loads so both do
+    not hold the GPU at once. With ``revisions`` (request index -> previous scene
+    and reviewer's note) every request is an image the reviewer sent back: its
+    description is rewritten on its own from the note, with the full
+    ``narration`` and the ``kept_scenes`` as context.
     """
 
     def generate(
@@ -162,18 +180,19 @@ def build_flux2_klein_quality_test_adapter(
         context = narration or " ".join(stretches)
         try:
             if revisions is None:
-                scenes = write_scene_prompts(
+                scenes = write_scene_plan(
                     scene_model,
                     topic=topic,
-                    narration=context,
                     stretches=stretches,
+                    style=style,
                 )
             else:
                 if any(request.index not in revisions for request in requests):
                     raise VisualPermanentAdapterError("CONTENT_VISUALS_REVISION_MISSING")
+                revise = as_scene_model_call(scene_model, purpose="scene_revision")
                 scenes = tuple(
                     revise_scene_prompt(
-                        scene_model,
+                        revise,
                         topic=topic,
                         narration=context,
                         stretch=stretch,
@@ -188,6 +207,11 @@ def build_flux2_klein_quality_test_adapter(
         except ScenePromptError as exc:
             raise VisualPermanentAdapterError(
                 "CONTENT_VISUALS_SCENE_PROMPT_REJECTED"
+            ) from exc
+        except TextModelPermanentError as exc:
+            # A text model that is not installed or signed in will not recover by retrying.
+            raise VisualPermanentAdapterError(
+                "CONTENT_VISUALS_SCENE_MODEL_MISCONFIGURED"
             ) from exc
         except Exception as exc:
             raise VisualRetryableAdapterError(
@@ -275,18 +299,81 @@ SCENE_MODEL_NUM_CTX = OLLAMA_NUM_CTX
 SCENE_MODEL_TIMEOUT_SECONDS = 120.0
 
 
-def ollama_scene_model() -> SceneModelCall:
-    """Scene descriptions written by the configured text model.
+def scene_text_model() -> TextModel:
+    """The configured text model that writes the scene plan and the revisions.
 
     Ollama by default, the same local model that writes the script: native chat
     API with a fixed context window and thinking disabled. With ``codex_exec`` the
     ChatGPT plan writes them and Ollama answers only after its usage limit. An
     unreachable model or an empty answer fails the step as retryable.
     """
-    return as_scene_model_call(
-        configured_text_model(ollama_timeout_seconds=SCENE_MODEL_TIMEOUT_SECONDS),
-        purpose="scene_description",
-    )
+    return configured_text_model(ollama_timeout_seconds=SCENE_MODEL_TIMEOUT_SECONDS)
+
+
+# The name the A1 executor still uses to build the adapter.
+ollama_scene_model = scene_text_model
+
+
+SCENE_PLAN_ATTEMPTS = 4
+# ``validate_generated_visuals`` refuses a longer generation prompt.
+MAX_GENERATION_PROMPT_CHARS = 2000
+
+
+def write_scene_plan(
+    model: TextModel,
+    *,
+    topic: str,
+    stretches: Sequence[str],
+    style: VisualStyle,
+) -> tuple[str, ...]:
+    """Write the full prompt of every scene from one checked plan of the video.
+
+    A refused plan is asked again with the reason, up to the attempt ceiling; a
+    video that still has no acceptable plan raises ``ScenePromptError`` instead
+    of sending an unchecked prompt to the image model.
+    """
+    if not 1 <= len(stretches) <= MAX_PLANNED_SCENES:
+        raise ScenePromptError(f"a plan holds 1 to {MAX_PLANNED_SCENES} scenes")
+    refused: tuple[str, str] | None = None
+    for attempt in range(1, SCENE_PLAN_ATTEMPTS + 1):
+        system, user = scene_plan_request(topic=topic, stretches=stretches, refused=refused)
+        try:
+            request = TextModelRequest(
+                purpose="scene_plan",
+                system=system,
+                user=user,
+                response_schema=scene_plan_response_schema(),
+            )
+        except ValueError as exc:
+            raise ScenePromptError("the narration is too long for one scene plan") from exc
+        answer = model.complete(request).text
+        try:
+            plan = parse_scene_plan(answer, scene_count=len(stretches))
+        except ScenePlanError as exc:
+            problem: str | None = str(exc)
+        else:
+            scenes = tuple(
+                scene_image_prompt(plan, index) for index in range(1, len(stretches) + 1)
+            )
+            problem = _prompt_length_problem(scenes, style)
+            if problem is None:
+                return scenes
+        # The reason is written by the checks, never copied from the answer.
+        log.warning("scene_plan_refused", attempt=attempt, reason=problem)
+        refused = (answer, str(problem))
+    raise ScenePromptError("no acceptable scene plan")
+
+
+def _prompt_length_problem(scenes: Sequence[str], style: VisualStyle) -> str | None:
+    for index, scene in enumerate(scenes, start=1):
+        length = len(styled_prompt(scene, style))
+        if length > MAX_GENERATION_PROMPT_CHARS:
+            return (
+                f"makes the image prompt of scene {index} {length} characters long, over "
+                f"the limit of {MAX_GENERATION_PROMPT_CHARS}; describe the characters and "
+                "settings more briefly"
+            )
+    return None
 
 
 def release_ollama_scene_model() -> None:
