@@ -141,3 +141,66 @@ async def test_database_probe_returns_only_latency(session: AsyncSession) -> Non
 
     assert check.status is HealthStatus.PASS
     assert set(check.metrics) == {"latency_ms"}
+
+
+def _replies_without_gpu() -> dict[str, list[dict[str, str]]]:
+    return {"cpu@private-host": [{"name": "cpu"}], "io@private-host": [{"name": "io"}]}
+
+
+async def test_worker_probe_counts_a_busy_worker_with_a_live_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    celery = Celery("health-busy-worker-test")
+
+    class FakeInspector:
+        def active_queues(self) -> dict[str, list[dict[str, str]]]:
+            return _replies_without_gpu()
+
+    monkeypatch.setattr(celery.control, "inspect", lambda *, timeout: FakeInspector())
+
+    busy = await health.probe_workers(celery, timeout=1, busy_queues=frozenset({"gpu"}))
+    missing = await health.probe_workers(celery, timeout=1)
+
+    assert busy.status is HealthStatus.PASS
+    assert busy.metrics["gpu_workers"] == 1
+    assert "ocupado com tarefa em execução: gpu" in busy.summary
+    assert missing.status is HealthStatus.FAIL
+    assert missing.summary == "filas sem worker: gpu"
+
+
+async def test_busy_queues_come_only_from_live_claims(session: AsyncSession) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from src.platform.models import Automation, Run, RunDispatch
+
+    automation = Automation(slug="content-engine", name="Content Engine", owner="local-owner")
+    session.add(automation)
+    await session.flush()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    rows = [
+        ("gpu", "claimed", now + timedelta(minutes=5)),
+        ("cpu", "claimed", now - timedelta(minutes=5)),
+        ("io", "completed", now + timedelta(minutes=5)),
+    ]
+    for index, (queue, status, lease) in enumerate(rows):
+        run = Run(
+            automation_id=automation.id,
+            idempotency_key=f"busy-{index}",
+            status="running",
+            trigger="manual",
+        )
+        session.add(run)
+        await session.flush()
+        session.add(
+            RunDispatch(
+                run_id=run.id,
+                queue=queue,
+                task_name="automation_foundry.run_dispatch",
+                delivery_id=f"delivery-{index}",
+                status=status,
+                lease_expires_at=lease,
+            )
+        )
+    await session.flush()
+
+    assert await health._busy_dispatch_queues(session) == frozenset({"gpu"})
