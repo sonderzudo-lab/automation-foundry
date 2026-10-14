@@ -1,0 +1,192 @@
+{
+  "$defs": {
+    "TimelineClip": {
+      "additionalProperties": false,
+      "description": "One image on screen from ``start_ms`` to ``end_ms``.",
+      "properties": {
+        "index": {
+          "maximum": 600,
+          "minimum": 1,
+          "title": "Index",
+          "type": "integer"
+        },
+        "image": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.png$",
+          "title": "Image",
+          "type": "string"
+        },
+        "image_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Image Sha256",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "effect": {
+          "enum": [
+            "none",
+            "zoom_in",
+            "zoom_out",
+            "pan_left",
+            "pan_right"
+          ],
+          "title": "Effect",
+          "type": "string"
+        },
+        "transition_in": {
+          "enum": [
+            "cut",
+            "crossfade"
+          ],
+          "title": "Transition In",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "image",
+        "image_sha256",
+        "start_ms",
+        "end_ms",
+        "effect",
+        "transition_in"
+      ],
+      "title": "TimelineClip",
+      "type": "object"
+    },
+    "TimelineWord": {
+      "additionalProperties": false,
+      "description": "One spoken word and the interval in which it is heard.",
+      "properties": {
+        "text": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "End Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "text",
+        "start_ms",
+        "end_ms"
+      ],
+      "title": "TimelineWord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Everything a render engine needs to draw one video.",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "format": {
+      "enum": [
+        "short",
+        "long"
+      ],
+      "title": "Format",
+      "type": "string"
+    },
+    "width": {
+      "title": "Width",
+      "type": "integer"
+    },
+    "height": {
+      "title": "Height",
+      "type": "integer"
+    },
+    "fps": {
+      "const": 30,
+      "title": "Fps",
+      "type": "integer"
+    },
+    "duration_ms": {
+      "maximum": 14400000,
+      "minimum": 1000,
+      "title": "Duration Ms",
+      "type": "integer"
+    },
+    "audio_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Audio Sha256",
+      "type": "string"
+    },
+    "caption_ass_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Caption Ass Sha256",
+      "type": "string"
+    },
+    "caption_template": {
+      "enum": [
+        "phrase_blocks",
+        "word_pop"
+      ],
+      "title": "Caption Template",
+      "type": "string"
+    },
+    "transition_ms": {
+      "maximum": 1000,
+      "minimum": 0,
+      "title": "Transition Ms",
+      "type": "integer"
+    },
+    "clips": {
+      "items": {
+        "$ref": "#/$defs/TimelineClip"
+      },
+      "maxItems": 600,
+      "minItems": 1,
+      "title": "Clips",
+      "type": "array"
+    },
+    "words": {
+      "items": {
+        "$ref": "#/$defs/TimelineWord"
+      },
+      "maxItems": 60000,
+      "title": "Words",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "format",
+    "width",
+    "height",
+    "fps",
+    "duration_ms",
+    "audio_sha256",
+    "caption_ass_sha256",
+    "caption_template",
+    "transition_ms",
+    "clips",
+    "words"
+  ],
+  "title": "Timeline",
+  "type": "object"
+}

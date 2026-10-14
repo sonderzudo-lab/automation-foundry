@@ -104,6 +104,7 @@ Na data desta versão:
   reportada como `TIMEOUT`;
 - o encadeamento A1→A6 possui um ensaio local reproduzível: `tests/support/local_media_rehearsal.py` gera dentro do repositório um WAV determinístico de tom puro declarado como `synthetic_quality_test_fixture`, PNGs sintéticos com manifesto A3 estrito e um roteiro PT-BR fixo, sem download, rede, API externa ou asset de terceiro. A suíte padrão exercita os backends reais de A3 e A4 na cadeia compartilhada, com A5 fake e A6 real, roda o diagnóstico de alinhamento A4 sobre a evidência produzida e prova o bloqueio fail-closed quando o manifesto diverge da quantidade calculada; a variante opt-in `AUTOMATION_FOUNDRY_TEST_FFMPEG=1` repete a cadeia com FFmpeg fixado e publica um MP4 inspecionável. O ensaio não valida narração real, direitos sobre imagens reais, sincronismo contra voz real nem adequação editorial, e nada é publicado;
 - uma validação manual opt-in complementar percorreu A1→A8 na run 4 com `pm_alex`, gate A2 persistido, sete PNGs 1080×1920 declarados em manifesto, timing A4 proporcional, FFmpeg real, bloqueio A6 e approvals A7/A8. O MP4 H.264/AAC de 39,325 s e a thumbnail escolhida foram servidos pelo export local após nova verificação de hashes; o diagnóstico de alinhamento retornou `pass`, e a run terminou `published=false`. Essa evidência valida o fluxo short e os gates, mas não transforma o adapter de voz em comercialmente aprovado, não substitui revisão jurídica dos assets, não valida formato long e não implementa alinhamento forçado nem publicação;
+- `src/pipeline/text_model.py`, `scene_plan.py`, `timeline.py` e `channel_profile.py` fixam, desde 2026-10-14, os contratos da próxima fase do Content Engine, descritos em `docs/reference/content-contracts-v1.md`: a interface única do modelo de texto (providers `ollama` e `codex_exec`, reserva somente por limite de uso), o plano de cenas do vídeo inteiro para o A3, o timeline em milissegundos independente do motor de render para o A5 (com JSON Schema versionado em `docs/reference/schemas/`) e o perfil de canal. São apenas tipos validados com testes: nenhum está ligado à pipeline, e A1, A3 e A5 funcionam como antes;
 - `src/platform/task_runner.py` aplica timeout assíncrono, retries limitados e backoff exponencial; pedidos de cancelamento e kill switch são consultados antes e depois de cada corrotina e entre tentativas;
 - `control_events` mantem auditoria append-only de pedidos de cancelamento, habilitacao administrativa e mudancas do kill switch por automacao; cada mudanca administrativa ou operacional registra o actor local e o motivo informado pelo operador, e os controles por automação usam lock de linha no PostgreSQL para não duplicar evidência sob requisições concorrentes;
 - approvals vinculam run, ação e digest do payload; uma decisão pode ainda persistir uma escolha estruturada pequena, não sensível e imutável, e uma decisão aprovada só pode autorizar uma chave idempotente de task;
@@ -374,7 +375,9 @@ Trading Lab nunca permite que o LLM envie ordens. O caminho inicial termina em p
 
 ## 13. IA e hardware local
 
-O hardware esperado é Ryzen 9 5950X, RTX 3090 com 24 GB de VRAM e aproximadamente 32 GB de RAM, ainda a confirmar no computador de casa.
+O hardware é Ryzen 9 5950X, RTX 3090 com 24 GB de VRAM e 64 GB de RAM (informado pelo proprietário em 2026-10-14). O runtime roda no Windows nativo, como tarefa agendada, e não no WSL2; os ambientes de geração de imagem e voz ficam em ambientes virtuais separados no `D:`.
+
+O texto (roteiro, plano de cenas) pode vir do modelo local ou do plano do ChatGPT do proprietário via `codex exec`, escolhido por configuração; o modelo local permanece como reserva. Tirar o texto da GPU libera a placa para imagem, voz e legendas. O plano do Claude não é usado pelo runtime.
 
 - mantenha somente um workload pesado por vez na GPU;
 - carregue e descarregue modelos de forma previsível;
@@ -427,6 +430,8 @@ Cada candidato passa pelo contrato de `$build-automation-module` e por avaliaç�
 8. Adapters da aplicação, não MCPs, no runtime.
 9. Gates humanos para efeitos externos ou irreversíveis.
 10. Backtest e paper trading antes de qualquer discussão de live trading.
+11. No Content Engine, o modelo de texto escreve conteúdo, nunca tempos nem quantidades; cortes, durações e palavras da legenda vêm do áudio e das legendas verificados.
+12. O canal é a unidade de gestão do Content Engine: cada run passará a pertencer a um canal com perfil validado, persistido em tabela própria do módulo (a tabela legada `channels` não é reutilizada). O contrato existe; a persistência ainda não.
 
 ## 17. Definição arquitetural de pronto
 

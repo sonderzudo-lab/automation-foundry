@@ -16,6 +16,12 @@ Roteiro (A1) e narração (A2) estão dados por concluídos pelo proprietário. 
 2. **Edição.** Hoje é a edição `motion` do FFmpeg (zoom/deslocamento lento, crossfade de
    0,4 s, cortes no início das frases).
 
+**Atualização do mesmo dia:** o plano para os dois focos, para os vários canais e para o
+texto pelo plano do ChatGPT está no `ROADMAP.md` (item "Preparar o Content Engine para vários
+canais"). Os contratos estão em `docs/reference/content-contracts-v1.md`, e o trabalho em
+paralelo entre agentes está em `docs/planning/lanes.md`. Codex CLI 0.159.3 e Remotion 4.0.531
+(em `D:\automation-foundry\labs\remotion-spike\`) foram instalados com autorização.
+
 ## Como trabalhar com o proprietário
 
 - Não é técnico em mídia/ML. Explique simples, recomende uma opção e peça a decisão.
