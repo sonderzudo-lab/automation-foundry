@@ -63,9 +63,12 @@ Roteiro (A1) e narração (A2) estão dados por concluídos pelo proprietário. 
   abreviação ("Ex:") e aspas soltas. Como a legenda copia a grafia do roteiro, apareceram
   blocos só com "1.", "2.", "3." e "?’", e o trecho "Ex: organização da mesa." ficou sem
   legenda (a transcrição ouviu outra coisa e o trecho sem correspondência é ocultado).
-  Correção sugerida: na limpeza da narração do A1, trocar marcadores de lista por fala
-  ("Primeiro", "Segundo"…) ou removê-los, expandir "Ex:" para "Por exemplo," e remover aspas
-  sem par; nas legendas, juntar blocos que só têm número ou pontuação ao trecho seguinte.
+  **Corrigido no código em 2026-10-14** (`_extract_narration` em `script_gen.py` e
+  `_screen_words` em `captions.py`): "1." no início da linha vira "Primeiro," (até
+  "Décimo,"; acima disso, hífen e bolinha somem), "Ex:"/"Ex.:" vira "Por exemplo,", aspas
+  sem par na mesma linha somem; na legenda, número de lista que abre frase aparece com a
+  palavra seguinte e pontuação solta cede o tempo à palavra anterior. Pendente: reiniciar
+  o runtime (os workers mantêm o Python antigo) e conferir o gate na próxima run real.
 - No detalhe da run, os steps são agrupados por ordinal: `draft-visuals-a3-r1` e
   `prepare-visuals-a3` (ambos ordinal 3) aparecem como duas "Tentativa 1" do mesmo step.
 - Aceite escrito do proprietário para uso monetizado das imagens geradas.
