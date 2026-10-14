@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 
 from src.core.config import settings
-from src.pipeline.script_gen import _call_llm, _make_client
+from src.pipeline.script_gen import sanitize_llm_output
 from src.pipeline.visual_prompts import (
     SceneModelCall,
     ScenePromptError,
@@ -243,12 +243,45 @@ def build_flux2_klein_quality_test_adapter(
     return generate
 
 
+# Each description request is a few thousand tokens. Without a fixed window the
+# OpenAI-compatible endpoint loads the model with its default context, several
+# times larger, which made each call take up to a minute in run 16.
+SCENE_MODEL_NUM_CTX = 8192
+SCENE_MODEL_TIMEOUT_SECONDS = 120.0
+
+
+def _ollama_native_root() -> str:
+    return settings.ollama_base_url.rstrip("/").removesuffix("/v1")
+
+
 def ollama_scene_model() -> SceneModelCall:
-    """Scene descriptions written by the same local model that writes the script."""
-    client = _make_client()
+    """Scene descriptions written by the same local model that writes the script.
+
+    Uses Ollama's native chat API, the only one that accepts a fixed context
+    window, with thinking disabled. An empty answer is treated like any other
+    unreachable model: the step fails as retryable.
+    """
 
     def call(system: str, user: str) -> str:
-        return _call_llm(client, system=system, user=user, step="visual_scene_prompt")
+        response = httpx.post(
+            f"{_ollama_native_root()}/api/chat",
+            json={
+                "model": settings.ollama_model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "stream": False,
+                "think": False,
+                "options": {"num_ctx": SCENE_MODEL_NUM_CTX},
+            },
+            timeout=SCENE_MODEL_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        content = sanitize_llm_output(str(response.json()["message"]["content"]))
+        if not content:
+            raise RuntimeError("scene model returned an empty answer")
+        return content
 
     return call
 
@@ -261,7 +294,7 @@ def release_ollama_scene_model() -> None:
     """
     try:
         httpx.post(
-            f"{settings.ollama_base_url.rstrip('/').removesuffix('/v1')}/api/generate",
+            f"{_ollama_native_root()}/api/generate",
             json={"model": settings.ollama_model, "keep_alive": 0},
             timeout=30.0,
         )

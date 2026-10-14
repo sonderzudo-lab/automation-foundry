@@ -269,3 +269,36 @@ def test_adapter_refuses_a_missing_python_or_an_invalid_timeout(
         VisualPermanentAdapterError, match="CONTENT_VISUALS_FLUX2_TIMEOUT_INVALID"
     ):
         _adapter(no_time)(_requests(), destination)
+
+
+def test_scene_model_uses_the_native_api_with_a_fixed_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json as json_module
+    from types import SimpleNamespace
+
+    import httpx
+    import respx
+
+    monkeypatch.setattr(
+        visual_generation,
+        "settings",
+        SimpleNamespace(ollama_base_url="http://127.0.0.1:11434/v1", ollama_model="qwen3:14b"),
+    )
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post("http://127.0.0.1:11434/api/chat").mock(
+            side_effect=[
+                httpx.Response(200, json={"message": {"content": "<think></think> A desk "}}),
+                httpx.Response(200, json={"message": {"content": "   "}}),
+            ]
+        )
+        call = visual_generation.ollama_scene_model()
+        assert call("system text", "user text") == "A desk"
+        with pytest.raises(RuntimeError, match="empty"):
+            call("system text", "user text")
+
+    body = json_module.loads(route.calls[0].request.content)
+    assert body["model"] == "qwen3:14b"
+    assert body["think"] is False and body["stream"] is False
+    assert body["options"] == {"num_ctx": visual_generation.SCENE_MODEL_NUM_CTX}
+    assert [message["role"] for message in body["messages"]] == ["system", "user"]
