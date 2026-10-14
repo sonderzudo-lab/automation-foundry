@@ -8,8 +8,10 @@ is what keeps images varied and consistent with each other.
 The model decides only what is shown. The code decides how many scenes there
 are (one per visual slot of the narration), which stretch each scene covers and
 every timing; none of that is read from the answer. Every description passes the
-same deterministic checks as before, so a plan never sends text, screens, logos
-or named people to the image model. Human review of the images stays mandatory.
+same deterministic checks as before, so a plan never sends text, screen content,
+logos or named people to the image model. The scenes must use at least three
+different settings, so a video does not stay in one place. Human review of the
+images stays mandatory.
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ MAX_PLANNED_SCENES = 60
 MAX_PLANNED_CHARACTERS = 4
 MAX_PLANNED_SETTINGS = 8
 MAX_CHARACTERS_PER_SCENE = 3
+# Fewer scenes than this need one setting each.
+MIN_SETTINGS_USED = 3
 
 Shot = Literal["wide", "medium", "close_up", "detail"]
 
@@ -165,6 +169,13 @@ def _plan_problem(plan: ScenePlan) -> str | None:
                 f"{scene.index}; consecutive scenes must differ"
             )
         previous = current
+    used = len({scene.setting_id for scene in plan.scenes})
+    needed = min(MIN_SETTINGS_USED, len(plan.scenes))
+    if used < needed:
+        return (
+            f"places its scenes in {used} setting(s); the scenes must use at least "
+            f"{needed} different settings"
+        )
     return None
 
 

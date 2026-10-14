@@ -36,12 +36,32 @@ def test_scene_prompt_problem_accepts_a_plain_english_scene() -> None:
         ("A notebook page with a chart and a pencil resting on a wooden desk", "'chart'"),
         ("A hand lifts a pen above an open notebook on a desk without visible text", "'text'"),
         ("A cluttered desk with pens and papers while a laptop sits in the background", "'laptop'"),
+        ("A person in a kitchen looks down at a phone held in both hands near the sink",
+         "shows 'phone' without saying that its screen faces away"),
+        ("A sofa with a tablet lying on a cushion beside a folded blanket and a mug", "'tablet'"),
+        ("A phone lying face down shows a notification on a bedside table with a lamp",
+         "'notification'"),
         ("A wooden desk with pens drawn in the style of a famous animation studio", "'style of'"),
     ],
 )
 def test_scene_prompt_problem_explains_the_refusal(prompt: str, fragment: str) -> None:
     problem = scene_prompt_problem(prompt)
     assert problem is not None and fragment in problem
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "A smartphone lying face down on a bedside table next to a glass of water",
+        "A person on a sofa holds a phone with the screen facing away from the viewer",
+        "A laptop on a kitchen table with its screen turned away, beside a mug and keys",
+        "A desk with a computer monitor whose screen is turned off and a closed notebook",
+        "A closed laptop rests on a wooden desk next to a pencil cup and a plant",
+        "A hand holds a phone in the foreground, its blurred screen out of focus, near a window",
+    ],
+)
+def test_a_device_with_a_hidden_screen_is_accepted(prompt: str) -> None:
+    assert scene_prompt_problem(prompt) is None
 
 
 def test_write_scene_prompts_returns_one_clean_prompt_per_stretch() -> None:
@@ -116,7 +136,7 @@ def test_revised_description_carries_the_note_the_old_scene_and_the_kept_ones() 
         )
         == _GOOD
     )
-    assert "refused because it mentions 'laptop'" in call.call_args_list[1].args[1]
+    assert "refused because it shows 'laptop'" in call.call_args_list[1].args[1]
     with pytest.raises(ScenePromptError):
         revise_scene_prompt(
             MagicMock(return_value="Uma mesa de madeira com lápis e papéis no centro dela"),

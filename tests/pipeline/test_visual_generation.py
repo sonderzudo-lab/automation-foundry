@@ -37,20 +37,25 @@ _SCENES = (
     "A small ceramic tray on the edge of a desk holding pens and paper clips",
 )
 _SETTING = "A tidy home office with a wooden desk against a white wall and a single shelf"
+_OTHER_SETTINGS = (
+    {"id": "kitchen", "description": "A compact kitchen with a round table, two chairs and a bowl"},
+    {"id": "hallway", "description": "A narrow hallway with a coat rack, a small bench and a mirror"},
+)
 
 
 def _plan(*descriptions: str, setting: str = _SETTING) -> str:
-    """A plan answer with one scene per description, all in the same setting."""
+    """A plan answer with one scene per description, rotating through three settings."""
+    settings = [{"id": "office", "description": setting}, *_OTHER_SETTINGS]
     return json.dumps(
         {
             "schema_version": 1,
             "characters": [],
-            "settings": [{"id": "office", "description": setting}],
+            "settings": settings,
             "scenes": [
                 {
                     "index": index,
                     "description": description,
-                    "setting_id": "office",
+                    "setting_id": settings[(index - 1) % len(settings)]["id"],
                     "character_ids": [],
                     "shot": "wide" if index % 2 else "close_up",
                 }
@@ -475,12 +480,15 @@ def test_a_plan_whose_image_prompts_would_be_too_long_is_refused(
                 {"id": f"person_{n}", "description": f"A person number {n} beside {wordy}"}
                 for n in range(3)
             ],
-            "settings": [{"id": "office", "description": f"An office with {wordy}"}],
+            "settings": [
+                {"id": "office", "description": f"An office with {wordy}"},
+                *_OTHER_SETTINGS,
+            ],
             "scenes": [
                 {
                     "index": index,
                     "description": f"{description} beside {wordy}",
-                    "setting_id": "office",
+                    "setting_id": "office" if index == 1 else "kitchen",
                     "character_ids": ["person_0", "person_1", "person_2"],
                     "shot": shot,
                 }

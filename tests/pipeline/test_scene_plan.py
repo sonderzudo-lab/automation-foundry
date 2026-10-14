@@ -32,6 +32,10 @@ _PLAN: dict[str, Any] = {
             "id": "kitchen",
             "description": "A compact kitchen with a round table, two chairs and a fruit bowl",
         },
+        {
+            "id": "library_table",
+            "description": "A long library table with wooden chairs, a reading lamp and stacked books",
+        },
     ],
     "scenes": [
         {
@@ -44,7 +48,7 @@ _PLAN: dict[str, Any] = {
         {
             "index": 2,
             "description": "Hands place a closed notebook and a single pencil side by side",
-            "setting_id": "bedroom_desk",
+            "setting_id": "library_table",
             "character_ids": [],
             "shot": "detail",
         },
@@ -95,6 +99,12 @@ def _broken(path: tuple[Any, ...], value: Any) -> dict[str, Any]:
     return plan
 
 
+def _same_place_twice() -> dict[str, Any]:
+    plan = _broken(("scenes", 1, "setting_id"), "bedroom_desk")
+    plan["scenes"][1]["shot"] = "medium"
+    return plan
+
+
 @pytest.mark.parametrize(
     ("answer", "scene_count", "fragment"),
     [
@@ -108,7 +118,12 @@ def _broken(path: tuple[Any, ...], value: Any) -> dict[str, Any]:
             3,
             "repeats the description",
         ),
-        (_answer(_broken(("scenes", 1, "shot"), "medium")), 3, "consecutive scenes must differ"),
+        (_answer(_same_place_twice()), 3, "consecutive scenes must differ"),
+        (
+            _answer(_broken(("scenes", 2, "setting_id"), "bedroom_desk")),
+            3,
+            "at least 3 different settings",
+        ),
         (
             _answer(_broken(("scenes", 0, "description"), "A desk with a laptop and pens on it")),
             3,
@@ -126,6 +141,26 @@ def _broken(path: tuple[Any, ...], value: Any) -> dict[str, Any]:
 def test_an_unacceptable_plan_says_why(answer: str, scene_count: int, fragment: str) -> None:
     with pytest.raises(ScenePlanError, match=fragment):
         parse_scene_plan(answer, scene_count=scene_count)
+
+
+def test_a_short_plan_needs_one_setting_per_scene() -> None:
+    plan = copy.deepcopy(_PLAN)
+    plan["scenes"] = plan["scenes"][:2]
+    plan["scenes"][1]["setting_id"] = "bedroom_desk"
+
+    with pytest.raises(ScenePlanError, match="at least 2 different settings"):
+        parse_scene_plan(_answer(plan), scene_count=2)
+
+
+def test_a_phone_with_its_screen_hidden_can_be_planned() -> None:
+    plan = _broken(
+        ("scenes", 2, "description"),
+        "A person at the round table turns a phone face down beside a mug and a blank sheet",
+    )
+
+    assert parse_scene_plan(_answer(plan), scene_count=3).scenes[2].description.startswith(
+        "A person at the round table"
+    )
 
 
 def test_response_schema_forbids_extra_fields() -> None:

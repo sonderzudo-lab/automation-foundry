@@ -327,8 +327,12 @@ O que o código faz:
 
 - `src/pipeline/visual_prompts.py` escreve, com o modelo do roteiro, uma
   descrição em inglês da cena de cada trecho da narração e a confere em código:
-  tamanho, inglês, e recusa de texto, gráfico, documento, logotipo, tela,
-  aparelho e "style of". Uma descrição recusada é refeita com o motivo até
+  tamanho, inglês, e recusa de texto, gráfico, documento, logotipo, tablet, TV,
+  notificação e "style of". Celular, notebook e computador são aceitos desde
+  2026-10-14 só quando a descrição diz que a tela está virada, desligada ou fora
+  de foco, de modo que nenhum conteúdo de tela seja pedido (risco 6); o modelo de
+  imagem ainda pode desenhar algo na tela, e isso é conferido no gate humano.
+  Uma descrição recusada é refeita com o motivo até
   quatro vezes; depois disso a etapa falha com
   `CONTENT_VISUALS_SCENE_PROMPT_REJECTED` em vez de gerar a imagem. A checagem é
   um filtro por palavras: não reconhece pessoa real nem marca pelo nome.

@@ -9,8 +9,11 @@ scene unchanged.
 
 Every description passes deterministic checks before it reaches an image model.
 A generated image is not a factual source: it must not show text, data, charts,
-documents or screens, and no style names an artist, studio, work or character.
-The checks are a filter, not proof; human review of the images stays mandatory.
+documents or the content of a screen, and no style names an artist, studio, work
+or character. Phones, laptops and computers may appear, because many topics are
+about them, but only when the description says their screen faces away, is
+turned off or is out of focus. The checks are a filter, not proof; human review
+of the images stays mandatory.
 """
 
 from __future__ import annotations
@@ -51,10 +54,27 @@ _MAX_REFUSED_PLAN_CHARS = 8_000
 
 _BANNED_RE = re.compile(
     r"\b(text|caption|headline|logo|brand|chart|graph|infographic|screenshot|watermark"
-    r"|poster|document|celebrity|screen|monitor|laptop|phone|smartphone|tablet"
-    r"|television|tv)s?\b"
+    r"|poster|document|celebrity|tablet|television|tv|notification|emoji|app|interface"
+    r"|website)s?\b"
     r"|\bstyle of\b",
     re.IGNORECASE,
+)
+# A device with a screen is allowed only when the description hides what is on it.
+_DEVICE_RE = re.compile(
+    r"\b(phone|smartphone|cellphone|laptop|computer|monitor|screen)s?\b", re.IGNORECASE
+)
+_HIDDEN_SCREEN_RE = re.compile(
+    r"\bface[ -]?down\b|\bfacing away\b|\bturned away\b|\bout of focus\b"
+    r"|\bscreens? (?:is |are )?(?:off|dark|black|turned off|switched off|blurred)\b"
+    r"|\b(?:dark|black|unlit|blurred) screens?\b"
+    r"|\bclosed laptops?\b|\blaptops? (?:is |are )?closed\b|\blid (?:is )?closed\b"
+    r"|\bback of the (?:phone|smartphone|cellphone|laptop|monitor|screen)\b",
+    re.IGNORECASE,
+)
+_DEVICE_RULE = (
+    "Phones, laptops and computers are allowed only with the screen facing away from "
+    "the viewer, turned off or out of focus, and the description must say so (for "
+    "example 'a phone lying face down' or 'a laptop with its screen turned away')."
 )
 
 # (system, user) -> model answer. Injected so tests and adapters choose the client.
@@ -78,6 +98,12 @@ def scene_prompt_problem(prompt: str) -> str | None:
     banned = _BANNED_RE.search(prompt)
     if banned is not None:
         return f"mentions '{banned.group(0).lower()}', which must not be mentioned at all"
+    device = _DEVICE_RE.search(prompt)
+    if device is not None and _HIDDEN_SCREEN_RE.search(prompt) is None:
+        return (
+            f"shows '{device.group(0).lower()}' without saying that its screen faces away, "
+            "is turned off or is out of focus"
+        )
     return None
 
 
@@ -103,8 +129,8 @@ def scene_prompt_request(
         "mention light, colours, mood, camera or art style: the visual style is added "
         "separately.\n"
         "- Describe only what is visible. Never say what is absent or hidden.\n"
-        "- Nothing with readable content or a display: only blank paper and closed or "
-        "blank notebooks, and no devices.\n"
+        "- Nothing readable: only blank paper and closed or blank notebooks. "
+        f"{_DEVICE_RULE} No tablets or televisions.\n"
         "- No real person, public figure, company or product name. If someone is "
         "needed, show only hands or an anonymous figure from behind.\n"
         "- Do not repeat a scene already used for another stretch.\n"
@@ -191,8 +217,9 @@ def scene_plan_request(
         "- characters: up to 4 recurring anonymous people, each described only by "
         "visible appearance (age range, hair, clothing) in 10 to 25 words. Leave the "
         "list empty when no person is needed. Never a real person or public figure.\n"
-        "- settings: 1 to 8 recurring places, each described by its objects and layout "
-        "in 10 to 25 words.\n"
+        "- settings: 3 to 8 recurring places, each described by its objects and layout "
+        "in 10 to 25 words. The scenes use at least 3 different settings (one per scene "
+        "when there are fewer than 3 scenes), so the video does not stay in one place.\n"
         "- ids: lowercase letters, digits and underscores, starting with a letter.\n"
         "- Each scene description: one sentence of 15 to 40 words with what is visible "
         "and happening. Refer to people and places through setting_id and "
@@ -203,11 +230,11 @@ def scene_plan_request(
         "- Do not mention light, colours, mood, camera or art style: the visual style is "
         "added separately.\n"
         "- Describe only what is visible. Never say what is absent or hidden.\n"
-        "- Nothing with readable content or a display: only blank paper and closed or "
-        "blank notebooks, and no devices. No company or product name.\n"
+        "- Nothing readable: only blank paper and closed or blank notebooks. "
+        f"{_DEVICE_RULE} No tablets or televisions. No company or product name.\n"
         "- Never use these words: text, caption, headline, logo, brand, chart, graph, "
-        "infographic, screenshot, watermark, poster, document, celebrity, screen, "
-        "monitor, laptop, phone, smartphone, tablet, television, tv, style of.\n"
+        "infographic, screenshot, watermark, poster, document, celebrity, tablet, "
+        "television, tv, notification, emoji, app, interface, website, style of.\n"
         "- Plain English only, without accents or special characters.\n"
         "Answer with the JSON object only."
     )

@@ -105,9 +105,16 @@ Substitui a descrição isolada de cada imagem por um plano do vídeo inteiro nu
   `n`; o `n` vem dos trechos calculados pelo código. Recusas levantam `ScenePlanError` com um
   motivo curto em inglês, que pode ser reenviado ao modelo como hoje.
 - Toda descrição (cena, personagem e cenário) passa por `scene_prompt_problem`: tamanho,
-  inglês e as palavras proibidas de sempre (texto, tela, logotipo, celebridade...).
+  inglês e as palavras proibidas (texto, logotipo, tablet, TV, notificação, celebridade...).
+  Desde 2026-10-14, a pedido do proprietário depois da run 18 (um roteiro sobre mensagens
+  ilustrado com folhas em branco), celular, notebook e computador são aceitos, mas só quando
+  a mesma descrição diz que a tela está virada, desligada ou fora de foco ("face down",
+  "screen turned away", "screen is off", "out of focus", "closed laptop"...). A checagem é
+  por palavras e não confere a imagem gerada; a revisão humana continua obrigatória.
 - Proibido: id repetido, referência a personagem ou cenário inexistente, descrição de cena
   repetida e duas cenas seguidas com o mesmo cenário **e** o mesmo enquadramento (`shot`).
+- As cenas usam pelo menos 3 cenários diferentes (um por cena quando há menos de 3 cenas).
+  Na run 18 as nove imagens ficaram na mesma mesa.
 - Limites: até 4 personagens, 8 cenários, 3 personagens por cena e 60 cenas.
 - `scene_image_prompt(plano, i)` monta o texto da imagem `i` repetindo a descrição do
   personagem e do cenário, o que mantém a mesma figura e o mesmo lugar reconhecíveis. O
