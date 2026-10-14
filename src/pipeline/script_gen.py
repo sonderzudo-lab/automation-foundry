@@ -280,6 +280,25 @@ _HASHTAG_RE = re.compile(r"(?<!\w)#\w+")
 _BRACKET_LABEL_RE = re.compile(r"\[[^\]\n]{0,60}\]")
 _WORD_COUNT_NOTE_RE = re.compile(r"\([^)\n]{0,20}\d+\s+palavras[^)\n]{0,20}\)", re.IGNORECASE)
 
+# Marcadores de lista no início da linha. A voz lê "1." como "um" e a legenda, que
+# copia a grafia da narração, mostra "1." sozinho na tela (run 17).
+_NUMBERED_MARKER_RE = re.compile(r"^(\d{1,2})[.)]\s+(?=\S)")
+_BULLET_MARKER_RE = re.compile(r"^[-•]\s+(?=\S)")
+_SPOKEN_ORDINALS = (
+    "Primeiro", "Segundo", "Terceiro", "Quarto", "Quinto",
+    "Sexto", "Sétimo", "Oitavo", "Nono", "Décimo",
+)
+_FIRST_WORD_RE = re.compile(r"^(\w+)(?=\W|$)")
+
+# "Ex:" e "Ex.:" — a transcrição não ouve a abreviação e o trecho fica sem legenda.
+_EXAMPLE_ABBREVIATION_RE = re.compile(r"(?<!\w)([Ee])x\.?:(?=\s)")
+
+# Aspas: as que fecham ou abrem sem par na mesma linha são removidas (na run 17 o
+# modelo abriu aspas num parágrafo e fechou noutro). Apóstrofo entre letras fica.
+_OPENING_QUOTES = {"“": "”", "‘": "’", "«": "»"}
+_CLOSING_QUOTES = {closing: opening for opening, closing in _OPENING_QUOTES.items()}
+_SYMMETRIC_QUOTES = frozenset("\"'")
+
 
 # ── Funções de limpeza ────────────────────────────────────────────────────────
 
@@ -370,7 +389,10 @@ def _extract_narration(text: str) -> str:
       5. Formatação Markdown (**negrito**, __sublinhado__) — mantém o texto.
       6. Anotações de tempo — (0-5s), [00:30].
       7. Emojis.
-      8. Whitespace extra e linhas em branco múltiplas.
+      8. O que a voz não deve ler como está escrito: "Ex:" vira "Por exemplo,",
+         aspas sem par na mesma linha somem e marcadores de lista viram fala
+         ("1." → "Primeiro,") ou somem ("-", "•", números acima de 10).
+      9. Whitespace extra e linhas em branco múltiplas.
 
     Args:
         text: full_script gerado pelo LLM.
@@ -430,8 +452,17 @@ def _extract_narration(text: str) -> str:
         # Remove asteriscos/hashes soltos que sobraram
         line = re.sub(r"[*#_]+", "", line)
 
+        # 8. Escreve como a voz deve falar: "Ex:" por extenso, sem aspas sem par
+        #    e sem marcador de lista com hífen ou bolinha.
+        line = _EXAMPLE_ABBREVIATION_RE.sub(
+            lambda match: "Por exemplo," if match.group(1) == "E" else "por exemplo,",
+            line,
+        )
+        line = _drop_unpaired_quotes(line)
+
         # Normaliza espaços internos
         line = re.sub(r"  +", " ", line).strip()
+        line = _BULLET_MARKER_RE.sub("", line)
 
         if line:
             cleaned.append(line)
@@ -439,7 +470,66 @@ def _extract_narration(text: str) -> str:
     # Reconstrói, colapsando sequências de linhas em branco para no máximo uma
     result = "\n".join(cleaned)
     result = re.sub(r"\n{3,}", "\n\n", result)
-    return result.strip()
+    return _speak_list_markers(result.strip())
+
+
+def _drop_unpaired_quotes(line: str) -> str:
+    """Remove as aspas que não abrem e fecham na mesma linha."""
+    open_positions: dict[str, list[int]] = {}
+    unpaired: set[int] = set()
+    for index, char in enumerate(line):
+        before = line[index - 1] if index else ""
+        after = line[index + 1] if index + 1 < len(line) else ""
+        if char in "'’" and before.isalnum() and after.isalnum():
+            continue  # apóstrofo: d'água
+        if char in _SYMMETRIC_QUOTES:
+            kind = char
+            opening = not before or before.isspace() or before in "([{—–"
+        elif char in _OPENING_QUOTES:
+            kind, opening = char, True
+        elif char in _CLOSING_QUOTES:
+            kind, opening = _CLOSING_QUOTES[char], False
+        else:
+            continue
+        stack = open_positions.setdefault(kind, [])
+        if opening:
+            stack.append(index)
+        elif stack:
+            stack.pop()
+        else:
+            unpaired.add(index)
+    for stack in open_positions.values():
+        unpaired.update(stack)
+    return "".join(char for index, char in enumerate(line) if index not in unpaired)
+
+
+def _speak_list_markers(text: str) -> str:
+    """Troca "1." no início da linha por "Primeiro," (até 10) ou remove o número.
+
+    A inicial da palavra seguinte só vira minúscula quando o próprio texto já usa
+    essa palavra em minúscula ("O que" → "o que"); um nome próprio fica como está.
+    """
+    lines: list[str] = []
+    for line in text.split("\n"):
+        marker = _NUMBERED_MARKER_RE.match(line)
+        if marker is None:
+            lines.append(line)
+            continue
+        rest = line[marker.end():]
+        number = int(marker.group(1))
+        if not 1 <= number <= len(_SPOKEN_ORDINALS):
+            lines.append(rest)
+            continue
+        first = _FIRST_WORD_RE.match(rest)
+        if first is not None:
+            word = first.group(1)
+            lowered = word.lower()
+            if word[0].isupper() and word[1:] == lowered[1:] and re.search(
+                rf"(?<!\w){re.escape(lowered)}(?!\w)", text
+            ):
+                rest = lowered + rest[len(word):]
+        lines.append(f"{_SPOKEN_ORDINALS[number - 1]}, {rest}")
+    return "\n".join(lines)
 
 
 # ── Cliente ───────────────────────────────────────────────────────────────────

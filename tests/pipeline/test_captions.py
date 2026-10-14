@@ -1042,8 +1042,34 @@ def test_approved_wording_glues_lone_dashes_and_rejects_unsafe_text() -> None:
     assert _restored_texts("um prato. o importante", "um prato — o importante") == [
         "um", "prato —", "o", "importante",
     ]
-    assert _block_texts("um prato — o importante é isso.")[0] == "um prato —"
+    # A lone dash is glued to the word before it and does not count as a word.
+    assert _block_texts("um prato — o importante é isso.") == [
+        "um prato — o importante é isso."
+    ]
+    assert _block_texts("— um prato só.") == ["um prato só."]
     assert _restored_texts("uma {tag} aqui", "Uma {tag} aqui") == ["Uma", "{tag}", "aqui"]
     heard = _timed_words("so palavras")
     assert captions._restore_approved_wording(heard, "— …") == heard
+
+
+def test_caption_blocks_never_show_a_list_number_or_punctuation_alone() -> None:
+    """Na run 17 a tela mostrou blocos só com "1.", "2.", "3." e "?’"."""
+    words = _timed_words(
+        "mas você não consegue começar? ?’ A resposta não está na urgência. "
+        "1. O que é mais fácil começar? Em 2024. Ela voltou."
+    )
+    blocks = captions._caption_blocks(words, max_characters=42)
+    texts = [" ".join(word.text for word in block) for block in blocks]
+
+    assert texts == [
+        "mas você não consegue começar?",
+        "A resposta não está na urgência.",
+        "1. O que é mais fácil começar?",
+        "Em 2024.",
+        "Ela voltou.",
+    ]
+    # The punctuation the transcription heard keeps its time on screen with the
+    # word before it, so speech coverage does not drop.
+    assert blocks[0][-1].end_seconds == words[5].end_seconds
+    assert blocks[2][0].start_seconds == words[12].start_seconds
 

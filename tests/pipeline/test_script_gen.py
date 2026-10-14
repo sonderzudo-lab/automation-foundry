@@ -1122,6 +1122,62 @@ def test_extract_narration_preserves_accented_portuguese() -> None:
     assert result == text
 
 
+def test_extract_narration_speaks_list_markers_abbreviations_and_drops_loose_quotes() -> None:
+    """Na run 17 a voz leu "1.", "Ex:" e aspas que abriam um parágrafo e fechavam outro.
+
+    A legenda copia a grafia da narração, então "1." virou um bloco sozinho na tela e
+    o trecho com "Ex:" ficou sem legenda.
+    """
+    text = (
+        "Você acha que a urgência define o que fazer primeiro? Errado.\n\n"
+        '"Lista de tarefas cheia, mas você não consegue começar?  \n'
+        "1. O que é mais fácil começar? Uma tarefa pequena, mesmo ‘não importante’, "
+        "pode dar impulso. Ex: enviar um e-mail.  \n"
+        "2. O que não exige planejamento? Faça o que não requer decisão. "
+        "Ex.: organização da mesa.  \n"
+        "3) O que é a tarefa mais rápida? O importante é *não parar*.  \n"
+        "Pausa aqui: responda: ‘O que é mais fácil iniciar agora?’ E aí… vai ou não?\""
+    )
+
+    assert _extract_narration(text) == (
+        "Você acha que a urgência define o que fazer primeiro? Errado.\n\n"
+        "Lista de tarefas cheia, mas você não consegue começar?\n"
+        "Primeiro, o que é mais fácil começar? Uma tarefa pequena, mesmo "
+        "‘não importante’, pode dar impulso. Por exemplo, enviar um e-mail.\n"
+        "Segundo, o que não exige planejamento? Faça o que não requer decisão. "
+        "Por exemplo, organização da mesa.\n"
+        "Terceiro, o que é a tarefa mais rápida? O importante é não parar.\n"
+        "Pausa aqui: responda: ‘O que é mais fácil iniciar agora?’ E aí… vai ou não?"
+    )
+
+
+def test_extract_narration_list_markers_keep_names_and_drop_bullets() -> None:
+    """Só baixa a inicial de palavra que o texto já usa minúscula; nome próprio fica."""
+    text = (
+        "1. Maria abriu o caderno.\n"
+        "11. Depois guardou.\n"
+        "- e soltou a caneta.\n"
+        "• Fim.\n"
+        "Em 2024. Ela voltou."
+    )
+
+    assert _extract_narration(text) == (
+        "Primeiro, Maria abriu o caderno.\n"
+        "Depois guardou.\n"
+        "e soltou a caneta.\n"
+        "Fim.\n"
+        "Em 2024. Ela voltou."
+    )
+
+
+def test_extract_narration_keeps_paired_quotes_and_apostrophes() -> None:
+    text = "Ele disse \"agora\" e foi pra casa d'água: “sem pressa”. ‘Fim’ ex-aluno."
+    assert _extract_narration(text) == text
+    assert _extract_narration("Ela disse “sem pressa e saiu.”” Fim ’") == (
+        "Ela disse “sem pressa e saiu.” Fim"
+    )
+
+
 def test_extract_narration_collapses_multiple_blank_lines() -> None:
     """Sequências de mais de 2 linhas em branco devem virar no máximo uma."""
     text = "Parágrafo 1.\n\n\n\nParágrafo 2."

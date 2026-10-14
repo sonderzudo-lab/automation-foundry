@@ -93,6 +93,7 @@ _MIN_REPAIRED_WORD_SECONDS = Decimal("0.02")
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+", re.ASCII)
 _SENTENCE_END = re.compile(r"[.!?…][’”\"')\]]*$")
 _CLAUSE_END = re.compile(r"[,;:—–][’”\"')\]]*$")
+_LIST_MARKER = re.compile(r"\d{1,2}[.)]")
 # Approved words the transcription missed are shown only in short runs; a
 # longer run was probably never spoken and has no timing to borrow.
 _MAX_UNTIMED_APPROVED_WORDS = 3
@@ -1109,7 +1110,7 @@ def _caption_blocks(
     """
     blocks: list[tuple[CaptionWord, ...]] = []
     sentence: list[CaptionWord] = []
-    for word in words:
+    for word in _screen_words(words):
         sentence.append(word)
         if _SENTENCE_END.search(word.text.strip()):
             blocks.extend(_sentence_blocks(sentence, max_characters=max_characters))
@@ -1117,6 +1118,54 @@ def _caption_blocks(
     if sentence:
         blocks.extend(_sentence_blocks(sentence, max_characters=max_characters))
     return blocks
+
+
+def _screen_words(words: tuple[CaptionWord, ...]) -> list[CaptionWord]:
+    """Keep list numbers and stray punctuation from becoming blocks of their own.
+
+    A list number that opens a sentence ("1.") is shown with the word after it.
+    A word with no letter or digit gives its time to the word before it (or
+    after it, at the start). A dash or ellipsis stays glued to that word, since
+    it marks the pause; anything else ("?’") has nothing to read and is dropped.
+    """
+    screen: list[CaptionWord] = []
+    pending_marker: CaptionWord | None = None
+    lead_start: Decimal | None = None
+    for word in words:
+        text = word.text.strip()
+        if pending_marker is not None:
+            word = CaptionWord(
+                f"{pending_marker.text.strip()} {text}",
+                pending_marker.start_seconds,
+                word.end_seconds,
+            )
+            text = word.text
+            pending_marker = None
+        if not _tokens(text):
+            if screen:
+                previous = screen[-1]
+                screen[-1] = CaptionWord(
+                    f"{previous.text.strip()} {text}"
+                    if any(character in text for character in "—–-…")
+                    else previous.text,
+                    previous.start_seconds,
+                    max(previous.end_seconds, word.end_seconds),
+                )
+            elif lead_start is None:
+                lead_start = word.start_seconds
+            continue
+        if lead_start is not None:
+            word = CaptionWord(word.text, lead_start, word.end_seconds)
+            lead_start = None
+        if _LIST_MARKER.fullmatch(text) and (
+            not screen or _SENTENCE_END.search(screen[-1].text.strip())
+        ):
+            pending_marker = word
+            continue
+        screen.append(word)
+    if pending_marker is not None:
+        screen.append(pending_marker)
+    return screen
 
 
 def _sentence_blocks(
