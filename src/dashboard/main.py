@@ -85,6 +85,7 @@ from src.pipeline.thumbnail_review import (
     ThumbnailReview,
     thumbnail_decision_payload,
 )
+from src.pipeline.visual_review import VisualReview
 from src.platform.approval_service import decide_approval
 from src.platform.control_service import (
     request_run_cancellation,
@@ -125,6 +126,7 @@ from src.platform.schedule_service import (
 _REVIEW_TEMPLATES: dict[type, str] = {
     ContentScriptReview: "content_script_review.html",
     NarrationReview: "content_narration_review.html",
+    VisualReview: "content_visual_review.html",
     FinalVideoReview: "content_final_video_review.html",
     ThumbnailReview: "content_thumbnail_review.html",
     OperationsBriefReview: "operations_brief_review.html",
@@ -532,6 +534,7 @@ def create_app(
                 "nav": await load_nav_summary(session),
                 "run_id": package.run_id,
                 "manifest_sha256": package.manifest_sha256,
+                "usage_scope": package.visual_usage_scope,
                 "video": {
                     "artifact_id": package.video.artifact_id,
                     "size_bytes": package.video.size_bytes,
@@ -728,6 +731,53 @@ def create_app(
                 "Cache-Control": "no-store",
                 "Content-Disposition": (
                     f'inline; filename="run-{review.run_id}-narration.wav"'
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @application.get("/approvals/{approval_id}/visuals/{artifact_id}")
+    async def approval_visual_image(
+        approval_id: int,
+        artifact_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> FileResponse:
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        try:
+            review = await load_registered_approval_review(
+                session,
+                approval=approval,
+            )
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="approval has no reviewed images",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="approval review evidence is unavailable",
+            ) from exc
+        if not isinstance(review, VisualReview):
+            raise HTTPException(
+                status_code=404,
+                detail="approval has no reviewed images",
+            )
+        image = next(
+            (item for item in review.images if item.artifact_id == artifact_id),
+            None,
+        )
+        if image is None:
+            raise HTTPException(status_code=404, detail="reviewed image not found")
+        return FileResponse(
+            image.image_path,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": (
+                    f'inline; filename="artifact-{image.artifact_id}-visual.png"'
                 ),
                 "X-Content-Type-Options": "nosniff",
             },

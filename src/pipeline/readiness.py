@@ -40,6 +40,7 @@ from src.pipeline.tts import (
     KOKORO_PT_BR_VOICE_SHA256_PREFIXES,
     KOKORO_QUALITY_TEST_BACKEND,
 )
+from src.pipeline.visuals import LOCAL_ASSETS_QUALITY_TEST_BACKEND
 
 log = structlog.get_logger(__name__)
 
@@ -393,7 +394,17 @@ def _pipeline_conflicts(configuration: Settings) -> tuple[str, ...]:
     assembly = configuration.content_assembly_backend != "disabled"
     narration_review = configuration.content_narration_review_enabled
     final_review = configuration.content_final_review_enabled
+    visual_review = configuration.content_visual_review_enabled
     conflicts: list[str] = []
+    if visual_review and not (visual and caption and assembly):
+        conflicts.append(
+            "A revisão das imagens exige visuais, legendas e montagem habilitados."
+        )
+    if (
+        configuration.content_visual_backend == "flux2_klein_quality_test"
+        and not visual_review
+    ):
+        conflicts.append("Imagens geradas exigem a revisão das imagens habilitada.")
     if (visual or caption or assembly or narration_review) and not tts:
         conflicts.append(
             "Visuais, legendas, montagem e revisão da narração exigem a narração habilitada."
@@ -489,6 +500,13 @@ async def collect_content_readiness(
     )
     assembly_off = "A montagem está desabilitada (CONTENT_ASSEMBLY_BACKEND); nada foi consultado."
     visual_off = "Os visuais estão desabilitados (CONTENT_VISUAL_BACKEND); nada foi consultado."
+    visual_import = config.content_visual_backend == LOCAL_ASSETS_QUALITY_TEST_BACKEND
+    visual_import_off = (
+        visual_off
+        if not visual
+        else "O backend de geração não usa manifesto de importação; o ambiente e os hashes "
+        "do modelo de imagem são conferidos apenas pela etapa A3."
+    )
 
     # (spec, enabled?, reason when not applicable, probe)
     plan: list[tuple[_Spec, bool, str, Callable[[], ProbeOutcome]]] = [
@@ -526,7 +544,7 @@ async def collect_content_readiness(
             configured_path=config.content_ffprobe_path,
             expected_sha256=config.content_ffprobe_expected_sha256,
         )),
-        (_VISUAL_CONFIG, visual, visual_off, partial(
+        (_VISUAL_CONFIG, visual_import, visual_import_off, partial(
             checks.probe_visual_import_config,
             config.content_visual_import_root,
             config.content_visual_manifest_path,
@@ -557,8 +575,8 @@ async def collect_content_readiness(
             ),
         )
     deferred = (
-        _build(_VISUAL_INPUTS, ProbeOutcome(ProbeCode.DEFERRED)) if visual
-        else _not_applicable(_VISUAL_INPUTS, visual_off),
+        _build(_VISUAL_INPUTS, ProbeOutcome(ProbeCode.DEFERRED)) if visual_import
+        else _not_applicable(_VISUAL_INPUTS, visual_import_off),
         _build(_GPU_RUNTIME, ProbeOutcome(ProbeCode.DEFERRED)) if (tts or whisper)
         else _not_applicable(
             _GPU_RUNTIME,

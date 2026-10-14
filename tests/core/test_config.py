@@ -406,3 +406,55 @@ def test_retention_inventory_limits_are_bounded() -> None:
 
     assert settings.retention_inventory_max_files == 200_000
     assert settings.retention_inventory_max_items == 200
+
+
+def _audiovisual_settings(**overrides: object) -> Settings:
+    """A configuration with every stage the A3 review gate guards enabled."""
+    values: dict[str, object] = {
+        "content_tts_backend": "kokoro_quality_test",
+        "content_tts_voice_id": "pm_alex",
+        "content_visual_backend": "local_assets_quality_test",
+        "content_caption_backend": "approved_text_timing_quality_test",
+        "content_assembly_backend": "ffmpeg_quality_test",
+        "content_ffmpeg_expected_sha256": "a" * 64,
+        "content_ffprobe_expected_sha256": "b" * 64,
+    }
+    return Settings(_env_file=None, **{**values, **overrides})  # type: ignore[arg-type]
+
+
+def test_visual_review_requires_visuals_captions_and_assembly() -> None:
+    assert _audiovisual_settings().content_visual_review_enabled is False
+    assert (
+        _audiovisual_settings(content_visual_review_enabled=True).content_visual_review_enabled
+        is True
+    )
+    for disabled in (
+        "content_visual_backend",
+        "content_caption_backend",
+        "content_assembly_backend",
+    ):
+        with pytest.raises(ValidationError, match="A3 visual review requires"):
+            _audiovisual_settings(**{disabled: "disabled", "content_visual_review_enabled": True})
+
+
+def test_generated_visuals_require_the_review_gate_and_local_paths() -> None:
+    generated = {"content_visual_backend": "flux2_klein_quality_test"}
+    paths = {
+        "content_visual_flux2_python_path": "D:/labs/venv/Scripts/python.exe",
+        "content_visual_flux2_model_dir": "D:/labs/model",
+    }
+    with pytest.raises(ValidationError, match="A3 visual review gate"):
+        _audiovisual_settings(**generated, **paths)
+    with pytest.raises(ValidationError, match="content_visual_flux2_python_path is required"):
+        _audiovisual_settings(**generated, content_visual_review_enabled=True)
+    with pytest.raises(ValidationError, match="content_visual_flux2_model_dir is required"):
+        _audiovisual_settings(
+            **generated,
+            content_visual_review_enabled=True,
+            content_visual_flux2_python_path=paths["content_visual_flux2_python_path"],
+            content_visual_flux2_model_dir="  ",
+        )
+    settings = _audiovisual_settings(**generated, **paths, content_visual_review_enabled=True)
+    assert settings.content_visual_backend == "flux2_klein_quality_test"
+    with pytest.raises(ValidationError, match="content_visual_backend"):
+        _audiovisual_settings(content_visual_backend="flux2_klein")

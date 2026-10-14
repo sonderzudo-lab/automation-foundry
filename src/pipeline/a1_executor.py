@@ -79,6 +79,21 @@ from src.pipeline.tts import (
     execute_approved_tts_step,
     get_configured_tts_synthesizer,
 )
+from src.pipeline.visual_generation import (
+    FLUX2_KLEIN_QUALITY_TEST_BACKEND,
+    Flux2KleinQualityTestConfig,
+    build_flux2_klein_quality_test_adapter,
+    ollama_scene_model,
+    release_ollama_scene_model,
+)
+from src.pipeline.visual_prompts import DEFAULT_VISUAL_STYLE, VisualStyle
+from src.pipeline.visual_review import (
+    VISUAL_REVIEW_APPROVAL_ACTION,
+    VisualReview,
+    finalize_visual_approval,
+    load_visual_review,
+    request_visual_approval,
+)
 from src.pipeline.visuals import (
     LOCAL_ASSETS_QUALITY_TEST_BACKEND,
     VisualAdapter,
@@ -147,6 +162,8 @@ class ContentScriptInput(BaseModel):
     # "auto" rotates the opening style by run; None asks for no particular style.
     opening_style: Literal["auto"] | OpeningStyle | None = None
     structure: Structure | None = None
+    # Look of the generated visuals; used only by a generating visual backend.
+    visual_style: VisualStyle | None = None
 
     def as_payload(self) -> dict[str, object]:
         """Return the JSON payload persisted on the run and on its step.
@@ -158,7 +175,7 @@ class ContentScriptInput(BaseModel):
         payload = self.model_dump(mode="json")
         if not self.facts:
             del payload["facts"]
-        for optional in ("opening_style", "structure"):
+        for optional in ("opening_style", "structure", "visual_style"):
             if payload[optional] is None:
                 del payload[optional]
         return payload
@@ -237,6 +254,7 @@ def parse_content_script_form(values: dict[str, str]) -> dict[str, object]:
         "facts",
         "opening_style",
         "structure",
+        "visual_style",
     }
     if set(values) - expected:
         raise ValueError("unsupported content script input field")
@@ -259,6 +277,7 @@ def parse_content_script_form(values: dict[str, str]) -> dict[str, object]:
             "facts": facts,
             "opening_style": values.get("opening_style") or None,
             "structure": values.get("structure") or None,
+            "visual_style": values.get("visual_style") or None,
         }
     )
     return payload.as_payload()
@@ -668,13 +687,9 @@ async def execute_content_script_run(
                 audio_artifact=audio_artifact,
                 idempotency_key=idempotency_key,
                 storage_root=root,
-                adapter=(
-                    visual_adapter
-                    or get_configured_visual_adapter(
-                        _visuals_backend(),
-                        import_root=_visual_import_root(),
-                        manifest_path=_visual_manifest_path(),
-                    )
+                adapter=visual_adapter or _configured_visual_adapter(input_data),
+                allow_quality_test_assets=(
+                    _visuals_backend() == FLUX2_KLEIN_QUALITY_TEST_BACKEND
                 ),
                 queue=_visuals_queue(),
                 gpu_power_watts=int(getattr(settings, "gpu_power_watts", 400)),
@@ -682,7 +697,11 @@ async def execute_content_script_run(
                     1.0,
                     float(settings.celery_soft_time_limit_seconds - 15),
                 ),
-                finalize_run=not (_captions_enabled() or _assembly_enabled()),
+                finalize_run=not (
+                    _visual_review_enabled()
+                    or _captions_enabled()
+                    or _assembly_enabled()
+                ),
                 count_resolver=(
                     build_local_asset_count_resolver(
                         import_root=_visual_import_root(),
@@ -694,6 +713,18 @@ async def execute_content_script_run(
                 ),
             )
             visual_replayed = visual_result.replayed
+            if (
+                _visual_review_enabled()
+                and visual_result.manifest_artifact_id is not None
+                and RunStatus(run.status) is RunStatus.RUNNING
+            ):
+                # Pauses the run until a person has looked at every image.
+                await request_visual_approval(
+                    session,
+                    run=run,
+                    idempotency_key=idempotency_key,
+                    storage_root=root,
+                )
         caption_result = None
         if (
             _captions_enabled()
@@ -888,9 +919,21 @@ async def load_content_approval_review(
     *,
     approval: Approval,
     storage_root: Path | None = None,
-) -> ContentScriptReview | NarrationReview | FinalVideoReview | ThumbnailReview:
+) -> (
+    ContentScriptReview
+    | NarrationReview
+    | VisualReview
+    | FinalVideoReview
+    | ThumbnailReview
+):
     """Route one Content Engine approval to its own verified review projection."""
     root = Path(settings.storage_root) if storage_root is None else storage_root
+    if approval.action == VISUAL_REVIEW_APPROVAL_ACTION:
+        return await load_visual_review(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
     if approval.action == NARRATION_REVIEW_APPROVAL_ACTION:
         return _with_visual_plan_status(
             await load_narration_review(
@@ -1015,6 +1058,12 @@ async def finalize_content_script_approval(
                     declared_count=narration_review.declared_visual_count,
                 )
         return continuation_required
+    if approval.action == VISUAL_REVIEW_APPROVAL_ACTION:
+        return await finalize_visual_approval(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
     if approval.action == THUMBNAIL_REVIEW_APPROVAL_ACTION:
         return await finalize_thumbnail_approval(
             session,
@@ -1164,6 +1213,40 @@ def _visuals_enabled() -> bool:
     return _visuals_backend() != "disabled"
 
 
+def _configured_visual_adapter(input_data: ContentScriptInput) -> VisualAdapter:
+    """Build the visual adapter the settings name, with this run's topic and style."""
+    if _visuals_backend() != FLUX2_KLEIN_QUALITY_TEST_BACKEND:
+        return get_configured_visual_adapter(
+            _visuals_backend(),
+            import_root=_visual_import_root(),
+            manifest_path=_visual_manifest_path(),
+        )
+    paths = [
+        getattr(settings, field, None)
+        for field in (
+            "content_visual_flux2_python_path",
+            "content_visual_flux2_model_dir",
+        )
+    ]
+    if not all(isinstance(path, str) and path.strip() for path in paths):
+        raise ContentScriptRunNotRunnableError(
+            "FLUX.2 klein quality test requires its local paths"
+        )
+    python_path, model_dir = (str(path) for path in paths)
+    return build_flux2_klein_quality_test_adapter(
+        Flux2KleinQualityTestConfig(
+            python_path=python_path,
+            model_dir=model_dir,
+            # The same step also writes the scene descriptions and hashes the weights.
+            timeout_seconds=max(1.0, float(settings.celery_soft_time_limit_seconds - 90)),
+        ),
+        scene_model=ollama_scene_model(),
+        topic=input_data.topic,
+        style=input_data.visual_style or DEFAULT_VISUAL_STYLE,
+        release_scene_model=release_ollama_scene_model,
+    )
+
+
 def _visual_import_root() -> Path:
     return Path(
         str(getattr(settings, "content_visual_import_root", "./imports/content-visuals"))
@@ -1270,6 +1353,10 @@ def _caption_alignment_gate_enabled() -> bool:
     return getattr(settings, "content_caption_alignment_gate_enabled", False) is True
 
 
+def _visual_review_enabled() -> bool:
+    return getattr(settings, "content_visual_review_enabled", False) is True
+
+
 def _thumbnail_review_enabled() -> bool:
     return getattr(settings, "content_thumbnail_review_enabled", False) is True
 
@@ -1326,6 +1413,19 @@ def _validate_pipeline_backend_dependencies() -> None:
         raise ContentScriptRunNotRunnableError(
             "A2 narration review requires A3 visual continuation"
         )
+    if _visual_review_enabled() and not (
+        _visuals_enabled() and _captions_enabled() and _assembly_enabled()
+    ):
+        raise ContentScriptRunNotRunnableError(
+            "A3 visual review requires A3 visuals, A4 captions and A5 assembly"
+        )
+    if (
+        _visuals_backend() == FLUX2_KLEIN_QUALITY_TEST_BACKEND
+        and not _visual_review_enabled()
+    ):
+        raise ContentScriptRunNotRunnableError(
+            "generated visuals require the A3 visual review gate"
+        )
     if _assembly_enabled() and not (_visuals_enabled() and _captions_enabled()):
         raise ContentScriptRunNotRunnableError(
             "A5 assembly requires both A3 visuals and A4 captions"
@@ -1365,6 +1465,11 @@ async def _load_completed_evidence(
                     session,
                     run=run,
                     action=NARRATION_REVIEW_APPROVAL_ACTION,
+                )
+                or await _has_pending_gate(
+                    session,
+                    run=run,
+                    action=VISUAL_REVIEW_APPROVAL_ACTION,
                 )
                 or await _has_pending_gate(
                     session,

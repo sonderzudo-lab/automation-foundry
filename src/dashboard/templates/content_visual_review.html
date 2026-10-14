@@ -1,0 +1,49 @@
+{% extends "review_base.html" %}
+{% import "_macros.html" as ui %}
+{% set review_effect = "Aprovar fica vinculado ao manifesto e ao SHA-256 de cada imagem e apenas libera legendas e montagem locais; não publica, envia nem gasta. Rejeitar cancela a run." %}
+{% block title %}Revisão A3 #{{ review.approval_id }} · Automation Foundry{% endblock %}
+{% block review_title %}Revisão humana das imagens A3{% endblock %}
+{% block review_kicker %}{{ review.images|length }} imagens · run #{{ review.run_id }}{% endblock %}
+{% block review_verify %}O manifesto e cada PNG foram lidos do storage local e validados contra o tamanho e o SHA-256 registrados. A aprovação fica vinculada a este conjunto exato.{% endblock %}
+{% block review_hashes %}<span>Manifesto: {{ ui.hash_chip(review.manifest_sha256, "SHA-256 do manifesto") }}</span>{% endblock %}
+{% block review_body %}
+{% if review.usage_scope %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Teste de qualidade, não monetizável</h2></div>
+  <div class="card-content"><p class="text-sm">Estas imagens foram geradas localmente e não têm uso comercial declarado. O vídeo montado com elas carrega a mesma marcação até o export local.</p></div>
+</section>
+{% endif %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">O que conferir</h2></div>
+  <div class="card-content">
+    <ul class="text-sm" style="display:grid;gap:.25rem;padding-left:1.25rem">
+      <li>A imagem combina com o trecho narrado abaixo dela?</li>
+      <li>Aparece alguma pessoa real reconhecível, marca ou logotipo?</li>
+      <li>Há texto, número, gráfico, documento ou tela legível?</li>
+      <li>Há defeito visível, como mãos ou objetos deformados?</li>
+    </ul>
+    <p class="text-sm muted" style="margin-top:.5rem">A checagem automática só filtra palavras da descrição; estes pontos dependem do seu olhar.</p>
+  </div>
+</section>
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Imagens e trechos</h2><p class="card-description">Na ordem em que aparecem no vídeo, {{ review.width }}x{{ review.height }}.</p></div>
+  <div class="card-content">
+    <div class="thumb-grid" role="list" aria-label="Imagens A3">
+      {% for image in review.images %}
+      <div class="card thumb" role="listitem">
+        <a href="/approvals/{{ review.approval_id }}/visuals/{{ image.artifact_id }}"><img class="thumb-art" src="/approvals/{{ review.approval_id }}/visuals/{{ image.artifact_id }}" alt="Imagem {{ image.index }} da run #{{ review.run_id }}"></a>
+        <span class="thumb-body"><strong>Imagem {{ image.index }}</strong>
+          {% if image.narration_text %}<span class="text-sm">{{ image.narration_text }}</span>{% else %}<span class="muted text-sm">Trecho da narração não registrado neste manifesto.</span>{% endif %}
+          {% if image.generation_prompt %}<details class="text-sm muted"><summary>Descrição usada para gerar</summary>{{ image.generation_prompt }}</details>{% endif %}
+          <span class="muted text-sm"><abbr title="{{ image.size_bytes }} bytes">{{ image.size_bytes|byte_size }}</abbr></span>
+          <span class="hash-wrap">{{ ui.hash_chip(image.sha256, "SHA-256 da imagem " ~ image.index) }}</span></span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Proveniência</h2></div>
+  <div class="card-content"><ul class="text-sm" style="padding-left:1.25rem">{% for license in review.licenses %}<li>{{ license }}</li>{% endfor %}</ul></div>
+</section>
+{% endblock %}

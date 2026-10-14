@@ -3,7 +3,7 @@
   Fragmento auto-atualizável da run: a página o inclui e o HTMX o substitui (outerHTML) a cada 2 s
   somente enquanto a run não terminou. Reutiliza a mesma projeção redigida da página completa.
 #}
-{% set review_actions = ("review_content_script_a1", "review_content_narration_a2", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}
+{% set review_actions = ("review_content_script_a1", "review_content_narration_a2", "review_content_visuals_a3", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}
 {% set pending_approvals = run.approvals|selectattr("status", "equalto", "pending")|list %}
 <section
   id="run-live-status"

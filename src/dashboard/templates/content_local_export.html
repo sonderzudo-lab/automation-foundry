@@ -39,6 +39,7 @@
         <dt>SHA-256 canônico</dt><dd>{{ ui.hash_chip(manifest_sha256, "SHA-256 do manifesto") }}</dd>
         <dt>Arquivos no pacote</dt><dd>{{ 2 if thumbnail else 1 }} ({{ "vídeo final e thumbnail" if thumbnail else "vídeo final" }})</dd>
         <dt>Publicação</dt><dd><code>published=false</code></dd>
+        {% if usage_scope %}<dt>Uso</dt><dd>Teste de qualidade, não monetizável (<code>monetizable=false</code>): as imagens não têm uso comercial declarado.</dd>{% endif %}
       </dl>
     </div>
   </section>

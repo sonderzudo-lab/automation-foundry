@@ -223,6 +223,30 @@ async def test_deferred_inputs_are_not_problems_and_do_not_block_script_start(
     assert checks["storage"].status is ReadinessStatus.READY
 
 
+async def test_generating_visual_backend_has_no_import_manifest_to_check(
+    storage: Path,
+) -> None:
+    generating = Settings.model_construct(
+        **{
+            **_settings(storage_root=str(storage)).model_dump(),
+            "content_tts_backend": "kokoro_quality_test",
+            "content_visual_backend": "flux2_klein_quality_test",
+        },
+    )
+
+    report = await collect_content_readiness(
+        generating, transport=_ollama_transport(["qwen3:14b"]),
+    )
+    checks = _by_id(report)
+
+    for check_id in ("visual_config", "visual_inputs"):
+        assert checks[check_id].status is ReadinessStatus.NOT_APPLICABLE
+        assert "conferidos apenas pela etapa A3" in checks[check_id].guidance
+    # Without the image review gate the executor refuses this backend.
+    assert checks["pipeline_config"].status is ReadinessStatus.PROBLEM
+    assert "revisão das imagens" in checks["pipeline_config"].guidance
+
+
 async def test_incoherent_stage_configuration_lists_each_conflict(storage: Path) -> None:
     # model_construct skips validators: the diagnostic must still guard on its own.
     incoherent = Settings.model_construct(

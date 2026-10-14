@@ -50,6 +50,7 @@ async def test_registry_dispatches_only_declared_manual_executor(
         "facts",
         "opening_style",
         "structure",
+        "visual_style",
     ]
     assert smoke_executor.queue.value == "io"
     assert smoke_executor.runs_in_background is False
@@ -79,12 +80,13 @@ def test_registry_validates_executor_owned_manual_input() -> None:
             "facts": "",
             "opening_style": "",
             "structure": "",
+            "visual_style": "",
         },
     )
     assert payload["format"] == "short"
     assert payload["recent_openings"] == []
     # Unset optional fields stay out of the payload persisted on the run.
-    assert not {"facts", "opening_style", "structure"} & set(payload)
+    assert not {"facts", "opening_style", "structure", "visual_style"} & set(payload)
 
     chosen = parse_registered_manual_input(
         slug="content-engine",
@@ -96,10 +98,12 @@ def test_registry_validates_executor_owned_manual_input() -> None:
             "facts": "",
             "opening_style": "auto",
             "structure": "list",
+            "visual_style": "dark",
         },
     )
     assert chosen["opening_style"] == "auto"
     assert chosen["structure"] == "list"
+    assert chosen["visual_style"] == "dark"
     with pytest.raises(ValueError):
         parse_registered_manual_input(
             slug="content-engine",
@@ -111,6 +115,7 @@ def test_registry_validates_executor_owned_manual_input() -> None:
                 "facts": "",
                 "opening_style": "clickbait",
                 "structure": "",
+                "visual_style": "",
             },
         )
 

@@ -25,6 +25,7 @@ from src.pipeline.a1_executor import (
     prepare_content_script_run,
 )
 from src.pipeline.script_gen import OPENING_STYLE_LABELS, STRUCTURE_LABELS
+from src.pipeline.visual_prompts import VISUAL_STYLE_LABELS
 from src.platform.example_run import execute_example_run, prepare_example_run
 from src.platform.models import Approval, Automation, QueueClass, Run
 from src.platform.run_service import RunCreationResult
@@ -166,6 +167,14 @@ _EXECUTORS = {
                 False,
                 20,
                 tuple(STRUCTURE_LABELS.items()),
+            ),
+            ManualInputField(
+                "visual_style",
+                "Estilo visual das imagens (usado só quando as imagens são geradas)",
+                "select",
+                False,
+                20,
+                tuple(VISUAL_STYLE_LABELS.items()),
             ),
         ),
         parse_manual_input=parse_content_script_form,

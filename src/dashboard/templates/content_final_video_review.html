@@ -11,6 +11,12 @@
 <span>Originalidade A6: {{ ui.hash_chip(review.report_sha256, "SHA-256 do relatório A6") }}</span>
 {% endblock %}
 {% block review_body %}
+{% if review.visual_usage_scope %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Teste de qualidade, não monetizável</h2></div>
+  <div class="card-content"><p class="text-sm">As imagens deste vídeo não têm uso comercial declarado. O export local sai com a mesma marcação.</p></div>
+</section>
+{% endif %}
 <section class="card">
   <div class="card-header"><h2 class="card-title" style="font-size:1rem">Reprodução local</h2><p class="card-description">Assista ao vídeo inteiro. O vídeo é servido apenas pelo dashboard local, sem cache e sem rede externa.</p></div>
   <div class="card-content">

@@ -10,10 +10,11 @@
 {% endblock %}
 
 {% block content %}
-  {% set review_actions = ("review_content_script_a1", "review_content_narration_a2", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}
+  {% set review_actions = ("review_content_script_a1", "review_content_narration_a2", "review_content_visuals_a3", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}
   {% set review_links = {
     "review_content_script_a1": "Abrir roteiro completo e verificado antes de decidir",
     "review_content_narration_a2": "Ouvir a narração completa e verificada antes de decidir",
+    "review_content_visuals_a3": "Ver cada imagem ao lado do trecho narrado antes de decidir",
     "review_content_final_video_a7": "Assistir ao vídeo final verificado antes de decidir",
     "select_content_thumbnail_a8": "Escolher uma thumbnail entre os PNGs A3 verificados",
     "review_operations_brief": "Abrir o brief completo e verificado antes de decidir",
@@ -289,7 +290,7 @@
 {% endblock %}
 
 {% block dialogs %}
-  {% set review_actions = ("review_content_script_a1", "review_content_narration_a2", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}
+  {% set review_actions = ("review_content_script_a1", "review_content_narration_a2", "review_content_visuals_a3", "review_content_final_video_a7", "select_content_thumbnail_a8", "review_operations_brief") %}
 
   {% if run.can_request_cancellation %}
   <div class="dialog-backdrop" id="cancelar">
