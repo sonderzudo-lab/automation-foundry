@@ -8,11 +8,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import httpx
@@ -517,13 +518,20 @@ def _cache_probe(**overrides: Any) -> ProbeOutcome:
 def _patch_cache(
     monkeypatch: pytest.MonkeyPatch, resolver: Callable[[str], object],
 ) -> None:
-    import huggingface_hub
-
-    monkeypatch.setattr(
-        huggingface_hub,
-        "try_to_load_from_cache",
-        lambda _repo, filename, revision=None: resolver(filename),
+    # A stand-in module: CI installs only the "dev" extra, without huggingface_hub.
+    fake_hub = ModuleType("huggingface_hub")
+    fake_hub.try_to_load_from_cache = (  # type: ignore[attr-defined]
+        lambda _repo, filename, revision=None: resolver(filename)
     )
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+
+def test_tts_cache_without_huggingface_hub_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+
+    assert _cache_probe().code is ProbeCode.MISSING
 
 
 def test_tts_cache_complete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
