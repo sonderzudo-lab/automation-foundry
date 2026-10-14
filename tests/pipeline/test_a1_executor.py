@@ -550,6 +550,7 @@ async def test_a1_approval_reviews_exact_bundle_and_finalizes_idempotently(
         "content_caption_alignment_gate_enabled",
         False,
     )
+    monkeypatch.setattr(a1_executor.settings, "content_visual_review_enabled", False)
     result = await execute_content_script_run(
         session,
         idempotency_key="content-a1-approved",

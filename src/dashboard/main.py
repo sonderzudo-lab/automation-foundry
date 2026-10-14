@@ -6,8 +6,10 @@ import asyncio
 import hmac
 import ipaddress
 import mimetypes
+import random
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import parse_qs
@@ -32,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.briefs.executor import OperationsBriefReview
+from src.core.config import settings
 from src.core.database import get_session
 from src.dashboard.errors import describe_error, safe_back_url, wants_html
 from src.dashboard.formatting import (
@@ -78,6 +81,14 @@ from src.pipeline.local_export import (
 from src.pipeline.narration_review import (
     NarrationReview,
     NarrationVisualsNotReadyError,
+)
+from src.pipeline.quick_run import (
+    QuickRunStatus,
+    QuickRunUnavailableError,
+    choose_quick_run,
+    generated_idempotency_key,
+    load_topics,
+    quick_run_status,
 )
 from src.pipeline.readiness import ReadinessReport, collect_content_readiness
 from src.pipeline.thumbnail_review import (
@@ -132,6 +143,10 @@ _REVIEW_TEMPLATES: dict[type, str] = {
     OperationsBriefReview: "operations_brief_review.html",
 }
 _DASHBOARD_NOTICES = {
+    "quick-run-unavailable": (
+        "A run aleatória não foi disparada: confira a lista de pautas "
+        "(CONTENT_QUICK_TOPICS_PATH) e a persona padrão (CONTENT_DEFAULT_PERSONA)."
+    ),
     "schedule-change-blocked": (
         "O schedule não foi habilitado. Verifique se o módulo está ativo, "
         "sem kill switch e possui executor local registrado."
@@ -283,6 +298,7 @@ def create_app(
                 "nav": _nav_from_snapshot(snapshot),
                 "csrf_token": control_token,
                 "executors": list_automation_executors(),
+                "quick_run": await _load_quick_run_status(session),
                 "notice": _DASHBOARD_NOTICES.get(request.query_params.get("notice", "")),
             },
             headers={"Cache-Control": "no-store"},
@@ -377,6 +393,7 @@ def create_app(
                 "nav": _nav_from_snapshot(snapshot),
                 "csrf_token": control_token,
                 "executors": list_automation_executors(),
+                "quick_run": await _load_quick_run_status(session),
                 "notice": _DASHBOARD_NOTICES.get(request.query_params.get("notice", "")),
             },
             headers={"Cache-Control": "no-store"},
@@ -890,11 +907,71 @@ def create_app(
             raise HTTPException(status_code=403, detail="invalid csrf token")
         if confirmation != "start-example-run":
             raise HTTPException(status_code=400, detail="explicit confirmation required")
+        run_id = await start_run(
+            session,
+            executor=executor,
+            idempotency_key=idempotency_key
+            or generated_idempotency_key(datetime.now(), random.SystemRandom()),
+            experiment_id=experiment_id,
+            input_payload=input_payload,
+        )
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    @application.post("/automations/content-engine/quick-run", response_class=HTMLResponse)
+    async def start_quick_run(
+        request: Request,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> RedirectResponse:
+        fields = await _parse_form_fields(request, maximum_fields=2)
+        if set(fields) - {"csrf_token", "confirmation"}:
+            raise HTTPException(status_code=400, detail="unexpected quick run field")
+        submitted_token = _single_form_value(fields, "csrf_token", maximum_length=128)
+        confirmation = _single_form_value(fields, "confirmation", maximum_length=40)
+        if not _csrf_token_matches(submitted_token, control_token):
+            raise HTTPException(status_code=403, detail="invalid csrf token")
+        if confirmation != "start-quick-run":
+            raise HTTPException(status_code=400, detail="explicit confirmation required")
+        status = await _load_quick_run_status(session)
+        if not status.available:
+            return RedirectResponse(
+                url="/automations?notice=quick-run-unavailable", status_code=303
+            )
+        rng = random.SystemRandom()
+        try:
+            values = choose_quick_run(
+                load_topics(Path(settings.content_quick_topics_path)),
+                persona=status.persona,
+                used_topics=await _used_content_topics(session),
+                rng=rng,
+            )
+            input_payload = parse_registered_manual_input(slug="content-engine", values=values)
+        except (QuickRunUnavailableError, ValueError):
+            return RedirectResponse(
+                url="/automations?notice=quick-run-unavailable", status_code=303
+            )
+        run_id = await start_run(
+            session,
+            executor=get_automation_executor("content-engine"),
+            idempotency_key=generated_idempotency_key(datetime.now(), rng),
+            experiment_id=None,
+            input_payload=input_payload,
+        )
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    async def start_run(
+        session: AsyncSession,
+        *,
+        executor: AutomationExecutor,
+        idempotency_key: str,
+        experiment_id: int | None,
+        input_payload: dict[str, object],
+    ) -> int:
+        """Prepare and start one registered run; shared by the full and quick forms."""
         try:
             if executor.runs_in_background:
                 prepared = await publish_registered_dispatch(
                     session,
-                    slug=automation_slug,
+                    slug=executor.slug,
                     idempotency_key=idempotency_key,
                     experiment_id=experiment_id,
                     input_payload=input_payload,
@@ -904,7 +981,7 @@ def create_app(
             else:
                 execution = await start_registered_automation(
                     session,
-                    slug=automation_slug,
+                    slug=executor.slug,
                     idempotency_key=idempotency_key,
                     experiment_id=experiment_id,
                     input_payload=input_payload,
@@ -919,7 +996,7 @@ def create_app(
         except Exception:
             await session.rollback()
             raise
-        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+        return run_id
 
     @application.post("/runs/{run_id}/retry", response_class=HTMLResponse)
     async def retry_run(
@@ -1274,18 +1351,47 @@ async def _parse_cancellation_form(request: Request) -> tuple[str, str, str]:
     return csrf_token, confirmation, reason
 
 
+async def _load_quick_run_status(session: AsyncSession) -> QuickRunStatus:
+    return quick_run_status(
+        topics_path=Path(settings.content_quick_topics_path),
+        persona=settings.content_default_persona,
+        used_topics=await _used_content_topics(session),
+    )
+
+
+async def _used_content_topics(session: AsyncSession) -> set[str]:
+    """Topics of earlier Content Engine runs, so a quick run prefers new ones."""
+    payloads = (
+        await session.scalars(
+            select(Run.input_payload)
+            .join(Automation, Automation.id == Run.automation_id)
+            .where(Automation.slug == "content-engine")
+            .order_by(Run.id.desc())
+            .limit(2_000)
+        )
+    ).all()
+    return {
+        " ".join(payload["topic"].split())
+        for payload in payloads
+        if isinstance(payload, dict) and isinstance(payload.get("topic"), str)
+    }
+
+
 async def _parse_manual_run_form(
     request: Request,
     *,
     executor: AutomationExecutor,
-) -> tuple[str, str, str, int | None, dict[str, object]]:
+) -> tuple[str, str, str | None, int | None, dict[str, object]]:
     fields = await _parse_form_fields(
         request,
         maximum_fields=4 + len(executor.manual_input_fields),
     )
     csrf_token = _single_form_value(fields, "csrf_token", maximum_length=128)
     confirmation = _single_form_value(fields, "confirmation", maximum_length=40)
-    idempotency_key = _single_form_value(fields, "idempotency_key", maximum_length=255)
+    # Left blank, the dashboard generates one: repeating a key still never creates a second run.
+    idempotency_key = _optional_single_form_value(
+        fields, "idempotency_key", maximum_length=255
+    )
     experiment_value = _optional_single_form_value(
         fields,
         "experiment_id",

@@ -103,6 +103,14 @@ class Settings(BaseSettings):
     content_visual_flux2_model_dir: str | None = Field(default=None, max_length=1000)
     # Quando habilitado, A3 pausa para conferência humana das imagens antes de A4/A5.
     content_visual_review_enabled: bool = False
+    # Disparo rápido: sorteia uma pauta desta lista (uma por linha) e usa a persona
+    # padrão; o formulário completo continua disponível.
+    content_quick_topics_path: str = Field(
+        default="./imports/content-pautas.txt",
+        min_length=1,
+        max_length=1000,
+    )
+    content_default_persona: str | None = Field(default=None, max_length=1_000)
     content_visual_import_root: str = Field(
         default="./imports/content-visuals",
         min_length=1,
