@@ -92,7 +92,7 @@
         {% set icon_name = {"succeeded": "circle-check", "failed": "circle-x", "awaiting_approval": "clock", "running": "loader", "queued": "clock", "cancelled": "ban"}.get(last.status, "circle") %}
         {% set timed = attempts|selectattr("duration_seconds", "ne", none)|map(attribute="duration_seconds")|list %}
         <li>
-          <span class="timeline-dot {{ tone }}">{{ ui.icon(icon_name) }}</span>
+          <span class="timeline-dot {{ tone }}{% if last.status == "running" %} is-running{% endif %}">{{ ui.icon(icon_name) }}</span>
           <div class="timeline-item">
             <div class="timeline-head"><strong>{{ ordinal }}. <code>{{ last.name }}</code></strong>{{ ui.run_badge(last.status) }}</div>
             <div class="timeline-meta">

@@ -651,6 +651,8 @@ a.kpi { color: inherit; } a.kpi:hover { text-decoration: none; border-color: col
 .timeline-dot.is-danger { background: var(--destructive-soft); border-color: var(--destructive-border); color: var(--destructive-text); }
 .timeline-dot.is-warning { background: var(--warning-soft); border-color: var(--warning-border); color: var(--warning-text); }
 .timeline-dot.is-info { background: var(--info-soft); border-color: var(--info-border); color: var(--info-text); }
+/* O ícone grande da etapa em execução gira como o do selo ao lado. */
+.timeline-dot.is-running .icon { animation: spin 1.2s linear infinite; }
 .timeline-dot.is-neutral { color: var(--muted-foreground); }
 .attempts { display: grid; gap: 0.375rem; margin: 0; padding: 0; list-style: none; }
 .attempts li { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; padding: 0.4rem 0.625rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--muted); font-size: 0.75rem; }
