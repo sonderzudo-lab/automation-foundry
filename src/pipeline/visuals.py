@@ -61,6 +61,10 @@ _MIN_SECONDS_PER_VISUAL = Decimal("4")
 _MAX_SECONDS_PER_VISUAL = Decimal("10")
 _SENTENCE_END = re.compile(r"[.!?…][’”\"')\]]*$")
 LOCAL_ASSETS_QUALITY_TEST_BACKEND = "local_assets_quality_test"
+# Recorded on a bundle whose assets carry no commercial-use claim. Such a bundle
+# is accepted only when the caller asked for it, and every later stage must keep
+# the scope visible instead of treating the video as monetizable.
+QUALITY_TEST_USAGE_SCOPE = "quality-test-only"
 _MAX_VISUALS = 60
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
 _MAX_IMAGE_PIXELS = 4096 * 4096
@@ -96,6 +100,8 @@ class VisualRequest:
     prompt: str
     width: int
     height: int
+    # Stretch of approved narration this visual is expected to cover.
+    narration_text: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +117,9 @@ class VisualAssetResult:
     license_id: str
     commercial_use: bool
     attribution: str
+    # Filled by a generating backend: the exact prompt and seed behind the file.
+    generation_prompt: str = ""
+    seed: int | None = None
 
 
 VisualAdapter = Callable[
@@ -581,8 +590,14 @@ async def execute_approved_visual_step(
     finalize_run: bool = True,
     sleep: Sleeper = asyncio.sleep,
     count_resolver: VisualCountResolver | None = None,
+    allow_quality_test_assets: bool = False,
 ) -> VisualExecutionResult:
-    """Create licensed visual assets from the exact approved script and A2 WAV."""
+    """Create licensed visual assets from the exact approved script and A2 WAV.
+
+    Assets without a commercial-use claim are refused unless
+    ``allow_quality_test_assets`` is set; the bundle is then labelled
+    ``quality-test-only`` and the label travels with the step output.
+    """
     if queue not in {QueueClass.GPU, QueueClass.IO}:
         raise ValueError("visual queue must be gpu or io")
     if gpu_power_watts < 1:
@@ -615,6 +630,7 @@ async def execute_approved_visual_step(
                 visual_directory,
                 context,
                 storage_root,
+                allow_quality_test_assets,
             )
         except VisualRetryableAdapterError as exc:
             raise RetryableTaskError("CONTENT_VISUALS_BACKEND_UNAVAILABLE") from exc
@@ -640,6 +656,12 @@ async def execute_approved_visual_step(
                 "visual_count": len(requests),
                 "width": requests[0].width,
                 "height": requests[0].height,
+                # Absent for commercial bundles, so earlier runs keep their step input.
+                **(
+                    {"usage_scope": QUALITY_TEST_USAGE_SCOPE}
+                    if allow_quality_test_assets
+                    else {}
+                ),
             },
         ),
         policy=RetryPolicy(max_attempts=2, timeout_seconds=timeout_seconds),
@@ -936,12 +958,18 @@ def _build_visual_requests(
 ) -> tuple[VisualRequest, ...]:
     segments = _split_editorial_text(context.full_script, count)
     width, height = (1080, 1920) if context.format == "short" else (1920, 1080)
+    slots = plan_visual_slots(
+        context.narration,
+        duration_seconds=context.duration_seconds,
+        count=len(segments),
+    )
     return tuple(
         VisualRequest(
             index=index,
             prompt=f"Editorial documentary image, no text or logos: {segment}",
             width=width,
             height=height,
+            narration_text=slots[index - 1].text if index <= len(slots) else "",
         )
         for index, segment in enumerate(segments, start=1)
     )
@@ -967,15 +995,27 @@ def _prepare_visual_bundle(
     destination: Path,
     context: _VisualContext,
     storage_root: Path,
+    allow_quality_test_assets: bool = False,
 ) -> dict[str, object]:
     if destination.exists():
-        return _load_existing_bundle(destination, requests, context, storage_root)
+        return _load_existing_bundle(
+            destination,
+            requests,
+            context,
+            storage_root,
+            allow_quality_test_assets,
+        )
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
     temporary.mkdir()
     try:
         results = adapter(requests, temporary)
-        assets = _validate_visual_results(results, requests, temporary)
+        assets = _validate_visual_results(
+            results,
+            requests,
+            temporary,
+            allow_quality_test_assets=allow_quality_test_assets,
+        )
         manifest_payload = _manifest_payload(context, requests, assets)
         manifest_path = temporary / "manifest.json"
         _write_json_file(manifest_path, manifest_payload)
@@ -994,6 +1034,8 @@ def _validate_visual_results(
     results: tuple[VisualAssetResult, ...],
     requests: tuple[VisualRequest, ...],
     directory: Path,
+    *,
+    allow_quality_test_assets: bool = False,
 ) -> list[dict[str, object]]:
     if not isinstance(results, tuple) or len(results) != len(requests):
         raise VisualPermanentAdapterError("CONTENT_VISUALS_COUNT_MISMATCH")
@@ -1023,8 +1065,15 @@ def _validate_visual_results(
             raise VisualPermanentAdapterError("CONTENT_VISUALS_INVALID_METADATA")
         if result.source_type not in {"generated", "stock", "owned"}:
             raise VisualPermanentAdapterError("CONTENT_VISUALS_INVALID_SOURCE_TYPE")
-        if result.commercial_use is not True:
+        if result.commercial_use is not True and not (
+            allow_quality_test_assets and result.commercial_use is False
+        ):
             raise VisualPermanentAdapterError("CONTENT_VISUALS_COMMERCIAL_USE_BLOCKED")
+        if len(result.generation_prompt) > 2000 or (
+            result.seed is not None
+            and (isinstance(result.seed, bool) or not 0 <= result.seed < 2**32)
+        ):
+            raise VisualPermanentAdapterError("CONTENT_VISUALS_INVALID_METADATA")
         if urlparse(result.source_uri).scheme not in {
             "https",
             "local-asset",
@@ -1050,12 +1099,25 @@ def _validate_visual_results(
                 "source_id": result.source_id.strip(),
                 "source_uri": result.source_uri.strip(),
                 "license_id": result.license_id.strip(),
-                "commercial_use": True,
+                "commercial_use": result.commercial_use,
                 "attribution": result.attribution.strip(),
                 "width": inspection.width,
                 "height": inspection.height,
                 "sha256": inspection.sha256,
                 "size_bytes": inspection.size_bytes,
+                # The stretch of narration this image covers, shown at the A3 review.
+                **(
+                    {"narration_text": request.narration_text}
+                    if request.narration_text
+                    else {}
+                ),
+                # Only generating backends add these; other manifests keep their shape.
+                **(
+                    {"generation_prompt": result.generation_prompt.strip()}
+                    if result.generation_prompt.strip()
+                    else {}
+                ),
+                **({"seed": result.seed} if result.seed is not None else {}),
             }
         )
     return assets
@@ -1159,6 +1221,11 @@ def _manifest_payload(
         "format": context.format,
         "visual_count": len(requests),
         "assets": assets,
+        **(
+            {"usage_scope": QUALITY_TEST_USAGE_SCOPE}
+            if any(asset.get("commercial_use") is not True for asset in assets)
+            else {}
+        ),
     }
 
 
@@ -1175,6 +1242,7 @@ def _load_existing_bundle(
     requests: tuple[VisualRequest, ...],
     context: _VisualContext,
     storage_root: Path,
+    allow_quality_test_assets: bool = False,
 ) -> dict[str, object]:
     manifest_path = destination / "manifest.json"
     try:
@@ -1201,6 +1269,15 @@ def _load_existing_bundle(
     assets = payload.get("assets")
     if not isinstance(assets, list) or len(assets) != len(requests):
         raise VisualPermanentAdapterError("CONTENT_VISUALS_EXISTING_BUNDLE_INVALID")
+    non_commercial = any(
+        not isinstance(asset, dict) or asset.get("commercial_use") is not True
+        for asset in assets
+    )
+    labelled = payload.get("usage_scope") == QUALITY_TEST_USAGE_SCOPE
+    if non_commercial != labelled or ("usage_scope" in payload and not labelled):
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_EXISTING_BUNDLE_INVALID")
+    if non_commercial and not allow_quality_test_assets:
+        raise VisualPermanentAdapterError("CONTENT_VISUALS_COMMERCIAL_USE_BLOCKED")
     for request, asset in zip(requests, assets, strict=True):
         if not isinstance(asset, dict) or asset.get("prompt") != request.prompt:
             raise VisualPermanentAdapterError("CONTENT_VISUALS_EXISTING_BUNDLE_CONFLICT")
@@ -1229,6 +1306,11 @@ def _bundle_output(
     relative_directory = directory.relative_to(storage_root.resolve())
     return {
         "manifest_relative_path": (relative_directory / "manifest.json").as_posix(),
+        **(
+            {"usage_scope": QUALITY_TEST_USAGE_SCOPE}
+            if payload.get("usage_scope") == QUALITY_TEST_USAGE_SCOPE
+            else {}
+        ),
         "assets": [
             {
                 **asset,

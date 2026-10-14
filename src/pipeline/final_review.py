@@ -26,6 +26,7 @@ from src.pipeline.caption_alignment_gate import (
     CaptionAlignmentGateEvidence,
     load_caption_alignment_gate_evidence,
 )
+from src.pipeline.visuals import QUALITY_TEST_USAGE_SCOPE
 from src.platform.approval_service import approval_payload_digest, request_approval
 from src.platform.models import (
     Approval,
@@ -103,6 +104,8 @@ class FinalVideoReview:
     alignment_parameters_digest: str | None
     alignment_speech_coverage_ratio: str | None
     alignment_caption_outside_speech_ratio: str | None
+    # "quality-test-only" when the visuals carry no commercial-use claim.
+    visual_usage_scope: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +127,7 @@ class _VerifiedEvidence:
     audio_codec: str
     video_format: str
     alignment: CaptionAlignmentGateEvidence | None
+    visual_usage_scope: str | None = None
 
 
 async def request_final_video_approval(
@@ -241,6 +245,7 @@ async def load_final_video_review(
             if evidence.alignment is None
             else evidence.alignment.caption_outside_speech_ratio
         ),
+        visual_usage_scope=evidence.visual_usage_scope,
     )
 
 
@@ -371,6 +376,7 @@ async def _verify_evidence(
         audio_codec=_step_text(assembly, "audio_codec"),
         video_format=_step_text(assembly, "format"),
         alignment=alignment,
+        visual_usage_scope=_visual_usage_scope(assembly),
     )
 
 
@@ -399,6 +405,8 @@ def _approval_input(*, run: Run, evidence: _VerifiedEvidence) -> dict[str, objec
                 "alignment_status": STATUS_PASS,
             }
         )
+    if evidence.visual_usage_scope is not None:
+        payload["visual_usage_scope"] = evidence.visual_usage_scope
     return payload
 
 
@@ -430,6 +438,13 @@ def _review_payload(evidence: _VerifiedEvidence) -> dict[str, str]:
             "legenda sobre silêncio "
             f"{evidence.alignment.caption_outside_speech_ratio} · relatório "
             f"#{evidence.alignment.report_artifact_id}"
+        )
+    if evidence.visual_usage_scope is not None:
+        # Replaces a field instead of adding one: the projection is capped at eight.
+        payload["publication"] = (
+            "Teste de qualidade, não monetizável: as imagens deste vídeo não têm uso "
+            "comercial declarado. Nenhum upload, envio ou gasto existe; aprovar apenas "
+            "conclui a run local."
         )
     return payload
 
@@ -485,7 +500,18 @@ async def _output_payload(
                 ),
             }
         )
+    if evidence.visual_usage_scope is not None:
+        payload["visual_usage_scope"] = evidence.visual_usage_scope
     return payload
+
+
+def _visual_usage_scope(assembly: dict[str, object]) -> str | None:
+    scope = assembly.get("visual_usage_scope")
+    if scope is None:
+        return None
+    if scope != QUALITY_TEST_USAGE_SCOPE:
+        raise FinalReviewGateError("A5 visual usage scope is not supported")
+    return QUALITY_TEST_USAGE_SCOPE
 
 
 async def _required_artifact(

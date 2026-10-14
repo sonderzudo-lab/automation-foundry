@@ -525,6 +525,8 @@ async def _output_payload(
                 ),
             }
         )
+    if final_review.visual_usage_scope is not None:
+        output["visual_usage_scope"] = final_review.visual_usage_scope
     return output
 
 

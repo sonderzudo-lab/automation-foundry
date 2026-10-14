@@ -23,6 +23,7 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.operations.retention_policy import resolve_retention_days
+from src.pipeline.visuals import QUALITY_TEST_USAGE_SCOPE
 from src.platform.approval_service import approval_payload_digest
 from src.platform.artifact_service import register_local_artifact
 from src.platform.ledger_service import record_ledger_entry
@@ -156,6 +157,8 @@ class _AssemblyContext:
     width: int
     height: int
     duration_seconds: Decimal
+    # Set when the A3 bundle carries assets without a commercial-use claim.
+    visual_usage_scope: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -779,6 +782,12 @@ async def execute_approved_assembly_step(
             "edit": bundle.result.edit,
             "render_seconds": str(bundle.render_seconds),
             "format": context.format,
+            # Absent for commercial bundles, so earlier step outputs keep their shape.
+            **(
+                {"visual_usage_scope": context.visual_usage_scope}
+                if context.visual_usage_scope is not None
+                else {}
+            ),
         }
 
     task_result = await execute_task_step(
@@ -1049,7 +1058,7 @@ def _load_assembly_context(
     duration = _wav_duration(audio_path)
     video_format = _run_format(run)
     width, height = (1080, 1920) if video_format == "short" else (1920, 1080)
-    _validate_visual_manifest(
+    visual_usage_scope = _validate_visual_manifest(
         manifest_path,
         manifest_artifact=visual_manifest_artifact,
         visual_artifacts=visual_artifacts,
@@ -1087,6 +1096,7 @@ def _load_assembly_context(
         width=width,
         height=height,
         duration_seconds=duration,
+        visual_usage_scope=visual_usage_scope,
     )
 
 
@@ -1101,7 +1111,12 @@ def _validate_visual_manifest(
     video_format: str,
     width: int,
     height: int,
-) -> None:
+) -> str | None:
+    """Verify the A3 manifest and return its usage scope, if it declares one.
+
+    Assets without a commercial-use claim are accepted only in a bundle that A3
+    labelled ``quality-test-only``; the label is returned so the video keeps it.
+    """
     if manifest_artifact.size_bytes > _MAX_MANIFEST_BYTES:
         raise ValueError("assembly visual manifest exceeds the size limit")
     try:
@@ -1130,6 +1145,14 @@ def _validate_visual_manifest(
         raise ValueError("assembly visual manifest conflicts with source evidence")
     if not isinstance(assets, list) or len(assets) != len(visual_artifacts):
         raise ValueError("assembly visual manifest assets are invalid")
+    usage_scope = payload.get("usage_scope")
+    if usage_scope not in {None, QUALITY_TEST_USAGE_SCOPE}:
+        raise ValueError("assembly visual manifest usage scope is not supported")
+    non_commercial = any(
+        isinstance(asset, dict) and asset.get("commercial_use") is False for asset in assets
+    )
+    if non_commercial != (usage_scope == QUALITY_TEST_USAGE_SCOPE):
+        raise ValueError("assembly visual manifest usage scope conflicts with its assets")
     for asset, artifact in zip(assets, visual_artifacts, strict=True):
         if not isinstance(asset, dict):
             raise ValueError("assembly visual manifest asset is invalid")
@@ -1139,9 +1162,11 @@ def _validate_visual_manifest(
             or asset.get("size_bytes") != artifact.size_bytes
             or asset.get("width") != width
             or asset.get("height") != height
-            or asset.get("commercial_use") is not True
+            or not isinstance(asset.get("commercial_use"), bool)
+            or (asset.get("commercial_use") is False and usage_scope is None)
         ):
             raise ValueError("assembly visual manifest asset conflicts with artifact")
+    return usage_scope if isinstance(usage_scope, str) else None
 
 
 def _validate_caption_file(path: Path, *, width: int, height: int) -> None:
