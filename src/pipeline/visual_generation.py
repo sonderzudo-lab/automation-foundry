@@ -23,10 +23,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-import httpx
-
 from src.core.config import settings
-from src.pipeline.script_gen import sanitize_llm_output
+from src.pipeline.text_model import as_scene_model_call
+from src.pipeline.text_model_factory import ObservedTextModel
+from src.pipeline.text_model_ollama import OLLAMA_NUM_CTX, OllamaTextModel
 from src.pipeline.visual_prompts import (
     SceneModelCall,
     ScenePromptError,
@@ -272,44 +272,29 @@ def build_flux2_klein_quality_test_adapter(
 # Each description request is a few thousand tokens. Without a fixed window the
 # OpenAI-compatible endpoint loads the model with its default context, several
 # times larger, which made each call take up to a minute in run 16.
-SCENE_MODEL_NUM_CTX = 8192
+SCENE_MODEL_NUM_CTX = OLLAMA_NUM_CTX
 SCENE_MODEL_TIMEOUT_SECONDS = 120.0
 
 
-def _ollama_native_root() -> str:
-    return settings.ollama_base_url.rstrip("/").removesuffix("/v1")
+def _scene_ollama_model() -> OllamaTextModel:
+    return OllamaTextModel(
+        base_url=settings.ollama_base_url,
+        model=settings.ollama_model,
+        num_ctx=SCENE_MODEL_NUM_CTX,
+        timeout_seconds=SCENE_MODEL_TIMEOUT_SECONDS,
+    )
 
 
 def ollama_scene_model() -> SceneModelCall:
     """Scene descriptions written by the same local model that writes the script.
 
-    Uses Ollama's native chat API, the only one that accepts a fixed context
-    window, with thinking disabled. An empty answer is treated like any other
+    Goes through the ``ollama`` text model: native chat API with a fixed context
+    window and thinking disabled. An empty answer is treated like any other
     unreachable model: the step fails as retryable.
     """
-
-    def call(system: str, user: str) -> str:
-        response = httpx.post(
-            f"{_ollama_native_root()}/api/chat",
-            json={
-                "model": settings.ollama_model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "stream": False,
-                "think": False,
-                "options": {"num_ctx": SCENE_MODEL_NUM_CTX},
-            },
-            timeout=SCENE_MODEL_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        content = sanitize_llm_output(str(response.json()["message"]["content"]))
-        if not content:
-            raise RuntimeError("scene model returned an empty answer")
-        return content
-
-    return call
+    return as_scene_model_call(
+        ObservedTextModel(_scene_ollama_model()), purpose="scene_description"
+    )
 
 
 def release_ollama_scene_model() -> None:
@@ -318,14 +303,7 @@ def release_ollama_scene_model() -> None:
     Best effort: if the request fails the image model may run short of memory,
     which surfaces as a retryable inference failure.
     """
-    try:
-        httpx.post(
-            f"{_ollama_native_root()}/api/generate",
-            json={"model": settings.ollama_model, "keep_alive": 0},
-            timeout=30.0,
-        )
-    except httpx.HTTPError:
-        return
+    _scene_ollama_model().release()
 
 
 def _seed(index: int, prompt: str) -> int:

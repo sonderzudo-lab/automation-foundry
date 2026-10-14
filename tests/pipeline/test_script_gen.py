@@ -23,6 +23,7 @@ Novos testes (v2):
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -31,6 +32,7 @@ import pytest
 from openai import APITimeoutError
 
 from src.pipeline.script_gen import (
+    EmptyResponseError,
     ScriptLengthError,
     ScriptResult,
     SourcedFact,
@@ -43,6 +45,14 @@ from src.pipeline.script_gen import (
     generate_script,
     sanitize_llm_output,
     save_script,
+)
+from src.pipeline.text_model import (
+    TextModelPermanentError,
+    TextModelProviderName,
+    TextModelQuotaError,
+    TextModelRequest,
+    TextModelResult,
+    TextModelRetryableError,
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1356,3 +1366,124 @@ def test_narration_clean_when_full_script_has_complete_think_block() -> None:
     assert "</think>" not in result.narration
     assert "Checking structure" not in result.narration
     assert "O sono molda cada memória" in result.narration
+
+
+# ── Modelo de texto configurado (etapa 1 do roadmap de canais) ────────────────
+
+
+class _ScriptedTextModel:
+    """Modelo de texto falso: cada chamada consome uma resposta ou um erro da fila."""
+
+    provider: TextModelProviderName = "ollama"
+    model_id = "qwen3:14b"
+
+    def __init__(self, *outcomes: str | Exception) -> None:
+        self.outcomes = list(outcomes)
+        self.requests: list[TextModelRequest] = []
+
+    def complete(self, request: TextModelRequest) -> TextModelResult:
+        self.requests.append(request)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return TextModelResult(
+            text=outcome,
+            provider="ollama",
+            model_id="qwen3:14b",
+            duration_seconds=Decimal("1"),
+        )
+
+
+def test_text_model_receives_each_step_labelled() -> None:
+    model = _ScriptedTextModel("ângulo", "outline", "hook", "roteiro")
+
+    result = generate_script(topic="Sono", persona="Ciência", fmt="long", text_model=model)
+
+    assert [request.purpose for request in model.requests] == [
+        "script_angle",
+        "script_outline",
+        "script_hook",
+        "script_full_script",
+    ]
+    assert all(request.system.startswith("/no_think") for request in model.requests)
+    assert result.angle == "ângulo" and result.hook == "hook"
+
+
+def test_text_model_transient_failures_are_retried_like_the_legacy_client() -> None:
+    model = _ScriptedTextModel(
+        TextModelRetryableError("timeout"),
+        "<think>só raciocínio</think>",
+        "ângulo",
+        "outline",
+        "hook",
+        "roteiro",
+    )
+
+    with patch("time.sleep"):
+        result = generate_script(topic="Sono", persona="Ciência", fmt="long", text_model=model)
+
+    assert len(model.requests) == 6
+    assert result.angle == "ângulo"
+
+
+def test_text_model_still_unavailable_after_three_attempts_is_an_empty_response() -> None:
+    model = _ScriptedTextModel(*[TextModelRetryableError("connection refused")] * 3)
+
+    with patch("time.sleep"), pytest.raises(EmptyResponseError) as raised:
+        generate_script(topic="Sono", persona="Ciência", fmt="long", text_model=model)
+
+    assert len(model.requests) == 3
+    assert isinstance(raised.value.__cause__, TextModelRetryableError)
+
+
+def test_text_model_usage_limit_is_not_retried() -> None:
+    model = _ScriptedTextModel(TextModelQuotaError("usage limit"))
+
+    with patch("time.sleep"), pytest.raises(EmptyResponseError):
+        generate_script(topic="Sono", persona="Ciência", fmt="long", text_model=model)
+
+    assert len(model.requests) == 1
+
+
+def test_text_model_misconfiguration_is_not_retried_nor_disguised() -> None:
+    model = _ScriptedTextModel(TextModelPermanentError("not signed in"))
+
+    with patch("time.sleep"), pytest.raises(TextModelPermanentError):
+        generate_script(topic="Sono", persona="Ciência", fmt="long", text_model=model)
+
+    assert len(model.requests) == 1
+
+
+def test_without_an_injected_client_the_script_uses_the_native_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    from types import SimpleNamespace
+
+    import respx
+
+    from src.pipeline import text_model_factory
+
+    monkeypatch.setattr(
+        text_model_factory,
+        "settings",
+        SimpleNamespace(
+            ollama_base_url="http://127.0.0.1:11434/v1",
+            ollama_model="qwen3:14b",
+            ollama_timeout=120,
+            content_text_model_provider="ollama",
+        ),
+    )
+    replies = ["ângulo", "outline", "hook", "roteiro"]
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post("http://127.0.0.1:11434/api/chat").mock(
+            side_effect=[
+                httpx.Response(200, json={"message": {"content": reply}}) for reply in replies
+            ]
+        )
+        result = generate_script(topic="Sono", persona="Ciência", fmt="long")
+
+    bodies = [json.loads(call.request.content) for call in route.calls]
+    assert len(bodies) == 4
+    assert all(body["options"] == {"num_ctx": 8192} and body["think"] is False for body in bodies)
+    assert result.full_script == "hook\n\nroteiro"

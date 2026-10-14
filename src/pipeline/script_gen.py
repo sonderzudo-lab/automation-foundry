@@ -1,7 +1,8 @@
 """
 A1 — Geração de roteiro (ARQUITETURA.md Seção A1).
 
-Pipeline de 4 etapas encadeadas via Ollama (cliente OpenAI-compatível):
+Pipeline de 4 etapas encadeadas pelo modelo de texto configurado
+(``src/pipeline/text_model_factory.py``; por padrão o Ollama pela API nativa):
   1. Ângulo editorial específico
   2. Outline estruturado
   3. Hook — a abertura que será narrada
@@ -11,12 +12,15 @@ O roteiro final é montado no código como hook + restante, de modo que o hook
 revisado no gate A1 é exatamente a abertura que chega ao TTS.
 
 Cada etapa usa retry exponencial em caso de timeout, falha de conexão
-ou resposta vazia do Ollama.
+ou resposta vazia do modelo.
 
 Duas camadas de defesa contra thinking-mode do Qwen3:
-  CAMADA 1 (na raiz): extra_body={"think": False} + /no_think no system prompt.
+  CAMADA 1 (na raiz): {"think": False} na chamada + /no_think no system prompt.
   CAMADA 2 (defensiva): sanitize_llm_output() aplicada em TODA saída de LLM,
     remove qualquer artefato de raciocínio mesmo que a camada 1 falhe.
+
+O cliente OpenAI-compatível (``_make_client``/``_call_llm``) continua aceito só
+quando injetado, pelos experimentos E8 e E9; ele não fixa a janela de contexto.
 """
 
 from __future__ import annotations
@@ -33,12 +37,23 @@ from pydantic import BaseModel, Field
 from tenacity import (
     before_sleep_log,
     retry,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
 
 from src.core.config import settings
+from src.pipeline.text_model import (
+    TextModel,
+    TextModelQuotaError,
+    TextModelRequest,
+    TextModelRetryableError,
+)
+from src.pipeline.text_model_factory import configured_text_model
+
+# Reexportada: testes e experimentos ainda a importam daqui.
+from src.pipeline.text_model_ollama import sanitize_llm_output as sanitize_llm_output
 
 log = structlog.get_logger(__name__)
 _std_log = logging.getLogger(__name__)
@@ -73,7 +88,11 @@ class SourcedFact(BaseModel):
 
 
 class EmptyResponseError(RuntimeError):
-    """Lançada quando o Ollama retorna resposta vazia ou só whitespace."""
+    """Lançada quando o modelo de texto não entrega resposta após as tentativas.
+
+    Cobre resposta vazia (ou só <think>) e, no modelo de texto configurado,
+    timeout e falha de conexão; o executor do A1 trata todos como indisponível.
+    """
 
 
 class ScriptLengthError(RuntimeError):
@@ -223,12 +242,6 @@ _LANGUAGE_RULE = (
 
 # ── Regex para limpeza de texto ───────────────────────────────────────────────
 
-# Blocos <think>…</think> COMPLETOS (com tag de abertura presente)
-_THINK_COMPLETE_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-
-# Compatibilidade: alias mantido para testes que ainda referenciam _THINK_RE
-_THINK_RE = _THINK_COMPLETE_RE
-
 # Emojis — cobre os principais blocos Unicode
 _EMOJI_RE = re.compile(
     "["
@@ -301,53 +314,6 @@ _SYMMETRIC_QUOTES = frozenset("\"'")
 
 
 # ── Funções de limpeza ────────────────────────────────────────────────────────
-
-
-def sanitize_llm_output(text: str) -> str:
-    """
-    Remove TODOS os artefatos de raciocínio interno (thinking mode) da saída do LLM.
-
-    É a CAMADA 2 de defesa (defensiva), aplicada em todas as 4 etapas
-    independentemente de a Camada 1 (extra_body + /no_think) ter funcionado.
-
-    Trata os três padrões reais observados no Qwen3 via Ollama:
-
-    Padrão A — bloco completo (tags de abertura E fechamento presentes):
-        "<think>raciocínio em inglês...</think>\\n\\nConteúdo em PT-BR."
-        → "Conteúdo em PT-BR."
-
-    Padrão B — tag de abertura AUSENTE (padrão mais comum no Ollama):
-        "nowrap\\n\\nOkay, the user wants a script about...\\n</think>\\n\\nConteúdo."
-        → "Conteúdo."
-        O "nowrap" e tudo que vem antes de </think> é raciocínio vazado.
-
-    Padrão C — texto limpo sem nenhum artefato:
-        "Conteúdo direto em PT-BR."
-        → "Conteúdo direto em PT-BR."  (inalterado)
-
-    Args:
-        text: Saída bruta do LLM.
-
-    Returns:
-        Texto limpo, sem artefatos de raciocínio, com whitespace normalizado.
-    """
-    # Passo 1: Remove blocos <think>…</think> completos (Padrão A).
-    # Usa re.DOTALL para capturar raciocínio multilinha.
-    cleaned = _THINK_COMPLETE_RE.sub("", text)
-
-    # Passo 2: Trata </think> ÓRFÃO — tudo antes (e incluindo) o último </think>
-    # é raciocínio que vazou sem tag de abertura (Padrão B).
-    closing = "</think>"
-    lower = cleaned.lower()
-    if closing in lower:
-        last_idx = lower.rfind(closing)
-        cleaned = cleaned[last_idx + len(closing):]
-
-    # Passo 3: Remove o token "nowrap" que o Qwen3 emite como prefixo de raciocínio.
-    # Pode restar após o passo 2 se o think foi totalmente órfão sem </think>.
-    cleaned = re.sub(r"^\s*nowrap\b[^\n]*\n?", "", cleaned, flags=re.IGNORECASE)
-
-    return cleaned.strip()
 
 
 # Alias interno mantido para compatibilidade com _extract_narration
@@ -607,6 +573,49 @@ def _call_llm(
 
     log.info("llm_step_done", step=step, chars=len(content))
     return content
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """Falhas que uma nova tentativa pode resolver; limite de uso já passou pelo reserva."""
+    if isinstance(exc, TextModelQuotaError):
+        return False
+    return isinstance(exc, (TextModelRetryableError, EmptyResponseError))
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception(_is_transient),
+    before_sleep=before_sleep_log(_std_log, logging.WARNING),
+    reraise=True,
+)
+def _complete_step(model: TextModel, *, system: str, user: str, step: str) -> str:
+    """Uma etapa pelo modelo de texto, com a mesma política de retry de ``_call_llm``."""
+    log.info("llm_step_start", step=step, provider=model.provider, model=model.model_id)
+    result = model.complete(TextModelRequest(purpose=f"script_{step}", system=system, user=user))
+    # CAMADA 2 também aqui: um provider sem limpeza própria não deixa raciocínio passar.
+    content = sanitize_llm_output(result.text)
+    if not content:
+        log.warning("llm_step_retry", step=step, reason="empty_after_think_strip")
+        raise EmptyResponseError(f"resposta vazia (ou só <think>) na etapa '{step}'")
+    log.info(
+        "llm_step_done",
+        step=step,
+        chars=len(content),
+        provider=result.provider,
+        model=result.model_id,
+        fallback_from=result.fallback_from,
+    )
+    return content
+
+
+def _ask_text_model(model: TextModel, *, system: str, user: str, step: str) -> str:
+    try:
+        return _complete_step(model, system=system, user=user, step=step)
+    except TextModelRetryableError as exc:
+        raise EmptyResponseError(
+            f"modelo de texto indisponível na etapa '{step}' após as tentativas"
+        ) from exc
 
 
 # ── Contexto por formato ──────────────────────────────────────────────────────
@@ -927,9 +936,10 @@ def generate_script(
     opening_style: OpeningStyle | None = None,
     structure: Structure | None = None,
     client: OpenAI | None = None,
+    text_model: TextModel | None = None,
 ) -> ScriptResult:
     """
-    Gera um roteiro estruturado em 4 etapas encadeadas via Ollama.
+    Gera um roteiro estruturado em 4 etapas encadeadas pelo modelo de texto.
 
     Args:
         topic: Tema/pauta do vídeo.
@@ -939,25 +949,35 @@ def generate_script(
         facts: Fatos com fonte fornecidos na pauta; são os únicos dados citáveis.
         opening_style: Tipo de abertura pedido para o hook; None não pede nenhum.
         structure: Estrutura do roteiro; None usa a estrutura direta.
-        client: Cliente OpenAI injetável para testes. Se None, cria do settings.
+        client: Cliente OpenAI-compatível legado, só para testes e experimentos.
+        text_model: Modelo de texto injetável. Se ambos forem None, usa o configurado.
 
     Returns:
         ScriptResult com angle, outline, full_script, hook e narration.
         O campo `narration` é o texto limpo para o TTS (sem markdown/emojis/think).
         `unsourced_claims` lista as frases que a revisão humana precisa conferir.
     """
-    if client is None:
-        client = _make_client()
+    if client is not None:
+        legacy_client = client
+
+        def ask(*, system: str, user: str, step: str) -> str:
+            return _call_llm(legacy_client, system=system, user=user, step=step)
+
+    else:
+        model = text_model if text_model is not None else configured_text_model()
+
+        def ask(*, system: str, user: str, step: str) -> str:
+            return _ask_text_model(model, system=system, user=user, step=step)
 
     log.info("script_gen_start", topic=topic, fmt=fmt, facts=len(facts))
     facts_rule = _facts_rule(facts)
 
     sys1, usr1 = _prompts_angle(topic, persona, fmt)
-    angle = _call_llm(client, system=sys1 + facts_rule, user=usr1, step="angle")
+    angle = ask(system=sys1 + facts_rule, user=usr1, step="angle")
 
     script_structure: Structure = structure or "direct"
     sys2, usr2 = _prompts_outline(topic, angle, persona, fmt, script_structure)
-    outline = _call_llm(client, system=sys2 + facts_rule, user=usr2, step="outline")
+    outline = ask(system=sys2 + facts_rule, user=usr2, step="outline")
 
     # Um hook fora do estilo pedido é refeito; se continuar fora, segue marcado para
     # a revisão humana em vez de derrubar a run.
@@ -977,7 +997,7 @@ def generate_script(
         # O hook passa pela mesma limpeza da narração: o texto revisado é o texto falado.
         # Aspas em volta do hook inteiro são do modelo, não da fala.
         hook = _extract_narration(
-            _call_llm(client, system=sys3 + facts_rule, user=usr3, step="hook")
+            ask(system=sys3 + facts_rule, user=usr3, step="hook")
         ).strip("\"“”")
         if opening_style is None:
             break
@@ -1011,7 +1031,7 @@ def generate_script(
             previous_words=previous_words,
         )
         body = _drop_repeated_opening(
-            _call_llm(client, system=sys4 + facts_rule, user=usr4, step="full_script"),
+            ask(system=sys4 + facts_rule, user=usr4, step="full_script"),
             hook,
         )
         full_script = f"{hook}\n\n{body}"
