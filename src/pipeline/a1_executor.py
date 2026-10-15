@@ -57,9 +57,11 @@ from src.pipeline.narration_review import (
     request_narration_approval,
 )
 from src.pipeline.script_gen import (
+    LIST_ITEMS_RANGE,
     OPENING_STYLE_LABELS,
     OPENING_STYLES,
     STRUCTURE_LABELS,
+    STRUCTURES,
     EmptyResponseError,
     OpeningStyle,
     ScriptLengthError,
@@ -174,7 +176,8 @@ class ContentScriptInput(BaseModel):
     facts: list[SourcedFact] = Field(default_factory=list, max_length=10)
     # "auto" rotates the opening style by run; None asks for no particular style.
     opening_style: Literal["auto"] | OpeningStyle | None = None
-    structure: Structure | None = None
+    # "auto" rotates the structure by run; None keeps the direct structure.
+    structure: Literal["auto"] | Structure | None = None
     # Look of the generated visuals; used only by a generating visual backend.
     visual_style: VisualStyle | None = None
 
@@ -427,7 +430,14 @@ async def execute_content_script_run(
                 run_id=_persisted_id(run.id, "run"),
             )
         if input_data.structure is not None:
-            keyword_arguments["structure"] = input_data.structure
+            structure = _resolve_structure(
+                input_data.structure, run_id=_persisted_id(run.id, "run")
+            )
+            keyword_arguments["structure"] = structure
+            if structure == "list":
+                keyword_arguments["list_items"] = _list_items_for_run(
+                    _persisted_id(run.id, "run"), input_data.format
+                )
         try:
             generated = await asyncio.to_thread(
                 generator,
@@ -1832,6 +1842,28 @@ def _resolve_opening_style(
     if requested != "auto":
         return requested
     return OPENING_STYLES[run_id % len(OPENING_STYLES)]
+
+
+def _resolve_structure(requested: Literal["auto"] | Structure, *, run_id: int) -> Structure:
+    """Turn "auto" into one concrete structure, stable for the run and rotating across runs.
+
+    Four structures against five opening styles: consecutive runs go through all
+    twenty combinations before one repeats.
+    """
+    if requested != "auto":
+        return requested
+    return STRUCTURES[run_id % len(STRUCTURES)]
+
+
+def _list_items_for_run(run_id: int, fmt: Literal["short", "long"]) -> int:
+    """How many items a list asks for in this run, stable for the run.
+
+    Derived from a hash of the run, not from ``run_id`` modulo, so it does not
+    follow the structure rotation and repeat the same count on every list run.
+    """
+    low, high = LIST_ITEMS_RANGE[fmt]
+    digest = hashlib.sha256(f"content-engine:list-items:{run_id}".encode()).digest()
+    return low + int.from_bytes(digest[:4], "big") % (high - low + 1)
 
 
 def _validate_script_result(result: ScriptResult) -> None:

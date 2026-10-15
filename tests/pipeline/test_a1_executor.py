@@ -33,6 +33,7 @@ from src.pipeline.a1_executor import (
 from src.pipeline.script_gen import (
     OPENING_STYLE_LABELS,
     OPENING_STYLES,
+    STRUCTURES,
     EmptyResponseError,
     ScriptLengthError,
     ScriptResult,
@@ -343,6 +344,43 @@ async def test_a1_rotates_the_automatic_opening_style_and_shows_what_was_asked(
     assert review.opening_style == OPENING_STYLE_LABELS[styles[0]]  # type: ignore[index]
     assert review.opening_style_met is False
     assert review.structure == "Lista de itens"
+    assert all(2 <= int(options["list_items"]) <= 5 for options in received)  # type: ignore[call-overload]
+
+
+async def test_a1_rotates_the_automatic_structure_and_varies_list_length(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    received: list[dict[str, object]] = []
+
+    def generate(*_args: object, **options: object) -> ScriptResult:
+        received.append(options)
+        return _generated_script().model_copy(update={"structure": options["structure"]})
+
+    for index in range(len(STRUCTURES)):
+        await execute_content_script_run(
+            session,
+            idempotency_key=f"content-a1-structure-{index}",
+            input_payload={**_input_payload(), "structure": "auto"},
+            script_generator=generate,
+            storage_root=tmp_path / "storage",
+        )
+
+    # Four consecutive runs go through the four structures, and only a list
+    # receives an item count.
+    assert sorted(str(options["structure"]) for options in received) == sorted(STRUCTURES)
+    for options in received:
+        assert ("list_items" in options) == (options["structure"] == "list")
+
+
+def test_list_length_is_stable_per_run_and_varies_across_runs() -> None:
+    from src.pipeline.a1_executor import _list_items_for_run
+
+    counts = [_list_items_for_run(run_id, "short") for run_id in range(1, 41)]
+
+    assert counts == [_list_items_for_run(run_id, "short") for run_id in range(1, 41)]
+    assert set(counts) == {2, 3, 4, 5}
+    assert {_list_items_for_run(run_id, "long") for run_id in range(1, 41)} == {3, 4, 5, 6}
 
 
 async def test_a1_records_the_model_that_actually_wrote_the_script(

@@ -166,7 +166,10 @@ _EXECUTORS = {
                 "select",
                 False,
                 20,
-                tuple(STRUCTURE_LABELS.items()),
+                (
+                    ("auto", "Automática: varia a cada run"),
+                    *STRUCTURE_LABELS.items(),
+                ),
             ),
             ManualInputField(
                 "visual_style",

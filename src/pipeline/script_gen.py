@@ -89,6 +89,8 @@ class ScriptResult(BaseModel):
     # False quando o hook final não seguiu o estilo mesmo depois das novas tentativas.
     opening_style_met: bool | None = None
     structure: str | None = None
+    # Quantos itens a estrutura de lista pediu; None nas outras estruturas e nos bundles antigos.
+    list_items: int | None = None
     # Modelos que de fato escreveram o roteiro, na ordem do primeiro uso. None quando a
     # geração não passou pelo modelo de texto (bundles antigos, cliente legado injetado).
     text_models: list[TextModelUse] | None = None
@@ -155,6 +157,8 @@ OPENING_STYLE_LABELS: dict[OpeningStyle, str] = {
     "mistake": "Erro comum",
     "promise": "Promessa do vídeo",
 }
+# A ordem define a rotação automática da estrutura feita pelo executor.
+STRUCTURES: tuple[Structure, ...] = ("direct", "list", "myth_fact", "story")
 STRUCTURE_LABELS: dict[Structure, str] = {
     "direct": "Direto: gancho, desenvolvimento e fecho",
     "myth_fact": "Mito vs. fato",
@@ -201,9 +205,9 @@ _STRUCTURE_OUTLINE: dict[Structure, dict[str, str]] = {
         ),
     },
     "list": {
-        "short": "Crie exatamente 3 itens curtos e paralelos, um por bloco, e um fecho.",
+        "short": "Crie exatamente {n} itens curtos e paralelos, um por bloco, e um fecho.",
         "long": (
-            "Crie uma lista de 5 itens, um por seção, com 2–3 pontos-chave cada, "
+            "Crie uma lista de {n} itens, um por seção, com 2–3 pontos-chave cada, "
             "e uma conclusão."
         ),
     },
@@ -221,16 +225,35 @@ _STRUCTURE_OUTLINE: dict[Structure, dict[str, str]] = {
 _STRUCTURE_BODY: dict[Structure, str] = {
     "direct": "",
     "myth_fact": " Deixe claro na fala o que é o mito e o que é o fato.",
-    "list": " Anuncie a lista e marque cada item na fala (primeiro, segundo, terceiro).",
+    "list": " Anuncie a lista e marque cada item na fala ({ordinals}).",
     "story": (
         " A história é ilustrativa: use um personagem genérico, nunca uma pessoa real, "
         "e não a apresente como caso documentado."
     ),
 }
-# Quantidade de itens que a própria estrutura pede; não é um dado sem fonte.
-_STRUCTURE_SUPPORTED_NUMBERS: dict[Structure, dict[str, str]] = {
-    "list": {"short": "3 três", "long": "5 cinco"},
-}
+# Quantos itens uma lista pode ter; o executor escolhe um valor por run para os vídeos
+# não saírem todos com o mesmo número de itens.
+LIST_ITEMS_RANGE: dict[str, tuple[int, int]] = {"short": (2, 5), "long": (3, 6)}
+DEFAULT_LIST_ITEMS: dict[str, int] = {"short": 3, "long": 5}
+_ORDINAL_WORDS = ("primeiro", "segundo", "terceiro", "quarto", "quinto", "sexto")
+_LIST_COUNT_WORDS = {2: "dois", 3: "três", 4: "quatro", 5: "cinco", 6: "seis"}
+
+
+def _structure_outline(structure: Structure, fmt: str, list_items: int) -> str:
+    return _STRUCTURE_OUTLINE[structure][fmt].replace("{n}", str(list_items))
+
+
+def _structure_body(structure: Structure, list_items: int) -> str:
+    return _STRUCTURE_BODY[structure].replace(
+        "{ordinals}", ", ".join(_ORDINAL_WORDS[:list_items])
+    )
+
+
+def _structure_supported_numbers(structure: Structure, list_items: int) -> str:
+    """Quantidade de itens que a própria estrutura pede; não é um dado sem fonte."""
+    if structure != "list":
+        return ""
+    return f"{list_items} {_LIST_COUNT_WORDS[list_items]}"
 
 
 def _opening_style_problem(hook: str, style: OpeningStyle) -> str | None:
@@ -797,9 +820,12 @@ def _prompts_outline(
     persona: str,
     fmt: Literal["short", "long"],
     structure: Structure = "direct",
+    list_items: int | None = None,
 ) -> tuple[str, str]:
     """Etapa 2: outline estruturado com base no ângulo."""
-    structure_hint = _STRUCTURE_OUTLINE[structure][fmt]
+    structure_hint = _structure_outline(
+        structure, fmt, list_items or DEFAULT_LIST_ITEMS[fmt]
+    )
 
     system = (
         f"{_system_base(persona, fmt)}\n\n"
@@ -887,6 +913,7 @@ def _prompts_full_script(
     fmt: Literal["short", "long"],
     *,
     structure: Structure = "direct",
+    list_items: int | None = None,
     body_words: tuple[int, int] | None = None,
     previous_words: int | None = None,
 ) -> tuple[str, str]:
@@ -926,7 +953,7 @@ def _prompts_full_script(
         "Inclua falas naturais, transições e linguagem coloquial PT-BR. "
         "Escreva APENAS o texto falado — sem didascálias de câmera ou stage directions, "
         "sem rótulos de seção, marcações de tempo ou aspas em volta do texto."
-        f"{_STRUCTURE_BODY[structure]}"
+        f"{_structure_body(structure, list_items or DEFAULT_LIST_ITEMS[fmt])}"
         f"{length_block}"
     )
     user = (
@@ -969,6 +996,7 @@ def generate_script(
     facts: Sequence[SourcedFact] = (),
     opening_style: OpeningStyle | None = None,
     structure: Structure | None = None,
+    list_items: int | None = None,
     client: OpenAI | None = None,
     text_model: TextModel | None = None,
 ) -> ScriptResult:
@@ -983,6 +1011,8 @@ def generate_script(
         facts: Fatos com fonte fornecidos na pauta; são os únicos dados citáveis.
         opening_style: Tipo de abertura pedido para o hook; None não pede nenhum.
         structure: Estrutura do roteiro; None usa a estrutura direta.
+        list_items: Quantos itens a estrutura de lista pede, dentro de LIST_ITEMS_RANGE;
+            None usa DEFAULT_LIST_ITEMS. Ignorado nas outras estruturas.
         client: Cliente OpenAI-compatível legado, só para testes e experimentos.
         text_model: Modelo de texto injetável. Se ambos forem None, usa o configurado.
 
@@ -1017,7 +1047,11 @@ def generate_script(
     angle = ask(system=sys1 + facts_rule, user=usr1, step="angle")
 
     script_structure: Structure = structure or "direct"
-    sys2, usr2 = _prompts_outline(topic, angle, persona, fmt, script_structure)
+    items = list_items if list_items is not None else DEFAULT_LIST_ITEMS[fmt]
+    low, high = LIST_ITEMS_RANGE[fmt]
+    if not low <= items <= high:
+        raise ValueError(f"list_items must be between {low} and {high} for '{fmt}'")
+    sys2, usr2 = _prompts_outline(topic, angle, persona, fmt, script_structure, items)
     outline = ask(system=sys2 + facts_rule, user=usr2, step="outline")
 
     # Um hook fora do estilo pedido é refeito; se continuar fora, segue marcado para
@@ -1068,6 +1102,7 @@ def generate_script(
             persona,
             fmt,
             structure=script_structure,
+            list_items=items,
             body_words=body_range,
             previous_words=previous_words,
         )
@@ -1102,7 +1137,7 @@ def generate_script(
         narration,
         topic=topic,
         facts=facts,
-        also_supported=_STRUCTURE_SUPPORTED_NUMBERS.get(script_structure, {}).get(fmt, ""),
+        also_supported=_structure_supported_numbers(script_structure, items),
     )
 
     log.info(
@@ -1124,6 +1159,7 @@ def generate_script(
         opening_style=opening_style,
         opening_style_met=opening_style_met,
         structure=structure,
+        list_items=items if script_structure == "list" else None,
         text_models=None
         if uses is None
         else [

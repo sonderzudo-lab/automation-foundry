@@ -500,6 +500,49 @@ def test_the_item_count_of_a_list_is_not_an_unsourced_claim() -> None:
     assert result.unsourced_claims == ["E 80% das pessoas ignoram todos."]
 
 
+def test_a_list_asks_for_the_item_count_of_the_run() -> None:
+    body = f"Aqui vão 5 hábitos simples. {_FILLER}"
+    client = _client_with("ângulo", "outline", "hook", body)
+
+    result = generate_script(
+        topic="Sono",
+        persona="Ciência",
+        fmt="short",
+        structure="list",
+        list_items=5,
+        client=client,
+    )
+
+    assert "exatamente 5 itens" in _system_prompt(client, 1)
+    assert "(primeiro, segundo, terceiro, quarto, quinto)" in _system_prompt(client, 3)
+    assert result.list_items == 5
+    assert result.unsourced_claims == []
+
+
+def test_only_a_list_records_its_item_count() -> None:
+    client = _client_with("ângulo", "outline", "hook", _FILLER)
+
+    result = generate_script(
+        topic="Sono", persona="Ciência", fmt="short", structure="story", list_items=4,
+        client=client,
+    )
+
+    assert result.list_items is None
+
+
+@pytest.mark.parametrize(("fmt", "items"), [("short", 1), ("short", 6), ("long", 2), ("long", 7)])
+def test_an_item_count_outside_the_range_is_refused(fmt: str, items: int) -> None:
+    with pytest.raises(ValueError, match="list_items"):
+        generate_script(
+            topic="Sono",
+            persona="Ciência",
+            fmt=fmt,  # type: ignore[arg-type]
+            structure="list",
+            list_items=items,
+            client=_client_with("ângulo", "outline", "hook", _FILLER),
+        )
+
+
 # ── Testes da regra de fatos com fonte ────────────────────────────────────────
 
 _FACT = SourcedFact(
