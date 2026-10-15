@@ -30,6 +30,7 @@ trabalhar ao mesmo tempo, desde que cada um tenha uma faixa própria. Todos segu
 | B — teste do Remotion (etapa 4, fora da pipeline) | Codex | `spike/remotion-timeline` | **substituída** pela demo em `D:\automation-foundry\labs\remotion-html-demo\` |
 | C — modelos de animação no Remotion (etapa 4) | Codex | `feat/remotion-explainer` | só `render/remotion/**` |
 | D — plano de animação, timeline v2 e backend A5 (etapa 4) | Claude Code | `claude/animated-assembly-fc5846` — **juntada em 2026-10-14** | `src/pipeline/animation_generation.py` e `src/pipeline/timeline_builder.py` (novos), `src/pipeline/assembly.py` (só o adapter novo), `src/pipeline/a1_executor.py` (só a escolha de fila e adapter do A5), `src/core/config.py` (só campos novos), `.env.example`, testes correspondentes |
+| E — cenas animadas por IA com LTX-2.3 (etapa 4b, fatias 1 e 4) | Claude Code | `feat/scene-animation` | `src/pipeline/motion_generation.py`, `src/pipeline/scene_animation.py` e `src/pipeline/comfyui_runtime.py` (novos), `src/pipeline/a1_executor.py` (só a escolha do step A5a e do seu adapter), `src/core/config.py` (só campos novos), `.env.example`, testes correspondentes; na fatia 4, também a página e a rota do gate de clipes |
 | Integradora | proprietário + sessão principal | `chore/project-skills` | contratos, docs, merges |
 
 ### Fronteira entre as faixas C e D
@@ -54,6 +55,16 @@ Antes de chamar, o A5 confere que `remotion` e `@remotion/cli` estão em 4.0.531
 - A saída é MP4 H.264 + AAC nas dimensões do formato e na duração do áudio.
 - A faixa C testa com `docs/reference/schemas/timeline-v2.example.json` e mídia sintética;
   a faixa D testa com um renderizador falso que só confere a chamada.
+
+### Fronteira da faixa E com as faixas C e D
+
+A faixa E entrega ao A5 um `SceneClipsManifest` válido (`src/pipeline/scene_clips.py`) e os
+MP4 que ele lista; a faixa D lê esse manifesto, confere `cuts_sha256` contra os próprios
+cortes (`scene_spans`) e monta um `TimelineV3`; a faixa C faz o `ExplainerV1` desenhar o
+vídeo de um clipe do v3 em vez da imagem, testando com
+`docs/reference/schemas/timeline-v3.example.json`. A geração real (ComfyUI e LTX-2.3) usa a
+GPU inteira e cerca de 60 GB de RAM: só com combinação prévia e com nenhuma outra faixa
+gerando ao mesmo tempo. Testes de faixa usam um ComfyUI falso.
 
 ## Etapas seguintes (ainda sem faixa)
 
