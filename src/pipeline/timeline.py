@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 from decimal import ROUND_HALF_EVEN, Decimal
+from fractions import Fraction
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -46,6 +47,8 @@ CAPTION_TEMPLATES: tuple[CaptionTemplate, ...] = ("phrase_blocks", "word_pop")
 AnimationStyle = Literal["explainer_v1"]
 MAX_OVERLAYS = 20
 MAX_LIST_ITEMS = 5
+# A generated video may be played at most this much slower to fill its clip.
+MAX_VIDEO_STRETCH = Fraction(5, 4)
 
 FORMAT_DIMENSIONS: dict[VideoFormat, tuple[int, int]] = {
     "short": (1080, 1920),
@@ -54,6 +57,7 @@ FORMAT_DIMENSIONS: dict[VideoFormat, tuple[int, int]] = {
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _IMAGE_NAME = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.png$"
+_VIDEO_NAME = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.mp4$"
 
 
 class _Strict(BaseModel):
@@ -181,8 +185,8 @@ class TimelineV2(_Strict):
         return self
 
 
-def overlay_problem(timeline: TimelineV2) -> str | None:
-    """Return why the overlays of a v2 timeline cannot be drawn, or None."""
+def overlay_problem(timeline: TimelineV2 | TimelineV3) -> str | None:
+    """Return why the overlays of a v2 or v3 timeline cannot be drawn, or None."""
     previous_end = 0
     for position, overlay in enumerate(timeline.overlays, start=1):
         if overlay.end_ms - overlay.start_ms < MIN_CLIP_MS:
@@ -220,7 +224,93 @@ def timeline_v2_json_schema() -> dict[str, Any]:
     return TimelineV2.model_json_schema()
 
 
-def timeline_problem(timeline: Timeline | TimelineV2) -> str | None:
+class TimelineClipV3(TimelineClip):
+    """A v2 clip that may play a video generated from its image (step A5a).
+
+    ``video``, ``video_sha256`` and ``video_ms`` are all set or all null. With a
+    video the clip has no zoom (``effect`` is ``none``). The video covers the
+    clip's window (``clip_window``: the clip and half of each crossfade around
+    it): it starts at the window start from its first frame and plays at
+    ``min(1, video_ms / window length)`` speed; a longer video is cut at the end
+    of the window. A video may be at most ``MAX_VIDEO_STRETCH`` times slower.
+    """
+
+    video: str | None = Field(pattern=_VIDEO_NAME)
+    video_sha256: str | None = Field(pattern=_SHA256)
+    video_ms: int | None = Field(ge=1, le=MAX_TIMELINE_MS)
+
+
+class TimelineV3(_Strict):
+    """Timeline v2 whose clips may play generated videos instead of zoomed images.
+
+    Overlays, words and every v2 rule are unchanged.
+    """
+
+    schema_version: Literal[3]
+    format: VideoFormat
+    width: int
+    height: int
+    fps: Literal[30]
+    duration_ms: int = Field(ge=MIN_CLIP_MS, le=MAX_TIMELINE_MS)
+    audio_sha256: str = Field(pattern=_SHA256)
+    caption_ass_sha256: str = Field(pattern=_SHA256)
+    caption_template: CaptionTemplate
+    transition_ms: int = Field(ge=0, le=MAX_TRANSITION_MS)
+    clips: list[TimelineClipV3] = Field(min_length=1, max_length=MAX_TIMELINE_CLIPS)
+    words: list[TimelineWord] = Field(max_length=MAX_TIMELINE_WORDS)
+    animation_style: AnimationStyle
+    overlays: list[Overlay] = Field(max_length=MAX_OVERLAYS)
+
+    @model_validator(mode="after")
+    def _check_timeline(self) -> TimelineV3:
+        problem = timeline_problem(self) or overlay_problem(self) or clip_video_problem(self)
+        if problem is not None:
+            raise ValueError(problem)
+        return self
+
+
+def timeline_v3_json_schema() -> dict[str, Any]:
+    """JSON Schema of the v3 timeline shared with the JavaScript render engine."""
+    return TimelineV3.model_json_schema()
+
+
+def clip_window(
+    start_ms: int,
+    end_ms: int,
+    *,
+    duration_ms: int,
+    transition_ms: int,
+) -> tuple[int, int]:
+    """The interval a clip is visible in: itself and half of each crossfade around it."""
+    half = (transition_ms + 1) // 2
+    return max(0, start_ms - half), min(duration_ms, end_ms + half)
+
+
+def clip_video_problem(timeline: TimelineV3) -> str | None:
+    """Return why the videos of a v3 timeline cannot be played, or None."""
+    for clip in timeline.clips:
+        fields = (clip.video, clip.video_sha256, clip.video_ms)
+        if all(value is None for value in fields):
+            continue
+        if any(value is None for value in fields):
+            return f"clip {clip.index} must set video, video_sha256 and video_ms together"
+        if clip.effect != "none":
+            return f"clip {clip.index} plays a video and must have the effect none"
+        start, end = clip_window(
+            clip.start_ms,
+            clip.end_ms,
+            duration_ms=timeline.duration_ms,
+            transition_ms=timeline.transition_ms,
+        )
+        if clip.video_ms is not None and clip.video_ms * MAX_VIDEO_STRETCH < end - start:
+            return f"clip {clip.index} has a video too short for its window"
+    videos = [clip.video for clip in timeline.clips if clip.video is not None]
+    if len(set(videos)) != len(videos):
+        return "two clips play the same video"
+    return None
+
+
+def timeline_problem(timeline: Timeline | TimelineV2 | TimelineV3) -> str | None:
     """Return why a timeline cannot be rendered, or None when it is consistent."""
     if (timeline.width, timeline.height) != FORMAT_DIMENSIONS[timeline.format]:
         return "dimensions do not match the format"
@@ -266,7 +356,7 @@ def timeline_json_schema() -> dict[str, Any]:
     return Timeline.model_json_schema()
 
 
-def timeline_to_json(timeline: Timeline | TimelineV2) -> str:
+def timeline_to_json(timeline: Timeline | TimelineV2 | TimelineV3) -> str:
     """Canonical JSON text: same timeline, same bytes, so it can be hashed."""
     return json.dumps(
         timeline.model_dump(mode="json"),

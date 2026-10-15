@@ -95,11 +95,21 @@ def scene_prompt_problem(prompt: str) -> str | None:
         )
     if not prompt.isascii():
         return "is not written in plain English"
-    banned = _BANNED_RE.search(prompt)
+    return on_screen_problem(prompt)
+
+
+def on_screen_problem(text: str) -> str | None:
+    """Return why ``text`` would put something readable on screen, or None.
+
+    Shared by scene descriptions and by the motion of animated scenes, so both
+    follow the same rule: no text, logos or interfaces, and a device with a
+    screen only when the screen cannot be seen.
+    """
+    banned = _BANNED_RE.search(text)
     if banned is not None:
         return f"mentions '{banned.group(0).lower()}', which must not be mentioned at all"
-    device = _DEVICE_RE.search(prompt)
-    if device is not None and _HIDDEN_SCREEN_RE.search(prompt) is None:
+    device = _DEVICE_RE.search(text)
+    if device is not None and _HIDDEN_SCREEN_RE.search(text) is None:
         return (
             f"shows '{device.group(0).lower()}' without saying that its screen faces away, "
             "is turned off or is out of focus"

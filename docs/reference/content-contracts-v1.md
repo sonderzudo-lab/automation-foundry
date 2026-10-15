@@ -228,6 +228,70 @@ do plano de animação e das palavras do A4:
 - Licença do Remotion: gratuita para indivíduos e empresas pequenas; conferir
   <https://www.remotion.dev/license> antes de monetizar.
 
+## 6. Cenas animadas por IA: movimento, manifesto de cenas e timeline v3
+
+Decidido com o proprietário em 2026-10-15, depois do teste fora da pipeline em
+`D:\automation-foundry\labs\video-wan22-i2v\` (run 19 com as 9 imagens animadas pelo
+LTX-2.3 em 14 min de GPU). Plano, decisões e fatias em `docs/planning/scene-animation-ltx.md`;
+licença em `docs/licensing/content-video.md`. Os contratos abaixo têm código e testes, mas
+**não estão ligados à pipeline**.
+
+| Contrato | Código | Testes |
+| --- | --- | --- |
+| Movimento de cada cena | `src/pipeline/scene_motion.py` | `tests/pipeline/test_scene_motion.py` |
+| Cortes entre cenas | `scene_spans` e `scene_cuts_sha256` em `src/pipeline/timeline_builder.py` | `tests/pipeline/test_timeline_builder.py` |
+| Manifesto de cenas animadas | `src/pipeline/scene_clips.py` | `tests/pipeline/test_scene_clips.py` |
+| Timeline v3 | `TimelineV3` em `src/pipeline/timeline.py` | `tests/pipeline/test_timeline_v3.py` |
+
+### Movimento de cada cena (resposta do modelo de texto)
+
+```json
+{"schema_version": 1, "scenes": [
+  {"index": 1, "motion": "The adult walks forward through the doorway with calm steps, the camera slowly follows"}
+]}
+```
+
+- Uma frase em inglês por cena, numeradas 1, 2, 3 em ordem, exatamente uma por imagem
+  aprovada no A3. É conteúdo, não tempo: a duração do clipe vem dos cortes.
+- `motion_problem` recusa: menos de 6 ou mais de 50 palavras, texto fora do ASCII,
+  qualquer número, alguém falando (a narração é a única voz), alguém novo entrando na cena,
+  corte ou transformação (cada cena é uma tomada contínua) e as mesmas proibições de tela
+  das descrições de cena (`on_screen_problem`, compartilhada com `visual_prompts.py`).
+- Recusas levantam `SceneMotionError` com o motivo em inglês, reenviado ao modelo até
+  `MOTION_ATTEMPTS` vezes; depois a cena usa `NEUTRAL_MOTION`.
+
+### Cortes entre cenas
+
+`scene_spans(imagens, palavras, duration_ms)` é o cálculo que o timeline já usava: cada
+imagem começa quando a primeira palavra do seu trecho é falada, com pelo menos 1 s por
+imagem. O A5a gera os clipes para esses trechos e grava `scene_cuts_sha256`; o A5 recalcula
+os trechos a partir das mesmas evidências e recusa um manifesto feito para outros cortes.
+
+### Manifesto de cenas animadas (`SceneClipsManifest`)
+
+- Por cena, `kind` `clip` (movimento, seed, `frames`, `video` MP4 e SHA-256) ou `still`
+  com o motivo: `too_long`, `generation_failed` ou `owner_choice`. As cenas cobrem o áudio
+  de 0 até `duration_ms`, sem buraco.
+- Cada clipe cobre sua janela (o trecho e metade de cada crossfade, `clip_window`), a 25 fps,
+  com 8k+1 quadros (exigência do LTX-2.3) e no máximo 201 quadros (8,04 s). Uma janela maior
+  usa 201 quadros tocados até 1,25× mais devagar; acima disso a cena é `still` com
+  `too_long`. `scene_clip_frames` decide a quantidade, e o manifesto recusa outra.
+- Também registra provider, modelo, digest do inventário dos pesos, versão do grafo, licença
+  e `usage_scope`: o clipe herda o escopo das imagens do A3 e nunca é mais utilizável que elas.
+
+### Timeline v3
+
+`TimelineV3` = v2 com `schema_version: 3`, em que cada clipe tem também `video`,
+`video_sha256` e `video_ms` (os três preenchidos ou os três `null`).
+
+- Clipe com vídeo tem `effect: none`. O vídeo começa no início da janela do clipe, do
+  primeiro quadro, e toca na velocidade `min(1, video_ms / duração da janela)`; o que
+  sobrar depois do fim da janela é cortado. Vídeo mais de 1,25× curto demais é recusado.
+- Dois clipes não tocam o mesmo vídeo. Todas as regras do v1 e do v2 continuam valendo.
+- Schema versionado: `docs/reference/schemas/timeline-v3.schema.json`; exemplo válido:
+  `timeline-v3.example.json`. O v2 continua valendo e não mudou; o `ExplainerV1` precisa
+  aceitar o v3 (faixa C) antes de o A5 montá-lo (faixa D).
+
 ## Fora destes contratos
 
 - Licença: o escopo `quality-test-only` de imagens e voz continua valendo até a decisão

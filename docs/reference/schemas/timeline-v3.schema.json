@@ -1,0 +1,414 @@
+{
+  "$defs": {
+    "ClosingOverlay": {
+      "additionalProperties": false,
+      "description": "The closing sentence, word by word as spoken, from ``word_from`` to the end.",
+      "properties": {
+        "kind": {
+          "const": "closing_sentence",
+          "title": "Kind",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "word_from": {
+          "exclusiveMaximum": 60000,
+          "minimum": 0,
+          "title": "Word From",
+          "type": "integer"
+        },
+        "highlight_from": {
+          "exclusiveMaximum": 60000,
+          "minimum": 0,
+          "title": "Highlight From",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "start_ms",
+        "end_ms",
+        "word_from",
+        "highlight_from"
+      ],
+      "title": "ClosingOverlay",
+      "type": "object"
+    },
+    "HighlightOverlay": {
+      "additionalProperties": false,
+      "description": "A short phrase of the narration shown large while it is spoken.",
+      "properties": {
+        "kind": {
+          "const": "highlight",
+          "title": "Kind",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "text": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "start_ms",
+        "end_ms",
+        "text"
+      ],
+      "title": "HighlightOverlay",
+      "type": "object"
+    },
+    "ListOverlay": {
+      "additionalProperties": false,
+      "description": "One card of an animated list: the items so far, with ``active`` entering.\n\nA list is shown as one card per item, in order. In the ``explainer_v1``\nstyle the number of the active item leaves the card when it closes, waits\nin a corner with its label while the item is explained and flies back to\nits row, ticked, when the next card opens.",
+      "properties": {
+        "kind": {
+          "const": "list",
+          "title": "Kind",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "title": {
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5,
+          "minItems": 2,
+          "title": "Items",
+          "type": "array"
+        },
+        "active": {
+          "exclusiveMaximum": 5,
+          "minimum": 0,
+          "title": "Active",
+          "type": "integer"
+        },
+        "item_start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Item Start Ms",
+          "type": "integer"
+        },
+        "item_end_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Item End Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "start_ms",
+        "end_ms",
+        "title",
+        "items",
+        "active",
+        "item_start_ms",
+        "item_end_ms"
+      ],
+      "title": "ListOverlay",
+      "type": "object"
+    },
+    "TimelineClipV3": {
+      "additionalProperties": false,
+      "description": "A v2 clip that may play a video generated from its image (step A5a).\n\n``video``, ``video_sha256`` and ``video_ms`` are all set or all null. With a\nvideo the clip has no zoom (``effect`` is ``none``). The video covers the\nclip's window (``clip_window``: the clip and half of each crossfade around\nit): it starts at the window start from its first frame and plays at\n``min(1, video_ms / window length)`` speed; a longer video is cut at the end\nof the window. A video may be at most ``MAX_VIDEO_STRETCH`` times slower.",
+      "properties": {
+        "index": {
+          "maximum": 600,
+          "minimum": 1,
+          "title": "Index",
+          "type": "integer"
+        },
+        "image": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.png$",
+          "title": "Image",
+          "type": "string"
+        },
+        "image_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Image Sha256",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "effect": {
+          "enum": [
+            "none",
+            "zoom_in",
+            "zoom_out",
+            "pan_left",
+            "pan_right"
+          ],
+          "title": "Effect",
+          "type": "string"
+        },
+        "transition_in": {
+          "enum": [
+            "cut",
+            "crossfade"
+          ],
+          "title": "Transition In",
+          "type": "string"
+        },
+        "video": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.mp4$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Video"
+        },
+        "video_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Video Sha256"
+        },
+        "video_ms": {
+          "anyOf": [
+            {
+              "maximum": 14400000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Video Ms"
+        }
+      },
+      "required": [
+        "index",
+        "image",
+        "image_sha256",
+        "start_ms",
+        "end_ms",
+        "effect",
+        "transition_in",
+        "video",
+        "video_sha256",
+        "video_ms"
+      ],
+      "title": "TimelineClipV3",
+      "type": "object"
+    },
+    "TimelineWord": {
+      "additionalProperties": false,
+      "description": "One spoken word and the interval in which it is heard.",
+      "properties": {
+        "text": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "End Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "text",
+        "start_ms",
+        "end_ms"
+      ],
+      "title": "TimelineWord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Timeline v2 whose clips may play generated videos instead of zoomed images.\n\nOverlays, words and every v2 rule are unchanged.",
+  "properties": {
+    "schema_version": {
+      "const": 3,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "format": {
+      "enum": [
+        "short",
+        "long"
+      ],
+      "title": "Format",
+      "type": "string"
+    },
+    "width": {
+      "title": "Width",
+      "type": "integer"
+    },
+    "height": {
+      "title": "Height",
+      "type": "integer"
+    },
+    "fps": {
+      "const": 30,
+      "title": "Fps",
+      "type": "integer"
+    },
+    "duration_ms": {
+      "maximum": 14400000,
+      "minimum": 1000,
+      "title": "Duration Ms",
+      "type": "integer"
+    },
+    "audio_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Audio Sha256",
+      "type": "string"
+    },
+    "caption_ass_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Caption Ass Sha256",
+      "type": "string"
+    },
+    "caption_template": {
+      "enum": [
+        "phrase_blocks",
+        "word_pop"
+      ],
+      "title": "Caption Template",
+      "type": "string"
+    },
+    "transition_ms": {
+      "maximum": 1000,
+      "minimum": 0,
+      "title": "Transition Ms",
+      "type": "integer"
+    },
+    "clips": {
+      "items": {
+        "$ref": "#/$defs/TimelineClipV3"
+      },
+      "maxItems": 600,
+      "minItems": 1,
+      "title": "Clips",
+      "type": "array"
+    },
+    "words": {
+      "items": {
+        "$ref": "#/$defs/TimelineWord"
+      },
+      "maxItems": 60000,
+      "title": "Words",
+      "type": "array"
+    },
+    "animation_style": {
+      "const": "explainer_v1",
+      "title": "Animation Style",
+      "type": "string"
+    },
+    "overlays": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "closing_sentence": "#/$defs/ClosingOverlay",
+            "highlight": "#/$defs/HighlightOverlay",
+            "list": "#/$defs/ListOverlay"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/ListOverlay"
+          },
+          {
+            "$ref": "#/$defs/HighlightOverlay"
+          },
+          {
+            "$ref": "#/$defs/ClosingOverlay"
+          }
+        ]
+      },
+      "maxItems": 20,
+      "title": "Overlays",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "format",
+    "width",
+    "height",
+    "fps",
+    "duration_ms",
+    "audio_sha256",
+    "caption_ass_sha256",
+    "caption_template",
+    "transition_ms",
+    "clips",
+    "words",
+    "animation_style",
+    "overlays"
+  ],
+  "title": "TimelineV3",
+  "type": "object"
+}

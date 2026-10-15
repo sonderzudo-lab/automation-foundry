@@ -19,9 +19,12 @@ from src.pipeline.timeline import (
 )
 from src.pipeline.timeline_builder import (
     LIST_CARD_TAIL_MS,
+    SceneSpan,
     TimelineBuildError,
     TimelineImage,
     build_timeline_v2,
+    scene_cuts_sha256,
+    scene_spans,
     timeline_images_from_manifest,
 )
 
@@ -121,6 +124,28 @@ def test_each_image_starts_when_its_stretch_starts_being_spoken() -> None:
     assert (timeline.width, timeline.height, timeline.animation_style) == (
         1080, 1920, "explainer_v1",
     )
+
+
+def test_scene_spans_are_the_cuts_the_timeline_uses() -> None:
+    timeline, _dropped, words = _build()
+
+    spans = scene_spans(_images(), words, duration_ms=timeline.duration_ms)
+
+    assert [(span.index, span.start_ms, span.end_ms) for span in spans] == [
+        (clip.index, clip.start_ms, clip.end_ms) for clip in timeline.clips
+    ]
+    assert scene_cuts_sha256(spans) == scene_cuts_sha256(
+        scene_spans(_images(), words, duration_ms=timeline.duration_ms)
+    )
+    moved = [*spans[:-1], SceneSpan(index=3, start_ms=spans[2].start_ms + 1, end_ms=spans[2].end_ms)]
+    assert scene_cuts_sha256(moved) != scene_cuts_sha256(spans)
+
+
+def test_scene_spans_need_words_and_images() -> None:
+    with pytest.raises(TimelineBuildError, match="no words"):
+        scene_spans(_images(), [], duration_ms=10_000)
+    with pytest.raises(TimelineBuildError, match="no images"):
+        scene_spans([], _words(), duration_ms=10_000)
 
 
 def test_list_cards_follow_the_spoken_anchors() -> None:

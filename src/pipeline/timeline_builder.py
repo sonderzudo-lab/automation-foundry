@@ -17,6 +17,8 @@ the approved narration whatever capitals or punctuation the model wrote.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -149,18 +151,33 @@ def build_timeline_v2(
     return BuiltTimeline(timeline=timeline, dropped_highlights=tuple(dropped))
 
 
-def _clips(
+@dataclass(frozen=True, slots=True)
+class SceneSpan:
+    """When one image is on screen, between two cuts."""
+
+    index: int
+    start_ms: int
+    end_ms: int
+
+
+def scene_spans(
     images: Sequence[TimelineImage],
     words: Sequence[TimelineWord],
     *,
     duration_ms: int,
-) -> list[TimelineClip]:
+) -> tuple[SceneSpan, ...]:
     """Start each image when the first word of its stretch is spoken.
 
     The stretches split the narration word by word. When the captions hold a
     different number of words, positions are scaled, as in the approved demo.
-    Every image keeps at least ``MIN_CLIP_MS`` on screen.
+    Every image keeps at least ``MIN_CLIP_MS`` on screen. The animated scenes
+    (A5a) are generated for these spans and A5 cuts the video at the same ones,
+    which ``scene_cuts_sha256`` lets both sides compare.
     """
+    if not words:
+        raise TimelineBuildError("the captions have no words")
+    if not images:
+        raise TimelineBuildError("there are no images")
     counts = [len(image.narration_text.split()) for image in images]
     scale = len(words) / sum(counts)
     starts: list[int] = []
@@ -175,19 +192,39 @@ def _clips(
     if duration_ms - starts[-1] < MIN_CLIP_MS:
         raise TimelineBuildError("the images do not fit in the audio for one second each")
     ends = [*starts[1:], duration_ms]
+    return tuple(
+        SceneSpan(index=position, start_ms=start, end_ms=end)
+        for position, (start, end) in enumerate(zip(starts, ends, strict=True), start=1)
+    )
+
+
+def scene_cuts_sha256(spans: Sequence[SceneSpan]) -> str:
+    """Digest of the cuts, so the animated scenes and the montage agree on them."""
+    canonical = json.dumps(
+        [[span.index, span.start_ms, span.end_ms] for span in spans],
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _clips(
+    images: Sequence[TimelineImage],
+    words: Sequence[TimelineWord],
+    *,
+    duration_ms: int,
+) -> list[TimelineClip]:
+    spans = scene_spans(images, words, duration_ms=duration_ms)
     return [
         TimelineClip(
-            index=position,
+            index=span.index,
             image=image.file_name,
             image_sha256=image.sha256,
-            start_ms=start,
-            end_ms=end,
-            effect=_effect(position),
-            transition_in="cut" if position == 1 else "crossfade",
+            start_ms=span.start_ms,
+            end_ms=span.end_ms,
+            effect=_effect(span.index),
+            transition_in="cut" if span.index == 1 else "crossfade",
         )
-        for position, (image, start, end) in enumerate(
-            zip(images, starts, ends, strict=True), start=1
-        )
+        for image, span in zip(images, spans, strict=True)
     ]
 
 
