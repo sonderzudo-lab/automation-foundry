@@ -118,6 +118,24 @@ _POLICY: tuple[RetentionPolicyEntry, ...] = (
         ),
     ),
     RetentionPolicyEntry(
+        artifact_type="scene_clip_video",
+        retention_days=90,
+        producer="content-engine:a5a",
+        rationale=(
+            "Clipe gerado a partir de imagem aprovada no A3: entrada da montagem "
+            "A5, regenerável pela chave de cache."
+        ),
+    ),
+    RetentionPolicyEntry(
+        artifact_type="scene_clips_manifest",
+        retention_days=90,
+        producer="content-engine:a5a",
+        rationale=(
+            "Manifesto das cenas que viraram clipes ou permaneceram como imagens: "
+            "digest dos cortes e inventário do modelo conferidos pelo A5."
+        ),
+    ),
+    RetentionPolicyEntry(
         artifact_type="final_video",
         retention_days=90,
         producer="content-engine:a5",
