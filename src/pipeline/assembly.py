@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -13,16 +14,37 @@ import subprocess
 import tempfile
 import time
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import BinaryIO, Literal
 from uuid import uuid4
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.operations.retention_policy import resolve_retention_days
+from src.pipeline.animation_generation import (
+    ANIMATION_MODEL_TIMEOUT_SECONDS,
+    animation_text_model,
+    write_animation_plan,
+)
+from src.pipeline.animation_plan import AnimationPlan, AnimationPlanError
+from src.pipeline.text_model import TextModel, TextModelPermanentError, TextModelResult
+from src.pipeline.text_model_factory import configured_ollama_model
+from src.pipeline.timeline import (
+    CaptionTemplate,
+    TimelineWord,
+    milliseconds,
+    timeline_to_json,
+)
+from src.pipeline.timeline_builder import (
+    BuiltTimeline,
+    TimelineBuildError,
+    build_timeline_v2,
+    timeline_images_from_manifest,
+)
 from src.pipeline.visuals import QUALITY_TEST_USAGE_SCOPE
 from src.platform.approval_service import approval_payload_digest
 from src.platform.artifact_service import register_local_artifact
@@ -52,6 +74,8 @@ from src.platform.task_runner import (
     execute_task_step,
 )
 
+log = structlog.get_logger(__name__)
+
 ASSEMBLY_STEP_NAME = "assemble-video-a5"
 _SOURCE = "content-engine:a5"
 _RETENTION_DAYS = resolve_retention_days("final_video")
@@ -71,6 +95,7 @@ _ASS_EVENT_TIME = re.compile(r"^(\d{1,2}):([0-5]\d):([0-5]\d)\.(\d{2})$")
 _ASS_KARAOKE_WORD = re.compile(r"\{\\k[fo]?(\d+)\}([^{]*)")
 _ASS_OVERRIDE = re.compile(r"\{[^}]*\}")
 _SENTENCE_END = re.compile(r"[.!?…][’”\"')\]]*$")
+_NODE_VERSION = re.compile(r"v\d+\.\d+\.\d+")
 
 
 class AssemblyRetryableAdapterError(RuntimeError):
@@ -93,6 +118,36 @@ class FFmpegQualityTestConfig:
     edit: Literal["static", "motion"] = "static"
 
 
+REMOTION_QUALITY_TEST_BACKEND = "remotion_quality_test"
+# Exact versions locked in render/remotion/package-lock.json (see the C/D boundary
+# in docs/planning/lanes.md); a different install is refused, never upgraded.
+REMOTION_VERSION = "4.0.531"
+REMOTION_PACKAGES = ("remotion", "@remotion/cli")
+REMOTION_COMPOSITION = "ExplainerV1"
+REMOTION_PROJECT_DIR = Path(__file__).resolve().parents[2] / "render" / "remotion"
+_REMOTION_LICENSE_ID = (
+    "Remotion-License(free for individuals and companies up to 3 people; "
+    "check remotion.dev/license before monetizing)"
+)
+_RENDER_LOG_TAIL_CHARS = 2_000
+
+
+@dataclass(frozen=True, slots=True)
+class RemotionQualityTestConfig:
+    """Local Node.js and the in-repository Remotion project that draws the timeline."""
+
+    node_path: str
+    ffprobe_path: str
+    ffprobe_sha256: str
+    project_dir: str = str(REMOTION_PROJECT_DIR)
+    timeout_seconds: float = 900.0
+    caption_template: CaptionTemplate = "word_pop"
+
+
+# Runs one external program without a shell: (arguments, working directory, timeout).
+ProcessRunner = Callable[[list[str], Path, float], "subprocess.CompletedProcess[str]"]
+
+
 @dataclass(frozen=True, slots=True)
 class AssemblyRequest:
     """Verified local inputs and immutable render parameters for one video."""
@@ -104,6 +159,8 @@ class AssemblyRequest:
     width: int
     height: int
     duration_seconds: Decimal
+    # The verified A3 manifest: the animated edit times each image by its stretch.
+    visual_manifest_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,8 +178,13 @@ class AssemblyAdapterResult:
     video_codec: str
     audio_codec: str
     subtitles_burned: bool
-    # How the images were laid over the audio: "static" or "motion".
+    # How the images were laid over the audio: "static", "motion" or "animated".
     edit: str = "static"
+    # Only for the "animated" edit: SHA-256 of the canonical timeline JSON it drew,
+    # who wrote the animation plan and which planned highlights had no room.
+    timeline_sha256: str | None = None
+    animation_text_model: str | None = None
+    dropped_highlights: int = 0
 
 
 AssemblyAdapter = Callable[[AssemblyRequest, Path], AssemblyAdapterResult]
@@ -153,6 +215,7 @@ class _AssemblyContext:
     audio_path: Path
     visual_paths: tuple[Path, ...]
     caption_path: Path
+    manifest_path: Path
     format: Literal["short", "long"]
     width: int
     height: int
@@ -187,9 +250,33 @@ def get_configured_assembly_adapter(
     backend: str,
     *,
     quality_test_config: FFmpegQualityTestConfig | None = None,
+    remotion_config: RemotionQualityTestConfig | None = None,
+    narration: str | None = None,
 ) -> AssemblyAdapter:
-    """Select only the pinned FFmpeg quality-test backend or fail closed."""
+    """Select only a reviewed quality-test backend or fail closed.
+
+    ``remotion_quality_test`` also needs the approved ``narration``, from which
+    the configured text model picks what to animate.
+    """
     normalized = backend.strip().casefold()
+    if normalized == REMOTION_QUALITY_TEST_BACKEND:
+        def configured_remotion(
+            request: AssemblyRequest,
+            destination: Path,
+        ) -> AssemblyAdapterResult:
+            if remotion_config is None or narration is None or not narration.strip():
+                raise AssemblyPermanentAdapterError(
+                    "CONTENT_ASSEMBLY_REMOTION_CONFIG_REQUIRED"
+                )
+            adapter = build_remotion_quality_test_adapter(
+                remotion_config,
+                narration=narration,
+                text_model=animation_text_model(),
+                release_text_model=_release_local_text_model,
+            )
+            return adapter(request, destination)
+
+        return configured_remotion
     if normalized == "ffmpeg_quality_test":
         if quality_test_config is None:
             def missing_config(
@@ -482,14 +569,309 @@ def _ffmpeg_filter_graph(
     return ";".join(filters)
 
 
-def _caption_sentence_starts(caption_text: str) -> tuple[Decimal, ...]:
-    """Return the moments, in seconds, where a new sentence starts being spoken.
+def build_remotion_quality_test_adapter(
+    config: RemotionQualityTestConfig,
+    *,
+    narration: str,
+    text_model: TextModel,
+    release_text_model: Callable[[], None] | None = None,
+    run_process: ProcessRunner | None = None,
+) -> AssemblyAdapter:
+    """Build the animated edit: plan, v2 timeline and a Remotion render on the GPU.
 
-    Word starts come from the karaoke tags of each caption event; an event
-    without them counts as one unit at its own start. Unparsable lines are
-    skipped, and an empty result simply leaves the cuts where they were.
+    The text model picks what to animate from the approved ``narration``; the
+    timings come from the verified A4 words. The render is exactly the call fixed
+    at the C/D boundary, made through the locally installed CLI so nothing is
+    ever downloaded, and the MP4 goes through the same probe as the FFmpeg edit.
+    ``release_text_model`` frees a local text model before the render needs the GPU.
     """
-    units: list[tuple[Decimal, str]] = []
+    runner = run_process or _run_process_tree
+
+    def assemble(request: AssemblyRequest, destination: Path) -> AssemblyAdapterResult:
+        if not 1 <= config.timeout_seconds <= 3600:
+            raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_REMOTION_TIMEOUT_INVALID")
+        if request.visual_manifest_path is None or not request.visual_paths:
+            raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_REMOTION_MANIFEST_REQUIRED")
+        project = _verified_remotion_project(Path(config.project_dir))
+        node = _resolved_program(config.node_path, "CONTENT_ASSEMBLY_NODE_UNAVAILABLE")
+        ffprobe = _verified_tool_path(
+            config.ffprobe_path,
+            expected_sha256=config.ffprobe_sha256,
+            tool="FFPROBE",
+        )
+        node_version = _node_version(runner, node, project.directory)
+
+        try:
+            manifest = json.loads(request.visual_manifest_path.read_text(encoding="utf-8"))
+            images = timeline_images_from_manifest(
+                manifest if isinstance(manifest, dict) else {}
+            )
+            caption_text = request.caption_path.read_text(encoding="utf-8")
+            duration_ms = milliseconds(request.duration_seconds)
+            words = caption_karaoke_words(caption_text, duration_ms=duration_ms)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_TIMELINE_INVALID") from exc
+        if [path.name for path in request.visual_paths] != [
+            image.file_name for image in images
+        ]:
+            raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_TIMELINE_INVALID")
+        audio_sha256 = _sha256_file(request.audio_path)
+        caption_sha256 = _sha256_file(request.caption_path)
+
+        def build(plan: AnimationPlan) -> BuiltTimeline:
+            return build_timeline_v2(
+                video_format=request.format,
+                duration_ms=duration_ms,
+                audio_sha256=audio_sha256,
+                caption_ass_sha256=caption_sha256,
+                images=images,
+                words=words,
+                plan=plan,
+                caption_template=config.caption_template,
+            )
+
+        def fits(plan: AnimationPlan) -> str | None:
+            try:
+                build(plan)
+            except TimelineBuildError as exc:
+                return f"does not fit the spoken words: {exc}"
+            return None
+
+        try:
+            written = write_animation_plan(text_model, narration=narration, check=fits)
+            built = build(written.plan)
+        except (AnimationPlanError, TimelineBuildError) as exc:
+            raise AssemblyPermanentAdapterError(
+                "CONTENT_ASSEMBLY_ANIMATION_PLAN_REJECTED"
+            ) from exc
+        except TextModelPermanentError as exc:
+            raise AssemblyPermanentAdapterError(
+                "CONTENT_ASSEMBLY_ANIMATION_MODEL_MISCONFIGURED"
+            ) from exc
+        except Exception as exc:
+            raise AssemblyRetryableAdapterError(
+                "CONTENT_ASSEMBLY_ANIMATION_MODEL_UNAVAILABLE"
+            ) from exc
+        if release_text_model is not None:
+            release_text_model()
+        timeline_json = timeline_to_json(built.timeline)
+        timeline_sha256 = hashlib.sha256(timeline_json.encode("utf-8")).hexdigest()
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix="remotion-quality-test-",
+            dir=destination.parent,
+        ) as workspace_value:
+            workspace = Path(workspace_value)
+            public = workspace / "public"
+            public.mkdir()
+            shutil.copyfile(request.audio_path, public / "narration.wav")
+            for image, source in zip(images, request.visual_paths, strict=True):
+                copy = public / image.file_name
+                shutil.copyfile(source, copy)
+                if _sha256_file(copy) != image.sha256:
+                    raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_TIMELINE_INVALID")
+            props = workspace / "timeline.json"
+            props.write_text(timeline_json, encoding="utf-8")
+            # The C/D boundary call, with the CLI that ``npx remotion`` would resolve.
+            arguments = [
+                str(node),
+                str(project.cli),
+                "render",
+                str(project.entry_point),
+                REMOTION_COMPOSITION,
+                str(destination),
+                f"--props={props}",
+                f"--public-dir={public}",
+                "--gl=angle",
+            ]
+            try:
+                completed = runner(arguments, project.directory, config.timeout_seconds)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise AssemblyRetryableAdapterError(
+                    "CONTENT_ASSEMBLY_REMOTION_UNAVAILABLE"
+                ) from exc
+            if completed.returncode != 0:
+                log.warning(
+                    "remotion_render_failed",
+                    returncode=completed.returncode,
+                    stderr_tail=(completed.stderr or "")[-_RENDER_LOG_TAIL_CHARS:],
+                )
+                raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_REMOTION_RENDER_FAILED")
+        probe = _probe_rendered_video(
+            ffprobe,
+            destination,
+            timeout_seconds=min(config.timeout_seconds, 60.0),
+        )
+        # Kept next to the video so the drawn timeline can be inspected by its hash.
+        _write_text_atomic(destination.parent / "timeline.json", timeline_json)
+        if built.dropped_highlights:
+            log.info("animation_highlights_dropped", count=len(built.dropped_highlights))
+        return AssemblyAdapterResult(
+            backend=REMOTION_QUALITY_TEST_BACKEND,
+            provider="remotion-local",
+            tool_id=(
+                f"remotion@{REMOTION_VERSION} node@{node_version} "
+                f"lock-sha256:{project.lock_sha256[:16]}"
+            ),
+            license_id=_REMOTION_LICENSE_ID,
+            commercial_use=True,
+            duration_seconds=probe[0],
+            width=probe[1],
+            height=probe[2],
+            video_codec=probe[3],
+            audio_codec=probe[4],
+            subtitles_burned=True,
+            edit="animated",
+            timeline_sha256=timeline_sha256,
+            animation_text_model=_text_model_label(written.result),
+            dropped_highlights=len(built.dropped_highlights),
+        )
+
+    return assemble
+
+
+@dataclass(frozen=True, slots=True)
+class _RemotionProject:
+    directory: Path
+    cli: Path
+    entry_point: Path
+    lock_sha256: str
+
+
+def _verified_remotion_project(directory: Path) -> _RemotionProject:
+    """Return the project only if the lock and the install hold the pinned Remotion.
+
+    The headless browser must already be installed: Remotion would otherwise
+    download it during the first render.
+    """
+    try:
+        root = directory.resolve(strict=True)
+        lock_path = root / "package-lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        packages = lock["packages"]
+        installed = {
+            name: json.loads(
+                (root / "node_modules" / name / "package.json").read_text(encoding="utf-8")
+            )
+            for name in REMOTION_PACKAGES
+        }
+    except (OSError, UnicodeError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_REMOTION_UNAVAILABLE") from exc
+    for name in REMOTION_PACKAGES:
+        locked = packages.get(f"node_modules/{name}") if isinstance(packages, dict) else None
+        if not isinstance(locked, dict) or locked.get("version") != REMOTION_VERSION:
+            raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_REMOTION_VERSION_MISMATCH")
+        package = installed[name]
+        if not isinstance(package, dict) or package.get("version") != REMOTION_VERSION:
+            raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_REMOTION_VERSION_MISMATCH")
+    cli = root / "node_modules" / "@remotion" / "cli" / "remotion-cli.js"
+    entry_point = root / "src" / "index.ts"
+    if not cli.is_file() or not entry_point.is_file():
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_REMOTION_UNAVAILABLE")
+    browsers = root / "node_modules" / ".remotion" / "chrome-headless-shell"
+    if not any(path.is_file() for path in browsers.rglob("chrome-headless-shell*")):
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_REMOTION_BROWSER_MISSING")
+    return _RemotionProject(
+        directory=root,
+        cli=cli,
+        entry_point=entry_point,
+        lock_sha256=_sha256_file(lock_path),
+    )
+
+
+def _resolved_program(configured: str, code: str) -> Path:
+    value = configured.strip()
+    if not value:
+        raise AssemblyPermanentAdapterError(code)
+    discovered = shutil.which(value)
+    try:
+        resolved = Path(discovered if discovered is not None else value).resolve(strict=True)
+    except OSError as exc:
+        raise AssemblyPermanentAdapterError(code) from exc
+    if not resolved.is_file():
+        raise AssemblyPermanentAdapterError(code)
+    return resolved
+
+
+def _node_version(runner: ProcessRunner, node: Path, cwd: Path) -> str:
+    try:
+        completed = runner([str(node), "--version"], cwd, 30.0)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AssemblyRetryableAdapterError("CONTENT_ASSEMBLY_NODE_UNAVAILABLE") from exc
+    version = (completed.stdout or "").strip()
+    if completed.returncode != 0 or not _NODE_VERSION.fullmatch(version):
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_NODE_VERSION_INVALID")
+    return version
+
+
+def _run_process_tree(
+    arguments: list[str],
+    cwd: Path,
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run without a shell; on timeout stop the whole tree (Remotion starts a browser)."""
+    process = subprocess.Popen(
+        arguments,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        shell=False,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+
+
+def _kill_process_tree(process: subprocess.Popen[str]) -> None:
+    if os.name == "nt":
+        taskkill = Path(os.environ.get("SYSTEMROOT", "C:/Windows")) / "System32" / "taskkill.exe"
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(
+                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=30,
+                check=False,
+                shell=False,
+            )
+    process.kill()
+
+
+def _release_local_text_model() -> None:
+    """Unload the local Ollama model, if it answered, before the render uses the GPU."""
+    configured_ollama_model(timeout_seconds=ANIMATION_MODEL_TIMEOUT_SECONDS).release()
+
+
+def _text_model_label(result: TextModelResult) -> str:
+    label = f"{result.provider}:{result.model_id}"
+    if result.fallback_from is not None:
+        label += f" (reserve after {result.fallback_from} limit)"
+    return label[:200]
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _ass_dialogue_events(caption_text: str) -> Iterator[tuple[int, str]]:
+    """Yield the start, in centiseconds, and the text field of each ASS event.
+
+    Lines outside ``[Events]`` and events whose start cannot be read are skipped.
+    """
     in_events = False
     for line in caption_text.splitlines():
         stripped = line.strip()
@@ -505,13 +887,22 @@ def _caption_sentence_starts(caption_text: str) -> tuple[Decimal, ...]:
         if match is None:
             continue
         hours, minutes, seconds, centiseconds = (int(part) for part in match.groups())
-        cursor = (
-            Decimal(hours * 3600 + minutes * 60 + seconds)
-            + Decimal(centiseconds) / Decimal(100)
-        )
-        words = _ASS_KARAOKE_WORD.findall(fields[9])
+        yield (hours * 3600 + minutes * 60 + seconds) * 100 + centiseconds, fields[9]
+
+
+def _caption_sentence_starts(caption_text: str) -> tuple[Decimal, ...]:
+    """Return the moments, in seconds, where a new sentence starts being spoken.
+
+    Word starts come from the karaoke tags of each caption event; an event
+    without them counts as one unit at its own start. Unparsable lines are
+    skipped, and an empty result simply leaves the cuts where they were.
+    """
+    units: list[tuple[Decimal, str]] = []
+    for start, text_field in _ass_dialogue_events(caption_text):
+        cursor = Decimal(start) / Decimal(100)
+        words = _ASS_KARAOKE_WORD.findall(text_field)
         if not words:
-            units.append((cursor, _ASS_OVERRIDE.sub("", fields[9]).strip()))
+            units.append((cursor, _ASS_OVERRIDE.sub("", text_field).strip()))
             continue
         for word_centiseconds, text in words:
             units.append((cursor, text.strip()))
@@ -522,6 +913,32 @@ def _caption_sentence_starts(caption_text: str) -> tuple[Decimal, ...]:
         for (_start, text), (following_start, _following) in zip(units, units[1:], strict=False)
         if _SENTENCE_END.search(text)
     )
+
+
+def caption_karaoke_words(caption_text: str, *, duration_ms: int) -> tuple[TimelineWord, ...]:
+    """Every spoken word of the karaoke events, in order, with when it is heard.
+
+    Each word lasts until the next one starts, as the A4 karaoke tags say. Words
+    are kept from overlapping and inside the audio; events without karaoke tags
+    carry no word timing and are left out.
+    """
+    timed: list[tuple[int, int, str]] = []
+    for start, text_field in _ass_dialogue_events(caption_text):
+        cursor = start * 10
+        for word_centiseconds, text in _ASS_KARAOKE_WORD.findall(text_field):
+            end = cursor + int(word_centiseconds) * 10
+            if text.strip():
+                timed.append((cursor, end, text.strip()))
+            cursor = end
+    timed.sort(key=lambda word: word[0])
+    words: list[TimelineWord] = []
+    previous_end = 0
+    for start, end, text in timed:
+        start = min(max(start, previous_end), duration_ms)
+        end = min(max(end, start), duration_ms)
+        words.append(TimelineWord(text=text, start_ms=start, end_ms=end))
+        previous_end = end
+    return tuple(words)
 
 
 def _motion_cuts(
@@ -723,11 +1140,24 @@ async def execute_approved_assembly_step(
     cpu_power_watts: int,
     timeout_seconds: float,
     finalize_run: bool = True,
+    queue: QueueClass = QueueClass.CPU,
+    gpu_power_watts: int | None = None,
     sleep: Sleeper = asyncio.sleep,
 ) -> AssemblyExecutionResult:
-    """Assemble and register one reviewable local MP4 without publishing it."""
+    """Assemble and register one reviewable local MP4 without publishing it.
+
+    The FFmpeg edit runs on the CPU queue; the animated edit renders on the GPU
+    queue, whose energy estimate uses ``gpu_power_watts``.
+    """
     if cpu_power_watts < 1:
         raise ValueError("cpu_power_watts must be positive")
+    if queue not in {QueueClass.CPU, QueueClass.GPU}:
+        raise ValueError("assembly queue must be cpu or gpu")
+    power_watts = cpu_power_watts
+    if queue is QueueClass.GPU:
+        if gpu_power_watts is None or gpu_power_watts < 1:
+            raise ValueError("gpu_power_watts must be positive on the gpu queue")
+        power_watts = gpu_power_watts
     context = _load_assembly_context(
         run=run,
         approval=approval,
@@ -750,6 +1180,7 @@ async def execute_approved_assembly_step(
             width=context.width,
             height=context.height,
             duration_seconds=context.duration_seconds,
+            visual_manifest_path=context.manifest_path,
         )
         try:
             bundle = await asyncio.to_thread(
@@ -782,6 +1213,16 @@ async def execute_approved_assembly_step(
             "edit": bundle.result.edit,
             "render_seconds": str(bundle.render_seconds),
             "format": context.format,
+            # Only the animated edit adds these, so earlier step outputs keep their shape.
+            **(
+                {
+                    "timeline_sha256": bundle.result.timeline_sha256,
+                    "animation_text_model": bundle.result.animation_text_model,
+                    "dropped_highlights": bundle.result.dropped_highlights,
+                }
+                if bundle.result.timeline_sha256 is not None
+                else {}
+            ),
             # Absent for commercial bundles, so earlier step outputs keep their shape.
             **(
                 {"visual_usage_scope": context.visual_usage_scope}
@@ -795,7 +1236,7 @@ async def execute_approved_assembly_step(
         run=run,
         spec=TaskStepSpec(
             name=ASSEMBLY_STEP_NAME,
-            queue=QueueClass.CPU,
+            queue=queue,
             ordinal=5,
             idempotency_key=step_key,
             input_payload={
@@ -856,7 +1297,7 @@ async def execute_approved_assembly_step(
                     expected_sha256=_required_text(output, "sha256", max_length=64),
                 )
             ).artifact
-            dimensions = _metric_dimensions(output)
+            dimensions = _metric_dimensions(output, queue=queue)
             duration_metric = (
                 await record_metric_point(
                     session,
@@ -904,7 +1345,7 @@ async def execute_approved_assembly_step(
                 )
             ).metric_point
             energy = (render_seconds / Decimal("3600")) * (
-                Decimal(cpu_power_watts) / Decimal("1000")
+                Decimal(power_watts) / Decimal("1000")
             )
             energy_metric = (
                 await record_metric_point(
@@ -1092,6 +1533,7 @@ def _load_assembly_context(
         audio_path=audio_path,
         visual_paths=visual_paths,
         caption_path=caption_path,
+        manifest_path=manifest_path,
         format=video_format,
         width=width,
         height=height,
@@ -1241,7 +1683,17 @@ def _validate_adapter_result(
         raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_COMMERCIAL_RIGHTS_REQUIRED")
     if result.subtitles_burned is not True:
         raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SUBTITLES_REQUIRED")
-    if result.edit not in {"static", "motion"}:
+    if result.edit not in {"static", "motion", "animated"}:
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_INVALID_PROVENANCE")
+    # Only the animated edit draws a timeline, and then it must name its hash.
+    timeline_hash = result.timeline_sha256
+    if (result.edit == "animated") != (timeline_hash is not None) or (
+        timeline_hash is not None
+        and (
+            len(timeline_hash) != 64
+            or any(character not in "0123456789abcdef" for character in timeline_hash)
+        )
+    ):
         raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_INVALID_PROVENANCE")
     if result.video_codec.strip().casefold() != "h264":
         raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_H264_REQUIRED")
@@ -1519,9 +1971,9 @@ def _output_path(storage_root: Path, output: dict[str, object]) -> Path:
     return path
 
 
-def _metric_dimensions(output: dict[str, object]) -> dict[str, object]:
+def _metric_dimensions(output: dict[str, object], *, queue: QueueClass) -> dict[str, object]:
     return {
-        "queue": QueueClass.CPU.value,
+        "queue": queue.value,
         "backend": _required_text(output, "backend", max_length=200),
         "provider": _required_text(output, "provider", max_length=200),
         "tool_id": _required_text(output, "tool_id", max_length=200),

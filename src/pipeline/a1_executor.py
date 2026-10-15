@@ -22,8 +22,10 @@ from src.core.config import settings
 from src.intelligence.similarity import execute_similarity_gate_step
 from src.operations.retention_policy import resolve_retention_days
 from src.pipeline.assembly import (
+    REMOTION_QUALITY_TEST_BACKEND,
     AssemblyAdapter,
     FFmpegQualityTestConfig,
+    RemotionQualityTestConfig,
     execute_approved_assembly_step,
     get_configured_assembly_adapter,
 )
@@ -845,6 +847,8 @@ async def execute_content_script_run(
                     or get_configured_assembly_adapter(
                         _assembly_backend(),
                         quality_test_config=_ffmpeg_quality_test_config(),
+                        remotion_config=_remotion_quality_test_config(),
+                        narration=bundle.narration,
                     )
                 ),
                 cpu_power_watts=int(getattr(settings, "cpu_power_watts", 150)),
@@ -853,6 +857,8 @@ async def execute_content_script_run(
                     float(settings.celery_soft_time_limit_seconds - 15),
                 ),
                 finalize_run=False,
+                queue=_assembly_queue(),
+                gpu_power_watts=int(getattr(settings, "gpu_power_watts", 400)),
             )
             assembly_replayed = assembly_result.replayed
             if (
@@ -1481,6 +1487,13 @@ def _assembly_enabled() -> bool:
     return _assembly_backend() != "disabled"
 
 
+def _assembly_queue() -> QueueClass:
+    # The animated edit renders in a headless browser with GPU drawing (--gl=angle).
+    if _assembly_backend() == REMOTION_QUALITY_TEST_BACKEND:
+        return QueueClass.GPU
+    return QueueClass.CPU
+
+
 def _final_review_enabled() -> bool:
     return getattr(settings, "content_final_review_enabled", False) is True
 
@@ -1516,6 +1529,25 @@ def _ffmpeg_quality_test_config() -> FFmpegQualityTestConfig | None:
             float(settings.celery_soft_time_limit_seconds - 15),
         ),
         edit="motion" if getattr(settings, "content_assembly_edit", "static") == "motion" else "static",
+    )
+
+
+def _remotion_quality_test_config() -> RemotionQualityTestConfig | None:
+    if _assembly_backend() != REMOTION_QUALITY_TEST_BACKEND:
+        return None
+    ffprobe_hash = getattr(settings, "content_ffprobe_expected_sha256", None)
+    if not isinstance(ffprobe_hash, str):
+        raise ContentScriptRunNotRunnableError(
+            "Remotion quality test requires a pinned ffprobe hash"
+        )
+    return RemotionQualityTestConfig(
+        node_path=str(getattr(settings, "content_remotion_node_path", "node")),
+        ffprobe_path=str(getattr(settings, "content_ffprobe_path", "ffprobe")),
+        ffprobe_sha256=ffprobe_hash,
+        timeout_seconds=max(
+            1.0,
+            float(settings.celery_soft_time_limit_seconds - 15),
+        ),
     )
 
 

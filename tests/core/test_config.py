@@ -264,6 +264,24 @@ def test_ffmpeg_quality_test_requires_pinned_binary_hashes() -> None:
         )
 
 
+
+def test_remotion_quality_test_requires_a_pinned_ffprobe() -> None:
+    settings = Settings(
+        _env_file=None,
+        content_assembly_backend="remotion_quality_test",
+        content_ffprobe_expected_sha256="a" * 64,
+    )
+    assert settings.content_assembly_backend == "remotion_quality_test"
+    assert settings.content_remotion_node_path == "node"
+    assert Settings(_env_file=None).content_assembly_backend == "disabled"
+
+    with pytest.raises(ValidationError, match="content_ffprobe_expected_sha256"):
+        Settings(
+            _env_file=None,
+            content_assembly_backend="remotion_quality_test",
+            content_ffprobe_expected_sha256="not-a-digest",
+        )
+
 def test_caption_alignment_diagnostic_configuration_is_bounded() -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, content_caption_alignment_min_speech_coverage=0)

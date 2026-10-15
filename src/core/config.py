@@ -159,7 +159,11 @@ class Settings(BaseSettings):
         default=0.50, gt=0, le=30
     )
     # A5 aceita adapters injetados em testes; o build FFmpeg local ainda não foi auditado.
-    content_assembly_backend: Literal["disabled", "ffmpeg_quality_test"] = "disabled"
+    # "remotion_quality_test" desenha o vídeo animado (timeline v2) no Remotion em
+    # render/remotion/, na fila gpu; usa o modelo de texto configurado e o ffprobe fixado.
+    content_assembly_backend: Literal[
+        "disabled", "ffmpeg_quality_test", "remotion_quality_test"
+    ] = "disabled"
     # "motion" adiciona zoom lento, crossfade e cortes no início das frases; "static"
     # mantém imagens paradas em partes iguais.
     content_assembly_edit: Literal["static", "motion"] = "static"
@@ -167,6 +171,8 @@ class Settings(BaseSettings):
     content_ffprobe_path: str = Field(default="ffprobe", min_length=1, max_length=1000)
     content_ffmpeg_expected_sha256: str | None = None
     content_ffprobe_expected_sha256: str | None = None
+    # Node.js que roda o CLI do Remotion instalado em render/remotion/node_modules.
+    content_remotion_node_path: str = Field(default="node", min_length=1, max_length=1000)
     # A6 usa comparação lexical determinística local; o escopo inicial é a automação.
     content_similarity_threshold: float = Field(default=0.85, gt=0, le=1)
     content_similarity_window: int = Field(default=20, ge=1, le=100)
@@ -337,6 +343,18 @@ class Settings(BaseSettings):
                 character not in "0123456789abcdef" for character in normalized
             ):
                 raise ValueError(f"{field} must pin one SHA-256 digest")
+        return self
+
+    @model_validator(mode="after")
+    def _remotion_quality_test_must_pin_ffprobe(self) -> Settings:
+        if self.content_assembly_backend != "remotion_quality_test":
+            return self
+        value = self.content_ffprobe_expected_sha256
+        normalized = value.strip().casefold() if isinstance(value, str) else ""
+        if len(normalized) != 64 or any(
+            character not in "0123456789abcdef" for character in normalized
+        ):
+            raise ValueError("content_ffprobe_expected_sha256 must pin one SHA-256 digest")
         return self
 
     @model_validator(mode="after")
