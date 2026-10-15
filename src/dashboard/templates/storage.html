@@ -52,10 +52,10 @@
 
   <section class="card" aria-labelledby="h-dry">
     <div class="card-header row">
-      <div><h2 class="card-title" id="h-dry" style="font-size:1rem">Última varredura</h2><p class="card-description">Reconciliação entre o banco e os arquivos do storage.</p></div>
+      <div><h2 class="card-title" id="h-dry">Última varredura</h2><p class="card-description">Reconciliação entre o banco e os arquivos do storage.</p></div>
       {{ ui.badge("success", "circle-check", "apagados " ~ inventory.deleted_file_count) }}
     </div>
-    <div class="card-content" style="display:grid;gap:1.25rem">
+    <div class="card-content is-stack">
       <dl class="facts">
         <div class="fact"><dt>Gerada em</dt><dd><time datetime="{{ inventory.generated_at.isoformat() }}Z">{{ inventory.generated_at|utc_label }}</time><small>{{ inventory.generated_at|age_label }}</small></dd></div>
         <div class="fact"><dt>Arquivos varridos</dt><dd>{{ inventory.scanned_file_count }}<small><abbr title="{{ inventory.scanned_bytes }} bytes">{{ inventory.scanned_bytes|byte_size }}</abbr></small></dd></div>
@@ -102,8 +102,8 @@
   </section>
 
   <section class="card" aria-labelledby="h-auto">
-    <div class="card-header"><h2 class="card-title" id="h-auto" style="font-size:1rem">Por automação</h2><p class="card-description">Somente artefatos registrados no banco.</p></div>
-    <div class="card-content flush" style="padding-top:.75rem">
+    <div class="card-header"><h2 class="card-title" id="h-auto">Por automação</h2><p class="card-description">Somente artefatos registrados no banco.</p></div>
+    <div class="card-content flush flush-top">
       {% if inventory.automations %}
       <div class="table-wrap">
         <table class="table">
@@ -132,8 +132,8 @@
   {% endif %}
 
   <section class="card" aria-labelledby="h-pol">
-    <div class="card-header"><h2 class="card-title" id="h-pol" style="font-size:1rem">Política declarativa por tipo de artifact</h2><p class="card-description">Define o prazo gravado em cada novo registro.</p></div>
-    <div class="card-content flush" style="padding-top:.75rem">
+    <div class="card-header"><h2 class="card-title" id="h-pol">Política declarativa por tipo de artifact</h2><p class="card-description">Define o prazo gravado em cada novo registro.</p></div>
+    <div class="card-content flush flush-top">
       <div class="table-wrap">
         <table class="table">
           <caption class="sr-only">Política de retenção</caption>
@@ -144,13 +144,13 @@
               <td><code>{{ policy.artifact_type }}</code></td>
               <td class="nowrap">{{ ui.badge("secondary", "clock", "indefinida" if policy.indefinite else policy.retention_days ~ " dias") }}</td>
               <td><code>{{ policy.producer }}</code></td>
-              <td style="min-width:20rem">{{ policy.rationale }}</td>
+              <td class="min-w-copy">{{ policy.rationale }}</td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
-      <div class="alert alert-info" style="margin:1rem 1.25rem 1rem">
+      <div class="alert alert-info alert-block">
         <span class="alert-icon">{{ ui.icon("info") }}</span>
         <div class="alert-body"><p class="alert-description">A política vale para <strong>registros novos</strong>: cada artifact grava o próprio prazo no momento do registro, então alterar a tabela nunca antecipa o vencimento de algo já registrado. Um tipo não declarado resolve para <strong>retenção indefinida</strong>, nunca expira e por isso nunca entra em um plano de expurgo por omissão.</p></div>
       </div>

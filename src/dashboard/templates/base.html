@@ -5,14 +5,17 @@
     {% set active_page = "home" %}
   Valores: home | runs | approvals | alerts | schedules | automations | reports | data | health | storage
   Se o contexto tiver `nav` (NavSummary), a sidebar mostra contadores e a lista de automações.
+  Tema único escuro ("Deep Black · Oceanic"); todos os tokens ficam em static/styles.css.
 #}
 <!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#000000">
   <title>{% block title %}Automation Foundry{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23080b0f'/%3E%3Cpath d='M7 14h18l-2.4 6.2H9.4z' fill='none' stroke='%2338a9e8' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/styles.css?v={{ static_version('styles.css') }}">
   <script src="/static/theme.js?v={{ static_version('theme.js') }}" defer></script>
   <script src="/static/htmx.min.js" defer></script>
@@ -28,7 +31,7 @@
     <aside class="sidebar" aria-label="Navegação principal">
       <div class="sidebar-header">
         <a class="workspace" href="/">
-          <span class="workspace-mark">{{ ui.icon("forge") }}</span>
+          <span class="workspace-mark" aria-hidden="true">{{ ui.icon("forge") }}</span>
           <span class="workspace-text"><strong>Foundry</strong><span>Automation Foundry · local</span></span>
         </a>
       </div>
@@ -38,8 +41,8 @@
           <ul class="nav-list">
             <li><a class="nav-item" href="/"{% if active_page == "home" %} aria-current="page"{% endif %}>{{ ui.icon("layout-dashboard") }}<span class="nav-text">Visão geral</span></a></li>
             <li><a class="nav-item" href="/runs"{% if active_page == "runs" %} aria-current="page"{% endif %}>{{ ui.icon("layers") }}<span class="nav-text">Runs</span></a></li>
-            <li><a class="nav-item" href="/approvals"{% if active_page == "approvals" %} aria-current="page"{% endif %}>{{ ui.icon("shield-check") }}<span class="nav-text">Approvals</span>{% if nav is defined and nav and nav.pending_approvals %}<span class="badge badge-pending nav-count">{{ nav.pending_approvals }}</span>{% endif %}</a></li>
-            <li><a class="nav-item" href="/alerts"{% if active_page == "alerts" %} aria-current="page"{% endif %}>{{ ui.icon("bell") }}<span class="nav-text">Alertas</span>{% if nav is defined and nav and nav.active_alerts %}<span class="badge badge-warning nav-count">{{ nav.active_alerts }}</span>{% endif %}</a></li>
+            <li><a class="nav-item" href="/approvals"{% if active_page == "approvals" %} aria-current="page"{% endif %}>{{ ui.icon("shield-check") }}<span class="nav-text">Approvals</span>{% if nav is defined and nav and nav.pending_approvals %}<span class="badge badge-pending nav-count">{{ nav.pending_approvals }}<span class="sr-only"> {{ "pendente" if nav.pending_approvals == 1 else "pendentes" }}</span></span>{% endif %}</a></li>
+            <li><a class="nav-item" href="/alerts"{% if active_page == "alerts" %} aria-current="page"{% endif %}>{{ ui.icon("bell") }}<span class="nav-text">Alertas</span>{% if nav is defined and nav and nav.active_alerts %}<span class="badge badge-warning nav-count">{{ nav.active_alerts }}<span class="sr-only"> {{ "ativo" if nav.active_alerts == 1 else "ativos" }}</span></span>{% endif %}</a></li>
             <li><a class="nav-item" href="/schedules"{% if active_page == "schedules" %} aria-current="page"{% endif %}>{{ ui.icon("calendar-clock") }}<span class="nav-text">Schedules</span></a></li>
           </ul>
         </div>
@@ -69,8 +72,8 @@
         </div>
       </nav>
       <div class="sidebar-footer">
-        <div class="row"><span class="dot dot-success"></span><span class="text"><strong>Runtime local ativo</strong></span></div>
-        <div class="row">{{ ui.icon("database") }}<span class="text">controle local · loopback 127.0.0.1</span></div>
+        <div class="row">{{ ui.icon("server") }}<span class="text"><strong>controle local</strong></span></div>
+        <div class="row"><span class="dot dot-info" aria-hidden="true"></span><span class="text">loopback · 127.0.0.1</span></div>
       </div>
     </aside>
 
@@ -87,7 +90,6 @@
         <span class="topbar-spacer"></span>
         <div class="topbar-actions">
           {% block topbar_status %}{% if nav is defined and nav %}{% set attention = nav.pending_approvals + nav.active_alerts %}<span class="hide-sm">{% if attention %}{{ ui.badge("warning", "triangle-alert", attention ~ (" item pede atenção" if attention == 1 else " itens pedem atenção")) }}{% else %}{{ ui.badge("success", "circle-check", "Tudo em ordem") }}{% endif %}</span>{% endif %}{% endblock %}
-          <button class="btn btn-ghost btn-icon theme-toggle" id="theme-toggle" type="button" aria-label="Alternar tema claro e escuro" hidden>{{ ui.icon("moon", "moon") }}{{ ui.icon("sun", "sun") }}</button>
         </div>
       </header>
 

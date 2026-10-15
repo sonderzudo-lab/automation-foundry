@@ -11,6 +11,7 @@
   <div class="alert-body">
     <p class="alert-title">Approval pendente · <code>{{ approval.action }}</code></p>
     <p class="alert-description">Run <a href="/runs/{{ approval.run_id }}">#{{ approval.run_id }}</a> · <code>{{ approval.automation_slug }}</code> · solicitada <time datetime="{{ approval.requested_at.isoformat() }}Z">{{ approval.requested_at|utc_label }}</time> · <span class="meta-label">Idade</span> <strong>há {{ approval.pending_for_label }}</strong>.</p>
+    <p class="alert-consequence">{{ ui.icon("lock") }}Decisão imutável; a run só continua depois dela.</p>
   </div>
   {% if approval.action in review_actions %}
   <a class="btn btn-sm alert-action" href="/approvals/{{ approval.id }}/review">{{ ui.icon("eye") }}Revisar</a>
@@ -70,11 +71,11 @@
       </div>
     </details>
   </div>
-  <div class="card-content" style="display:grid;gap:1rem;align-content:start">
+  <div class="card-content stack-y">
     <div class="chips">
       {% if automation.enabled %}{{ ui.badge("success", "circle-check", "Ativa") }}{% else %}{{ ui.badge("disabled", "power", "Desabilitada") }}{% endif %}
       {% if automation.kill_switch_active %}{{ ui.badge("danger", "octagon-x", "Kill switch ativo") }}{% else %}{{ ui.badge("neutral", "octagon-x", "Kill switch livre") }}{% endif %}
-      {% if executor %}<span class="badge badge-secondary">Fila <code class="mono" style="background:none;padding:0">{{ executor.queue.value }}</code></span>{% endif %}
+      {% if executor %}<span class="badge badge-secondary">Fila <code class="mono">{{ executor.queue.value }}</code></span>{% endif %}
     </div>
     <div class="stat-row">
       <div class="stat"><span>Taxa de sucesso</span><strong>{% if summary and summary.success_rate_percent is not none %}{{ summary.success_rate_percent }}%{% else %}—{% endif %}</strong>{% if summary %}<span>{{ summary.succeeded_count }} de {{ summary.sample_size }} (máx. {{ summary.sample_limit }})</span>{% else %}<span>sem amostra</span>{% endif %}</div>
@@ -112,7 +113,7 @@
 <ul class="list">
   {% for schedule in schedules %}
   <li>
-    <span class="alert-icon" style="flex:none">{{ ui.icon("calendar-clock") }}</span>
+    <span class="alert-icon">{{ ui.icon("calendar-clock") }}</span>
     <div class="grow">
       <strong>{{ schedule.name }}</strong>
       <span class="cell-sub"><code>{{ schedule.cron_expression }}</code> · {{ schedule.timezone }} · <code>{{ schedule.automation_slug }}</code></span>
@@ -122,7 +123,7 @@
       {% endif %}
       {% if schedule.status_note %}<span class="cell-sub">{{ schedule.status_note }}</span>{% endif %}
     </div>
-    <div class="chips" style="flex-direction:column;align-items:flex-end">
+    <div class="chips chips-stack">
       {% if schedule.effective_status == "enabled" %}{{ ui.badge("success", "circle-check", "Habilitado") }}
       {% elif schedule.effective_status == "disabled" %}{{ ui.badge("neutral", "power", "Desabilitado") }}
       {% else %}{{ ui.badge("warning", "triangle-alert", schedule.effective_status) }}{% endif %}
@@ -135,7 +136,7 @@
 
 {# Cabeçalho de página: sobrelinha (seção), título e descrição; ações no slot `actions`. #}
 {% macro page_head(kicker, title, description) -%}
-<header class="page-header">
+<header class="page-header is-lede">
   <div>
     <span class="kicker">{{ kicker }}</span>
     <h1>{{ title }}</h1>

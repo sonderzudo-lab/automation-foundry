@@ -13,12 +13,12 @@
 {% block review_body %}
 {% if review.visual_usage_scope %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Teste de qualidade, não monetizável</h2></div>
+  <div class="card-header"><h2 class="card-title">Teste de qualidade, não monetizável</h2></div>
   <div class="card-content"><p class="text-sm">As imagens deste vídeo não têm uso comercial declarado. O export local sai com a mesma marcação.</p></div>
 </section>
 {% endif %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Reprodução local</h2><p class="card-description">Assista ao vídeo inteiro. O vídeo é servido apenas pelo dashboard local, sem cache e sem rede externa.</p></div>
+  <div class="card-header"><h2 class="card-title">Reprodução local</h2><p class="card-description">Assista ao vídeo inteiro. O vídeo é servido apenas pelo dashboard local, sem cache e sem rede externa.</p></div>
   <div class="card-content">
     <div class="player-split">
       <video controls preload="metadata" aria-label="Vídeo final" src="/approvals/{{ review.approval_id }}/final-video">
@@ -38,7 +38,7 @@
 
 {% if review.alignment_report_artifact_id is not none %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Sincronismo A4</h2><p class="card-description">Passou pelo gate automático antes desta approval. Mede o alinhamento observável do WAV e do ASS; não substitui a sua revisão do vídeo.</p></div>
+  <div class="card-header"><h2 class="card-title">Sincronismo A4</h2><p class="card-description">Passou pelo gate automático antes desta approval. Mede o alinhamento observável do WAV e do ASS; não substitui a sua revisão do vídeo.</p></div>
   <div class="card-content form-stack">
     {% set coverage = review.alignment_speech_coverage_ratio|float * 100 %}
     {% set outside = review.alignment_caption_outside_speech_ratio|float * 100 %}
@@ -57,7 +57,7 @@
 {% endif %}
 
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Originalidade A6</h2><p class="card-description">Comparação lexical e local; não detecta paráfrase semântica.</p></div>
+  <div class="card-header"><h2 class="card-title">Originalidade A6</h2><p class="card-description">Comparação lexical e local; não detecta paráfrase semântica.</p></div>
   <div class="card-content form-stack">
     {% set max_pct = review.max_similarity|float * 100 %}
     {% set mean_pct = review.mean_similarity|float * 100 %}
@@ -77,8 +77,8 @@
 </section>
 
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Comparações históricas</h2><p class="card-description">A comparação é lexical e local; não substitui o seu julgamento editorial sobre o vídeo acima.</p></div>
-  <div class="card-content{{ ' flush' if review.comparisons }}"{% if review.comparisons %} style="padding-top:.75rem"{% endif %}>
+  <div class="card-header"><h2 class="card-title">Comparações históricas</h2><p class="card-description">A comparação é lexical e local; não substitui o seu julgamento editorial sobre o vídeo acima.</p></div>
+  <div class="card-content{{ ' flush flush-top' if review.comparisons }}">
     {% if review.comparisons %}
     <div class="table-wrap">
       <table class="table">

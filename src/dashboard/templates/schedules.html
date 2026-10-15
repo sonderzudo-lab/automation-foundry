@@ -31,7 +31,7 @@
   </section>
 
   <section class="card" aria-labelledby="h-schedules">
-    <div class="card-header"><h2 class="card-title" id="h-schedules" style="font-size:1rem">Agendamentos</h2><p class="card-description">Ordenados pela próxima execução.</p></div>
+    <div class="card-header"><h2 class="card-title" id="h-schedules">Agendamentos</h2><p class="card-description">Ordenados pela próxima execução.</p></div>
     <div class="card-content flush">
       {% if snapshot.schedules %}
       {{ sec.schedule_list(snapshot.schedules) }}

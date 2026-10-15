@@ -43,7 +43,7 @@
   <section class="card" aria-labelledby="h-lista-runs">
     <div class="card-header row">
       <div>
-        <h2 class="card-title" id="h-lista-runs" style="font-size:1rem">{{ listing.total }} {{ "run" if listing.total == 1 else "runs" }}</h2>
+        <h2 class="card-title" id="h-lista-runs">{{ listing.total }} {{ "run" if listing.total == 1 else "runs" }}</h2>
         <p class="card-description">Página {{ listing.page }} de {{ listing.page_count }}{% if listing.automation_slug %} · automação <code>{{ listing.automation_slug }}</code>{% endif %}{% if listing.status %} · {{ status_labels[listing.status]|lower }}{% endif %}</p>
       </div>
       {% if listing.status or listing.automation_slug %}<a class="btn btn-ghost btn-sm" href="/runs">Limpar filtros</a>{% endif %}

@@ -9,7 +9,7 @@
 {% if approval_status == "pending" %}
 <aside class="decision-panel" aria-label="Decisão humana">
   <section class="card">
-    <div class="card-header"><h2 class="card-title" style="font-size:1rem">Decisão humana</h2><p class="card-description">Decida somente depois de revisar integralmente as evidências ao lado. A decisão é imutável.</p></div>
+    <div class="card-header"><h2 class="card-title">Decisão humana</h2><p class="card-description">Decida somente depois de revisar integralmente as evidências ao lado. A decisão é imutável.</p></div>
     <div class="card-content">
       <p class="immutable">{{ ui.icon("lock") }}<span><strong>A decisão é imutável.</strong> {{ effect|default("Nada é publicado, enviado ou gasto.") }}</span></p>
       <div class="decision-choice">

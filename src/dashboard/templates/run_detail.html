@@ -64,15 +64,15 @@
       {# ---------- Approvals ---------- #}
       <div class="tab-panel" id="panel-approvals" role="region" aria-label="Approvals">
         <div class="card">
-          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Approvals vinculadas</h3><p class="card-description">Decisões são irreversíveis e ficam registradas com actor e motivo.</p></div>
-          <div class="card-content flush" style="padding-top:.75rem">
+          <div class="card-header"><h3 class="card-title">Approvals vinculadas</h3><p class="card-description">Decisões são irreversíveis e ficam registradas com actor e motivo.</p></div>
+          <div class="card-content flush flush-top">
             {% if run.approvals %}
             {% for approval in pending_approvals if deciding %}
-            <div class="alert alert-info" style="margin:0 1.25rem 1rem;display:grid;gap:.75rem;grid-template-columns:minmax(0,1fr)">
+            <div class="alert alert-info alert-inset is-stack">
               <div class="flex items-center gap-3"><span class="alert-icon">{{ ui.icon("shield-check") }}</span><div class="alert-body"><p class="alert-title">Approval #{{ approval.id }} · <code>{{ approval.action }}</code></p>
                 <p class="alert-description">{% if approval.review_payload %}Contexto seguro para revisão:{% else %}Sem contexto seguro de revisão; somente a rejeição está disponível.{% endif %}</p></div></div>
               {% if approval.review_payload %}
-              <dl class="kv" style="background:var(--card);border-radius:var(--radius-md);padding:0 .75rem">
+              <dl class="kv kv-inset">
                 {% for key, value in approval.review_payload.items() %}
                 <dt>{{ key }}</dt><dd>{% if key.endswith("sha256") and value|length == 64 %}{{ ui.hash_chip(value, key) }}{% else %}{{ value }}{% endif %}</dd>
                 {% endfor %}
@@ -82,7 +82,7 @@
                 {% if approval.action in review_actions %}
                 <a class="btn btn-outline" href="/approvals/{{ approval.id }}/review">{{ ui.icon("eye") }}{{ review_links[approval.action] }}</a>
                 {% if approval.action == "select_content_thumbnail_a8" %}
-                <p class="muted text-sm" style="margin-top:.5rem">A aprovação A8 exige uma escolha na página dedicada; nenhum ID enviado fora desse conjunto será aceito.</p>
+                <p class="muted text-sm mt-2">A aprovação A8 exige uma escolha na página dedicada; nenhum ID enviado fora desse conjunto será aceito.</p>
                 {% endif %}
                 {% else %}
                 <a class="btn btn-outline" href="#decidir-{{ approval.id }}">{{ ui.icon("shield-check") }}Decidir approval #{{ approval.id }}</a>
@@ -120,9 +120,9 @@
       {% set outcome = run.content_outcome %}
       <div class="tab-panel" id="panel-resultado" role="region" aria-label="Resultado do conteúdo">
         <div class="card">
-          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Resultado local do conteúdo</h3><p class="card-description">Indicadores editoriais allowlisted desta run.</p></div>
-          <div class="card-content flush" style="padding-top:.75rem">
-            <dl class="facts" style="padding:0 1.25rem 1rem">
+          <div class="card-header"><h3 class="card-title">Resultado local do conteúdo</h3><p class="card-description">Indicadores editoriais allowlisted desta run.</p></div>
+          <div class="card-content flush flush-top">
+            <dl class="facts pad-x">
               <div class="fact"><dt>Publicação</dt><dd>{% if outcome.published is sameas false %}{{ ui.badge("neutral", "lock", "não publicado") }}{% elif outcome.published is sameas true %}{{ ui.badge("warning", "triangle-alert", "publicado") }}{% else %}não registrada{% endif %}</dd></div>
               <div class="fact"><dt>Energia estimada</dt><dd>{{ outcome.estimated_energy_kwh ~ " kWh" if outcome.estimated_energy_kwh is not none else "—" }}</dd></div>
               <div class="fact"><dt>Evidência observada até</dt><dd>{% if outcome.observed_through %}<time datetime="{{ outcome.observed_through.isoformat() }}Z">{{ outcome.observed_through.isoformat() }}Z</time>{% else %}—{% endif %}</dd></div>
@@ -156,9 +156,9 @@
               </table>
             </div>
             {% else %}
-            <p class="muted text-sm" style="padding:1rem 1.25rem 0">Nenhuma observação financeira foi atribuída a esta run.</p>
+            <p class="muted text-sm pad-t">Nenhuma observação financeira foi atribuída a esta run.</p>
             {% endif %}
-            <p class="note" style="padding:1rem 1.25rem">Consolidação somente leitura de métricas e ledger locais atribuídos à run. Nenhuma plataforma externa foi consultada; não há conversão cambial, pagamento ou promessa de resultado.</p>
+            <p class="note pad">Consolidação somente leitura de métricas e ledger locais atribuídos à run. Nenhuma plataforma externa foi consultada; não há conversão cambial, pagamento ou promessa de resultado.</p>
           </div>
         </div>
       </div>
@@ -168,7 +168,7 @@
       {% if caption_alignment or caption_alignment_unavailable %}
       <div class="tab-panel" id="panel-alinhamento" role="region" aria-label="Alinhamento da legenda">
         <div class="card">
-          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Alinhamento da legenda</h3><p class="card-description">Sincronismo entre áudio e legenda.</p></div>
+          <div class="card-header"><h3 class="card-title">Alinhamento da legenda</h3><p class="card-description">Sincronismo entre áudio e legenda.</p></div>
           <div class="card-content">
             {% if caption_alignment_unavailable %}
             {{ ui.empty("triangle-alert", "Relatório indisponível", "O relatório de alinhamento registrado não pôde ser reconferido. Execute o diagnóstico local novamente pela CLI.") }}
@@ -186,7 +186,7 @@
               <div class="fact"><dt>Eventos além do áudio</dt><dd>{{ caption_alignment.events_beyond_audio }}</dd></div>
             </dl>
             {% if caption_alignment.reasons %}
-            <div class="table-wrap" style="margin-top:1rem">
+            <div class="table-wrap mt-4">
               <table class="table">
                 <caption class="sr-only">Motivos registrados</caption>
                 <thead><tr><th scope="col">Motivo registrado</th></tr></thead>
@@ -194,7 +194,7 @@
               </table>
             </div>
             {% endif %}
-            <p class="note" style="margin-top:1rem">Diagnóstico local somente leitura sobre o WAV e o ASS desta run, reconferidos por SHA-256 antes desta exibição (relatório #{{ caption_alignment.report_artifact_id }}, parâmetros <code>{{ caption_alignment.parameters_digest }}</code>). Ele mede sincronismo observável, não substitui revisão humana e não publica nada.</p>
+            <p class="note mt-4">Diagnóstico local somente leitura sobre o WAV e o ASS desta run, reconferidos por SHA-256 antes desta exibição (relatório #{{ caption_alignment.report_artifact_id }}, parâmetros <code>{{ caption_alignment.parameters_digest }}</code>). Ele mede sincronismo observável, não substitui revisão humana e não publica nada.</p>
             {% endif %}
           </div>
         </div>
@@ -205,9 +205,9 @@
       {% if run.has_local_export %}
       <div class="tab-panel" id="panel-export" role="region" aria-label="Export local">
         <div class="card">
-          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Export local</h3><p class="card-description">Pacote revisável do vídeo final.</p></div>
+          <div class="card-header"><h3 class="card-title">Export local</h3><p class="card-description">Pacote revisável do vídeo final.</p></div>
           <div class="card-content">
-            <p class="muted text-sm" style="margin-bottom:1rem">O pacote local reconfere as approvals e os SHA-256 do vídeo e da thumbnail antes de disponibilizar qualquer download.</p>
+            <p class="muted text-sm mb-4">O pacote local reconfere as approvals e os SHA-256 do vídeo e da thumbnail antes de disponibilizar qualquer download.</p>
             <a class="btn" href="/runs/{{ run.id }}/local-export">{{ ui.icon("package") }}Abrir export local revisável</a>
           </div>
         </div>
@@ -217,8 +217,8 @@
       {# ---------- Artefatos ---------- #}
       <div class="tab-panel" id="panel-artefatos" role="region" aria-label="Artefatos">
         <div class="card">
-          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Artefatos vinculados</h3><p class="card-description">Metadados apenas; caminhos, hashes e origens não aparecem aqui.</p></div>
-          <div class="card-content flush" style="padding-top:.75rem">
+          <div class="card-header"><h3 class="card-title">Artefatos vinculados</h3><p class="card-description">Metadados apenas; caminhos, hashes e origens não aparecem aqui.</p></div>
+          <div class="card-content flush flush-top">
             {% if run.artifacts %}
             <div class="table-wrap">
               <table class="table">
@@ -241,8 +241,8 @@
       {# ---------- Métricas ---------- #}
       <div class="tab-panel" id="panel-metricas" role="region" aria-label="Métricas">
         <div class="card">
-          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Métricas vinculadas</h3></div>
-          <div class="card-content flush" style="padding-top:.75rem">
+          <div class="card-header"><h3 class="card-title">Métricas vinculadas</h3></div>
+          <div class="card-content flush flush-top">
             {% if run.metrics %}
             <div class="table-wrap">
               <table class="table">
@@ -265,8 +265,8 @@
       {# ---------- Ledger ---------- #}
       <div class="tab-panel" id="panel-ledger" role="region" aria-label="Ledger">
         <div class="card">
-          <div class="card-header"><h3 class="card-title" style="font-size:1rem">Ledger vinculado</h3><p class="card-description">Observações financeiras não representam pagamentos, cobranças ou promessas.</p></div>
-          <div class="card-content flush" style="padding-top:.75rem">
+          <div class="card-header"><h3 class="card-title">Ledger vinculado</h3><p class="card-description">Observações financeiras não representam pagamentos, cobranças ou promessas.</p></div>
+          <div class="card-content flush flush-top">
             {% if run.ledger_entries %}
             <div class="table-wrap">
               <table class="table">

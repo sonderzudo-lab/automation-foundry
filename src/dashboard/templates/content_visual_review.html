@@ -9,31 +9,31 @@
 {% block review_body %}
 {% if review.usage_scope %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Teste de qualidade, não monetizável</h2></div>
+  <div class="card-header"><h2 class="card-title">Teste de qualidade, não monetizável</h2></div>
   <div class="card-content"><p class="text-sm">Estas imagens foram geradas localmente e não têm uso comercial declarado. O vídeo montado com elas carrega a mesma marcação até o export local.</p></div>
 </section>
 {% endif %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">O que conferir</h2></div>
+  <div class="card-header"><h2 class="card-title">O que conferir</h2></div>
   <div class="card-content">
-    <ul class="text-sm" style="display:grid;gap:.25rem;padding-left:1.25rem">
+    <ul class="text-sm list-plain">
       <li>A imagem combina com o trecho narrado abaixo dela?</li>
       <li>Aparece alguma pessoa real reconhecível, marca ou logotipo?</li>
       <li>Há texto, número, gráfico, documento ou tela legível?</li>
       <li>Há defeito visível, como mãos ou objetos deformados?</li>
     </ul>
-    <p class="text-sm muted" style="margin-top:.5rem">A checagem automática só filtra palavras da descrição; estes pontos dependem do seu olhar.</p>
+    <p class="text-sm muted mt-2">A checagem automática só filtra palavras da descrição; estes pontos dependem do seu olhar.</p>
   </div>
 </section>
 {% if review.requested_redo %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Ajustes pedidos nesta rodada</h2><p class="card-description">Estas imagens foram refeitas na rodada seguinte.</p></div>
-  <div class="card-content"><ul class="text-sm" style="padding-left:1.25rem">{% for index, note in review.requested_redo %}<li>Imagem {{ index }}: {{ note }}</li>{% endfor %}</ul></div>
+  <div class="card-header"><h2 class="card-title">Ajustes pedidos nesta rodada</h2><p class="card-description">Estas imagens foram refeitas na rodada seguinte.</p></div>
+  <div class="card-content"><ul class="text-sm list-plain">{% for index, note in review.requested_redo %}<li>Imagem {{ index }}: {{ note }}</li>{% endfor %}</ul></div>
 </section>
 {% endif %}
 {% set can_send_back = approval_status == "pending" and review.can_redo %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Imagens e trechos</h2><p class="card-description">Na ordem em que aparecem no vídeo, {{ review.width }}x{{ review.height }}.{% if can_send_back %} Para refazer uma imagem, marque "Refazer" e diga o que ficou ruim; as outras ficam como estão.{% endif %}</p></div>
+  <div class="card-header"><h2 class="card-title">Imagens e trechos</h2><p class="card-description">Na ordem em que aparecem no vídeo, {{ review.width }}x{{ review.height }}.{% if can_send_back %} Para refazer uma imagem, marque "Refazer" e diga o que ficou ruim; as outras ficam como estão.{% endif %}</p></div>
   <div class="card-content">
     <div class="thumb-grid" role="list" aria-label="Imagens A3">
       {% for image in review.images %}
@@ -56,7 +56,7 @@
 </section>
 {% if can_send_back %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Refazer imagens marcadas</h2><p class="card-description">Gera uma nova rodada só com as imagens marcadas, a partir dos seus comentários, e reabre esta revisão. Até 7 imagens por rodada; não há limite de rodadas. Cada imagem refeita leva cerca de 20 segundos.</p></div>
+  <div class="card-header"><h2 class="card-title">Refazer imagens marcadas</h2><p class="card-description">Gera uma nova rodada só com as imagens marcadas, a partir dos seus comentários, e reabre esta revisão. Até 7 imagens por rodada; não há limite de rodadas. Cada imagem refeita leva cerca de 20 segundos.</p></div>
   <div class="card-content">
     <form id="form-redo" method="post" action="/approvals/{{ review.approval_id }}/visual-redo">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -66,7 +66,7 @@
 </section>
 {% endif %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Proveniência</h2></div>
-  <div class="card-content"><ul class="text-sm" style="padding-left:1.25rem">{% for license in review.licenses %}<li>{{ license }}</li>{% endfor %}</ul></div>
+  <div class="card-header"><h2 class="card-title">Proveniência</h2></div>
+  <div class="card-content"><ul class="text-sm list-plain">{% for license in review.licenses %}<li>{{ license }}</li>{% endfor %}</ul></div>
 </section>
 {% endblock %}

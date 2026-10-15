@@ -75,7 +75,7 @@
         </section>
 
         {# ============ INDICADORES ============ #}
-        <section class="grid grid-kpi" aria-label="Indicadores">
+        <section class="metrics" aria-label="Indicadores">
           <a class="card kpi" href="/runs">
             <div class="card-header"><h3 class="card-title">Runs recentes</h3></div>
             <div class="card-content"><p class="metric">{{ snapshot.recent_runs|length }}</p></div>
@@ -127,36 +127,33 @@
           </a>
         </section>
 
-        {# ============ ATIVIDADE RECENTE + LATERAL ============ #}
-        <div class="split">
-          <section class="card" id="runs" aria-labelledby="h-runs">
-            <div class="card-header row">
-              <div><h2 class="card-title" id="h-runs" style="font-size:1rem">Atividade recente</h2><p class="card-description">Últimas runs. Horários em UTC, com idade relativa.</p></div>
-              <a class="btn btn-ghost btn-sm" href="/runs">Ver todas {{ ui.icon("arrow-right") }}</a>
-            </div>
-            <div class="card-content flush">
-              {% if snapshot.recent_runs %}
-              {{ sec.runs_table(snapshot.recent_runs[:5], "Últimas runs") }}
-              {% else %}
-              {{ ui.empty("layers", "Nenhuma run registrada", "Dispare um módulo em “Executar” para criar a primeira run.") }}
-              {% endif %}
-            </div>
-          </section>
+        <section class="card" id="runs" aria-labelledby="h-runs">
+          <div class="card-header row">
+            <div><h2 class="card-title" id="h-runs">Atividade recente</h2><p class="card-description">Últimas runs. Horários em UTC, com idade relativa.</p></div>
+            <a class="btn btn-ghost btn-sm" href="/runs">Ver todas {{ ui.icon("arrow-right") }}</a>
+          </div>
+          <div class="card-content flush">
+            {% if snapshot.recent_runs %}
+            {{ sec.runs_table(snapshot.recent_runs[:5], "Últimas runs") }}
+            {% else %}
+            {{ ui.empty("layers", "Nenhuma run registrada", "Dispare um módulo em “Executar” para criar a primeira run.") }}
+            {% endif %}
+          </div>
+        </section>
 
-          <section class="card" id="schedules" aria-labelledby="h-sched">
-            <div class="card-header row">
-              <div><h2 class="card-title" id="h-sched" style="font-size:1rem">Próximos schedules</h2><p class="card-description">Payloads e motivos internos não são exibidos.</p></div>
-              <a class="btn btn-ghost btn-sm" href="/schedules">Gerenciar {{ ui.icon("arrow-right") }}</a>
-            </div>
-            <div class="card-content flush">
-              {% if snapshot.schedules %}
-              {{ sec.schedule_list(snapshot.schedules[:3], manage=false) }}
-              {% else %}
-              {{ ui.empty("calendar-clock", "Nenhum schedule registrado", "Agendamentos aparecem aqui com a próxima execução.") }}
-              {% endif %}
-            </div>
-          </section>
-        </div>
+        <section class="card" id="schedules" aria-labelledby="h-sched">
+          <div class="card-header row">
+            <div><h2 class="card-title" id="h-sched">Próximos schedules</h2><p class="card-description">Payloads e motivos internos não são exibidos.</p></div>
+            <a class="btn btn-ghost btn-sm" href="/schedules">Gerenciar {{ ui.icon("arrow-right") }}</a>
+          </div>
+          <div class="card-content flush">
+            {% if snapshot.schedules %}
+            {{ sec.schedule_list(snapshot.schedules[:3], manage=false) }}
+            {% else %}
+            {{ ui.empty("calendar-clock", "Nenhum schedule registrado", "Agendamentos aparecem aqui com a próxima execução.") }}
+            {% endif %}
+          </div>
+        </section>
 
         {# ============ AUTOMAÇÕES (resumo) ============ #}
         <section class="section" id="automacoes" aria-labelledby="h-auto">
@@ -165,13 +162,13 @@
             <a class="btn btn-ghost btn-sm" href="/automations">Gerir automações {{ ui.icon("arrow-right") }}</a>
           </div>
           {% if snapshot.automations %}
-          <div class="card">
+          <div>
             <ul class="list">
               {% for automation in snapshot.automations %}
               {% set summary = snapshot.execution_summaries|selectattr("automation_slug", "equalto", automation.slug)|first %}
               {% set last_run = snapshot.recent_runs|selectattr("automation_slug", "equalto", automation.slug)|first %}
               <li>
-                <span class="alert-icon" style="flex:none">{{ ui.icon("bot") }}</span>
+                <span class="alert-icon icon-fixed">{{ ui.icon("bot") }}</span>
                 <div class="grow">
                   <strong><a href="/automations#auto-{{ automation.slug }}">{{ automation.name }}</a></strong>
                   <span class="cell-sub"><code>{{ automation.slug }}</code> · {% if last_run %}última run <a href="/runs/{{ last_run.id }}">#{{ last_run.id }}</a> {{ last_run.queued_at|age_label }}{% else %}nenhuma run{% endif %}</span>

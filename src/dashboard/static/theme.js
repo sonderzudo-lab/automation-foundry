@@ -1,32 +1,19 @@
-/* Opcional: alterna o tema (lembra a escolha) e melhora o teclado nos diálogos.
-   Sem este arquivo, vale prefers-color-scheme e tudo continua funcionando por CSS. */
+/* Opcional: melhora o teclado nos diálogos, copia hashes e protege as trocas do HTMX.
+   O tema é único (escuro) e vive só no CSS; sem este arquivo tudo continua funcionando. */
 (function () {
-  var root = document.documentElement;
-  try {
-    var saved = localStorage.getItem("af-theme");
-    if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
-  } catch (e) { /* armazenamento indisponível: segue o tema do sistema */ }
-
-  var toggle = document.getElementById("theme-toggle");
-  if (toggle) {
-    toggle.hidden = false;
-    toggle.addEventListener("click", function () {
-      var current = root.getAttribute("data-theme") ||
-        (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-      var next = current === "dark" ? "light" : "dark";
-      root.setAttribute("data-theme", next);
-      try { localStorage.setItem("af-theme", next); } catch (e) { /* ignora */ }
-    });
-  }
-
-  /* Copiar hash: <button data-copy="valor completo"> */
+  /* Copiar hash: <button data-copy="valor completo">. O retorno é anunciado (aria-label)
+     e mostrado (atributo data-copied, que o CSS usa para pintar o ícone) por 1,5 s. */
   document.addEventListener("click", function (event) {
     var button = event.target.closest("[data-copy]");
     if (!button || !navigator.clipboard) return;
     navigator.clipboard.writeText(button.getAttribute("data-copy")).then(function () {
       var label = button.getAttribute("aria-label");
       button.setAttribute("aria-label", "Copiado");
-      setTimeout(function () { button.setAttribute("aria-label", label); }, 1500);
+      button.setAttribute("data-copied", "");
+      setTimeout(function () {
+        button.setAttribute("aria-label", label);
+        button.removeAttribute("data-copied");
+      }, 1500);
     });
   });
 

@@ -8,7 +8,7 @@
 {% block review_hashes %}<span>Áudio: {{ ui.hash_chip(review.audio_sha256, "SHA-256 do áudio") }}</span>{% endblock %}
 {% block review_body %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Escuta local</h2><p class="card-description">Ouça o WAV completo antes de decidir.</p></div>
+  <div class="card-header"><h2 class="card-title">Escuta local</h2><p class="card-description">Ouça o WAV completo antes de decidir.</p></div>
   <div class="card-content">
     <div class="player">
       <audio controls preload="metadata" aria-label="Narração A2" src="/approvals/{{ review.approval_id }}/narration-audio">
@@ -19,7 +19,7 @@
   </div>
 </section>
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Evidência A2</h2></div>
+  <div class="card-header"><h2 class="card-title">Evidência A2</h2></div>
   <div class="card-content">
     <dl class="kv">
       <dt>Voz</dt><dd><code>{{ review.voice_id }}</code></dd>
@@ -34,28 +34,28 @@
   </div>
 </section>
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Próxima etapa A3</h2></div>
+  <div class="card-header"><h2 class="card-title">Próxima etapa A3</h2></div>
   <div class="card-content">
     {% if review.minimum_visual_count is defined and review.minimum_visual_count != review.maximum_visual_count %}
     <p class="text-sm">Após a aprovação, o pipeline aceitará de <strong>{{ review.minimum_visual_count }} a {{ review.maximum_visual_count }} PNGs</strong> de <strong>{{ review.visual_width }}x{{ review.visual_height }}</strong> para o formato {{ "Short" if review.format == "short" else "Longo" }}. A quantidade usada é a que o manifesto declarar; cada imagem fica de 4 a 10 segundos na tela, e {{ review.required_visual_count }} mantém uma a cada 6 segundos.</p>
     {% else %}
     <p class="text-sm">Após a aprovação, o pipeline exigirá exatamente <strong>{{ review.required_visual_count }} PNGs</strong> de <strong>{{ review.visual_width }}x{{ review.visual_height }}</strong> para o formato {{ "Short" if review.format == "short" else "Longo" }}.</p>
     {% endif %}
-    <p class="text-sm muted" style="margin-top:.5rem">Cada imagem ainda precisa de manifesto local com direitos, uso comercial e SHA-256 próprios.</p>
+    <p class="text-sm muted mt-2">Cada imagem ainda precisa de manifesto local com direitos, uso comercial e SHA-256 próprios.</p>
     {% if review.visual_plan_checked %}
       {% if review.visual_plan_problem %}
-    <p class="text-sm" style="margin-top:.5rem"><strong>O manifesto ainda não está pronto:</strong> {{ review.visual_plan_problem }} (<code>{{ review.visual_plan_problem_code }}</code>). Enquanto isso, aprovar será recusado e esta revisão continua aberta.</p>
+    <p class="text-sm mt-2"><strong>O manifesto ainda não está pronto:</strong> {{ review.visual_plan_problem }} (<code>{{ review.visual_plan_problem_code }}</code>). Enquanto isso, aprovar será recusado e esta revisão continua aberta.</p>
       {% else %}
-    <p class="text-sm" style="margin-top:.5rem">Manifesto conferido agora: {{ review.declared_visual_count }} imagens declaradas, com uso comercial e SHA-256 válidos.</p>
+    <p class="text-sm mt-2">Manifesto conferido agora: {{ review.declared_visual_count }} imagens declaradas, com uso comercial e SHA-256 válidos.</p>
       {% endif %}
     {% endif %}
   </div>
 </section>
 {% if review.visual_plan %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Plano de imagens</h2><p class="card-description">Trecho aproximado da narração que cada imagem vai cobrir, na ordem do manifesto. Os tempos são estimativas; os cortes finais seguem o início das frases.</p></div>
+  <div class="card-header"><h2 class="card-title">Plano de imagens</h2><p class="card-description">Trecho aproximado da narração que cada imagem vai cobrir, na ordem do manifesto. Os tempos são estimativas; os cortes finais seguem o início das frases.</p></div>
   <div class="card-content">
-    <ol class="text-sm" style="display:grid;gap:.5rem;padding-left:1.25rem">
+    <ol class="text-sm list-plain">
       {% for slot in review.visual_plan %}
       <li><strong>{{ slot.start_seconds }}–{{ slot.end_seconds }} s</strong>{% if slot.file_name %} · <code>{{ slot.file_name }}</code>{% endif %}<br>{{ slot.text }}</li>
       {% endfor %}

@@ -19,7 +19,7 @@
   <header class="page-header">
     <div>
       <a class="back-link" href="/runs/{{ review.run_id }}">{{ ui.icon("arrow-left") }}Voltar à run #{{ review.run_id }}</a>
-      <div class="title-row" style="margin-top:.5rem"><h1>{% block review_title %}{% endblock %}</h1>{{ ui.badge(approval_status if approval_status in status_labels else "neutral", entry[0], entry[1]) }}</div>
+      <div class="title-row mt-2"><h1>{% block review_title %}{% endblock %}</h1>{{ ui.badge(approval_status if approval_status in status_labels else "neutral", entry[0], entry[1]) }}</div>
       <p>Approval #{{ review.approval_id }} · {% block review_kicker %}{% endblock %}</p>
     </div>
   </header>

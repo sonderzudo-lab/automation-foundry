@@ -17,7 +17,7 @@
   {% endif %}
 >
   <div class="card-header row">
-    <div><h2 class="card-title" id="h-exec" style="font-size:1rem">Execução</h2><p class="card-description">Estado persistido da run e dos seus steps.</p></div>
+    <div><h2 class="card-title" id="h-exec">Execução</h2><p class="card-description">Estado persistido da run e dos seus steps.</p></div>
     {% if not run.is_terminal %}
     <span class="live"><span class="dot dot-live" aria-hidden="true"></span>Ao vivo · atualiza a cada 2 s</span>
     {% else %}
@@ -25,7 +25,7 @@
     {% endif %}
   </div>
 
-  <div class="card-content" style="display:grid;gap:1.25rem">
+  <div class="card-content is-stack">
     <dl class="facts">
       <div class="fact"><dt>Status</dt><dd>{{ ui.run_badge(run.status) }}</dd></div>
       <div class="fact"><dt>Trigger</dt><dd>{{ run.trigger }}</dd></div>
@@ -82,7 +82,7 @@
     {% endif %}
 
     <div>
-      <h3 style="margin-bottom:.75rem">Steps e tentativas</h3>
+      <h3 class="mb-3">Steps e tentativas</h3>
       {% if run.steps %}
       <ol class="timeline" aria-label="Steps da run">
         {% for ordinal, grouped in run.steps|groupby("ordinal") %}

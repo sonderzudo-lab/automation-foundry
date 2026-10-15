@@ -11,7 +11,7 @@
 >
   <div class="card-header row">
     <div>
-      <h2 class="card-title" id="h-conn" style="font-size:1rem">Connectors, freshness e qualidade</h2>
+      <h2 class="card-title" id="h-conn">Connectors, freshness e qualidade</h2>
       <p class="card-description">Última observação persistida; estado vencido aparece como <code>stale</code>.</p>
     </div>
     <span class="live"><span class="dot dot-live" aria-hidden="true"></span>Atualiza a cada 30 s</span>
@@ -22,12 +22,12 @@
       {% for connector in connectors %}
       {% set unavailable = connector.effective_status == "unavailable" or (connector.effective_status == "stale" and connector.reported_status == "unavailable") %}
       <li>
-        <span class="alert-icon" style="flex:none">{{ ui.icon("database") }}</span>
+        <span class="alert-icon icon-fixed">{{ ui.icon("database") }}</span>
         <div class="grow">
-          <strong class="truncate" style="display:block"><code>{{ connector.automation_slug }} · {{ connector.connector_key }}</code></strong>
+          <strong class="truncate"><code>{{ connector.automation_slug }} · {{ connector.connector_key }}</code></strong>
           <span class="cell-sub">Observado há {{ connector.observation_age_label }} · <time datetime="{{ connector.observed_at.isoformat() }}Z">{{ connector.observed_at.isoformat() }}Z</time> · SLO {{ connector.status_slo_label }}</span>
           <span class="cell-sub">Dado: {{ connector.data_age_label }}{% if connector.last_success_at %} · último sucesso <time datetime="{{ connector.last_success_at.isoformat() }}Z">{{ connector.last_success_at.isoformat() }}Z</time>{% endif %}</span>
-          <div class="chips" style="margin-top:.375rem">
+          <div class="chips mt-2">
             {# Status #}
             {% if connector.effective_status == "healthy" %}{{ ui.badge("healthy", "circle-check", "healthy") }}
             {% elif unavailable %}{{ ui.badge("danger", "circle-x", connector.effective_status) }}
@@ -49,7 +49,7 @@
       {% endfor %}
     </ul>
     {% if connectors_truncated %}
-    <div class="alert alert-warning" style="margin:0 1.25rem 1rem">
+    <div class="alert alert-warning alert-inset">
       <span class="alert-icon">{{ ui.icon("triangle-alert") }}</span>
       <div class="alert-body"><p class="alert-title">Lista limitada</p><p class="alert-description">Há outros connectors fora desta visão. Itens indisponíveis e degradados têm prioridade.</p></div>
     </div>

@@ -12,7 +12,7 @@
   <header class="page-header">
     <div>
       <a class="back-link" href="/runs/{{ run_id }}">{{ ui.icon("arrow-left") }}Voltar à run #{{ run_id }}</a>
-      <div class="title-row" style="margin-top:.5rem"><h1>Export local revisável</h1>{{ ui.badge("neutral", "lock", "Não publicado") }}</div>
+      <div class="title-row mt-2"><h1>Export local revisável</h1>{{ ui.badge("neutral", "lock", "Não publicado") }}</div>
       <p>Run #{{ run_id }} · pacote para revisão e entrega manual.</p>
     </div>
   </header>
@@ -31,7 +31,7 @@
 
   <section class="card" aria-labelledby="h-manifesto">
     <div class="card-header row">
-      <div><h2 class="card-title" id="h-manifesto" style="font-size:1rem">Manifesto</h2><p class="card-description">Descreve o pacote e fixa os hashes; permite conferir os arquivos fora do painel.</p></div>
+      <div><h2 class="card-title" id="h-manifesto">Manifesto</h2><p class="card-description">Descreve o pacote e fixa os hashes; permite conferir os arquivos fora do painel.</p></div>
       <a class="btn btn-outline" href="/runs/{{ run_id }}/local-export/manifest.json" download>{{ ui.icon("file-text") }}Baixar manifesto JSON</a>
     </div>
     <div class="card-content">

@@ -10,7 +10,7 @@
 {% endblock %}
 {% block review_body %}
 <section class="card">
-  <div class="card-header"><h2 class="card-title" style="font-size:1rem">Candidatos A3</h2><p class="card-description">{% if approval_status == "pending" %}Clique em um cartão para selecioná-lo. Exatamente um.{% else %}Os candidatos permanecem disponíveis somente para consulta local.{% endif %}</p></div>
+  <div class="card-header"><h2 class="card-title">Candidatos A3</h2><p class="card-description">{% if approval_status == "pending" %}Clique em um cartão para selecioná-lo. Exatamente um.{% else %}Os candidatos permanecem disponíveis somente para consulta local.{% endif %}</p></div>
   <div class="card-content">
     <div class="thumb-grid" role="{{ 'radiogroup' if approval_status == 'pending' else 'list' }}" aria-label="Candidatos de thumbnail">
       {% for candidate in review.candidates %}

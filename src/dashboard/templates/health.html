@@ -138,7 +138,7 @@
             <td><code>{{ check.name }}</code></td>
             <td>{{ ui.badge(status if status in states else "neutral", entry[0], entry[1]) }}</td>
             <td>{{ check.summary }}</td>
-            <td class="mono text-xs" style="overflow-wrap:anywhere">{% if check.metrics %}{% for key, value in check.metrics.items() %}{{ key }}={{ value }}{{ " · " if not loop.last }}{% endfor %}{% else %}—{% endif %}</td>
+            <td class="mono text-xs raw-metrics">{% if check.metrics %}{% for key, value in check.metrics.items() %}{{ key }}={{ value }}{{ " · " if not loop.last }}{% endfor %}{% else %}—{% endif %}</td>
           </tr>
           {% endfor %}
         </tbody>
