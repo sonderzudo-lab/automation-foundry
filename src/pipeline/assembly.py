@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 import wave
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -24,6 +24,7 @@ from typing import BinaryIO, Literal
 from uuid import uuid4
 
 import structlog
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.operations.retention_policy import resolve_retention_days
@@ -33,19 +34,28 @@ from src.pipeline.animation_generation import (
     write_animation_plan,
 )
 from src.pipeline.animation_plan import AnimationPlan, AnimationPlanError
+from src.pipeline.scene_clips import AnimatedScene, SceneClipsManifest, scene_clip_ms
 from src.pipeline.text_model import TextModel, TextModelPermanentError, TextModelResult
 from src.pipeline.text_model_factory import configured_ollama_model
 from src.pipeline.timeline import (
     CaptionTemplate,
+    TimelineV2,
+    TimelineV3,
     TimelineWord,
     milliseconds,
     timeline_to_json,
 )
 from src.pipeline.timeline_builder import (
+    TRANSITION_MS,
     BuiltTimeline,
+    SceneVideo,
     TimelineBuildError,
+    TimelineImage,
     build_timeline_v2,
+    scene_cuts_sha256,
+    scene_spans,
     timeline_images_from_manifest,
+    timeline_v3_with_videos,
 )
 from src.pipeline.visuals import QUALITY_TEST_USAGE_SCOPE
 from src.platform.approval_service import approval_payload_digest
@@ -136,6 +146,9 @@ _RENDER_LOG_TAIL_CHARS = 2_000
 # the least a render is given; with less left the attempt stops before rendering.
 _PROBE_RESERVE_SECONDS = 60.0
 _MIN_RENDER_SECONDS = 30.0
+# Artifact types published by step A5a (``scene_animation``, which imports this module).
+SCENE_CLIPS_MANIFEST_ARTIFACT_TYPE = "scene_clips_manifest"
+SCENE_CLIP_ARTIFACT_TYPE = "scene_clip_video"
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +185,11 @@ class AssemblyRequest:
     duration_seconds: Decimal
     # The verified A3 manifest: the animated edit times each image by its stretch.
     visual_manifest_path: Path | None = None
+    # Step A5a's ``SceneClipsManifest``, the SHA-256 it was published with and the
+    # clips it lists: the animated edit then plays those clips (timeline v3).
+    scene_clips_manifest_path: Path | None = None
+    scene_clips_manifest_sha256: str | None = None
+    scene_clip_paths: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +214,10 @@ class AssemblyAdapterResult:
     timeline_sha256: str | None = None
     animation_text_model: str | None = None
     dropped_highlights: int = 0
+    # Only when the edit played the A5a clips: the manifest it read and how many
+    # scenes play a video instead of the zoomed image.
+    scene_clips_manifest_sha256: str | None = None
+    video_scenes: int = 0
 
 
 AssemblyAdapter = Callable[[AssemblyRequest, Path], AssemblyAdapterResult]
@@ -595,6 +617,11 @@ def build_remotion_quality_test_adapter(
     at the C/D boundary, made through the locally installed CLI so nothing is
     ever downloaded, and the MP4 goes through the same probe as the FFmpeg edit.
     ``release_text_model`` frees a local text model before the render needs the GPU.
+
+    With the clips of step A5a in the request, the timeline is a v3 one in which
+    every animated scene plays its clip; a scene that kept its image keeps the
+    zoom. The manifest is checked against this montage before the text model is
+    asked anything (see ``_verified_scene_clips``). Without it the timeline is v2.
     """
     runner = run_process or _run_process_tree
 
@@ -630,6 +657,9 @@ def build_remotion_quality_test_adapter(
             raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_TIMELINE_INVALID")
         audio_sha256 = _sha256_file(request.audio_path)
         caption_sha256 = _sha256_file(request.caption_path)
+        scene_clips = _verified_scene_clips(
+            request, images=images, words=words, duration_ms=duration_ms
+        )
 
         def build(plan: AnimationPlan) -> BuiltTimeline:
             return build_timeline_v2(
@@ -670,9 +700,17 @@ def build_remotion_quality_test_adapter(
             raise AssemblyRetryableAdapterError(
                 "CONTENT_ASSEMBLY_ANIMATION_MODEL_UNAVAILABLE"
             ) from exc
+        timeline: TimelineV2 | TimelineV3 = built.timeline
+        if scene_clips is not None:
+            try:
+                timeline = timeline_v3_with_videos(built.timeline, scene_clips.videos)
+            except TimelineBuildError as exc:
+                raise AssemblyPermanentAdapterError(
+                    "CONTENT_ASSEMBLY_SCENE_CLIPS_MISMATCH"
+                ) from exc
         if release_text_model is not None:
             release_text_model()
-        timeline_json = timeline_to_json(built.timeline)
+        timeline_json = timeline_to_json(timeline)
         timeline_sha256 = hashlib.sha256(timeline_json.encode("utf-8")).hexdigest()
 
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -689,6 +727,20 @@ def build_remotion_quality_test_adapter(
                 shutil.copyfile(source, copy)
                 if _sha256_file(copy) != image.sha256:
                     raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_TIMELINE_INVALID")
+            if scene_clips is not None:
+                # Each clip under the exact name the timeline gives it.
+                for video in scene_clips.videos.values():
+                    copy = public / video.file_name
+                    try:
+                        shutil.copyfile(scene_clips.sources[video.file_name], copy)
+                    except OSError as exc:
+                        raise AssemblyPermanentAdapterError(
+                            "CONTENT_ASSEMBLY_SCENE_CLIP_MISSING"
+                        ) from exc
+                    if _sha256_file(copy) != video.sha256:
+                        raise AssemblyPermanentAdapterError(
+                            "CONTENT_ASSEMBLY_SCENE_CLIP_HASH_MISMATCH"
+                        )
             props = workspace / "timeline.json"
             props.write_text(timeline_json, encoding="utf-8")
             # The C/D boundary call, with the CLI that ``npx remotion`` would resolve.
@@ -730,6 +782,12 @@ def build_remotion_quality_test_adapter(
         _write_text_atomic(destination.parent / "timeline.json", timeline_json)
         if built.dropped_highlights:
             log.info("animation_highlights_dropped", count=len(built.dropped_highlights))
+        if scene_clips is not None:
+            log.info(
+                "animation_scene_clips_played",
+                video_scenes=len(scene_clips.videos),
+                image_scenes=len(images) - len(scene_clips.videos),
+            )
         return AssemblyAdapterResult(
             backend=REMOTION_QUALITY_TEST_BACKEND,
             provider="remotion-local",
@@ -749,9 +807,103 @@ def build_remotion_quality_test_adapter(
             timeline_sha256=timeline_sha256,
             animation_text_model=_text_model_label(written.result),
             dropped_highlights=len(built.dropped_highlights),
+            scene_clips_manifest_sha256=(
+                scene_clips.manifest_sha256 if scene_clips is not None else None
+            ),
+            video_scenes=len(scene_clips.videos) if scene_clips is not None else 0,
         )
 
     return assemble
+
+
+@dataclass(frozen=True, slots=True)
+class _SceneClips:
+    manifest_sha256: str
+    # By scene index: the clip that scene plays.
+    videos: dict[int, SceneVideo]
+    # By clip file name: the published file to copy into the public folder.
+    sources: dict[str, Path]
+
+
+def _verified_scene_clips(
+    request: AssemblyRequest,
+    *,
+    images: Sequence[TimelineImage],
+    words: Sequence[TimelineWord],
+    duration_ms: int,
+) -> _SceneClips | None:
+    """Read the A5a manifest, if any, and check it was made for this very montage.
+
+    The manifest must be the published file, for the same format, audio length
+    and crossfade, for the same images and for the cuts this montage makes
+    (``cuts_sha256`` against ``scene_spans``). Every clip it plays must be among
+    the published clips with the SHA-256 it lists, and no other clip may be
+    passed. Anything else fails closed with its own code: a montage never plays
+    clips made for other cuts.
+    """
+    path = request.scene_clips_manifest_path
+    if path is None:
+        if request.scene_clip_paths or request.scene_clips_manifest_sha256 is not None:
+            raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SCENE_CLIPS_MISMATCH")
+        return None
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise AssemblyPermanentAdapterError(
+            "CONTENT_ASSEMBLY_SCENE_CLIPS_MANIFEST_MISSING"
+        ) from exc
+    manifest_sha256 = hashlib.sha256(payload).hexdigest()
+    if manifest_sha256 != request.scene_clips_manifest_sha256:
+        raise AssemblyPermanentAdapterError(
+            "CONTENT_ASSEMBLY_SCENE_CLIPS_MANIFEST_HASH_MISMATCH"
+        )
+    if len(payload) > _MAX_MANIFEST_BYTES:
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SCENE_CLIPS_INVALID")
+    try:
+        manifest = SceneClipsManifest.model_validate_json(payload)
+    except ValidationError as exc:
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SCENE_CLIPS_INVALID") from exc
+    if (
+        manifest.format,
+        manifest.width,
+        manifest.height,
+        manifest.duration_ms,
+        manifest.transition_ms,
+    ) != (request.format, request.width, request.height, duration_ms, TRANSITION_MS):
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SCENE_CLIPS_MISMATCH")
+    try:
+        spans = scene_spans(images, words, duration_ms=duration_ms)
+    except TimelineBuildError as exc:
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_TIMELINE_INVALID") from exc
+    if scene_cuts_sha256(spans) != manifest.cuts_sha256:
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SCENE_CUTS_MISMATCH")
+    if [(scene.image, scene.image_sha256) for scene in manifest.scenes] != [
+        (image.file_name, image.sha256) for image in images
+    ]:
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SCENE_CLIPS_MISMATCH")
+    animated = [scene for scene in manifest.scenes if isinstance(scene, AnimatedScene)]
+    published = {clip.name: clip for clip in request.scene_clip_paths}
+    if len(published) != len(request.scene_clip_paths) or not set(published) <= {
+        scene.video for scene in animated
+    }:
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SCENE_CLIPS_MISMATCH")
+    videos: dict[int, SceneVideo] = {}
+    for scene in animated:
+        source = published.get(scene.video)
+        try:
+            if source is None:
+                raise FileNotFoundError(scene.video)
+            digest = _sha256_file(source)
+        except OSError as exc:
+            raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SCENE_CLIP_MISSING") from exc
+        if digest != scene.video_sha256:
+            raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SCENE_CLIP_HASH_MISMATCH")
+        videos[scene.index] = SceneVideo(
+            file_name=scene.video,
+            sha256=scene.video_sha256,
+            duration_ms=scene_clip_ms(scene.frames),
+        )
+    return _SceneClips(manifest_sha256=manifest_sha256, videos=videos, sources=published)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1175,12 +1327,17 @@ async def execute_approved_assembly_step(
     finalize_run: bool = True,
     queue: QueueClass = QueueClass.CPU,
     gpu_power_watts: int | None = None,
+    scene_clips_manifest_artifact: Artifact | None = None,
+    scene_clip_artifacts: tuple[Artifact, ...] = (),
     sleep: Sleeper = asyncio.sleep,
 ) -> AssemblyExecutionResult:
     """Assemble and register one reviewable local MP4 without publishing it.
 
     The FFmpeg edit runs on the CPU queue; the animated edit renders on the GPU
-    queue, whose energy estimate uses ``gpu_power_watts``.
+    queue, whose energy estimate uses ``gpu_power_watts``. With the manifest and
+    clips published by step A5a the adapter must play them (timeline v3); their
+    files are checked by the adapter, so a missing or changed clip fails the step
+    with its own code.
     """
     if cpu_power_watts < 1:
         raise ValueError("cpu_power_watts must be positive")
@@ -1201,6 +1358,12 @@ async def execute_approved_assembly_step(
         caption_artifact=caption_artifact,
         storage_root=storage_root,
     )
+    scene_clips_manifest_path, scene_clip_paths = _scene_clip_sources(
+        run=run,
+        manifest_artifact=scene_clips_manifest_artifact,
+        clip_artifacts=scene_clip_artifacts,
+        storage_root=storage_root,
+    )
     output_path = _video_path(storage_root, run_id=_persisted_id(run.id, "run"))
     step_key = f"{idempotency_key}:{ASSEMBLY_STEP_NAME}"
 
@@ -1214,6 +1377,13 @@ async def execute_approved_assembly_step(
             height=context.height,
             duration_seconds=context.duration_seconds,
             visual_manifest_path=context.manifest_path,
+            scene_clips_manifest_path=scene_clips_manifest_path,
+            scene_clips_manifest_sha256=(
+                scene_clips_manifest_artifact.sha256
+                if scene_clips_manifest_artifact is not None
+                else None
+            ),
+            scene_clip_paths=scene_clip_paths,
         )
         try:
             bundle = await asyncio.to_thread(
@@ -1256,6 +1426,15 @@ async def execute_approved_assembly_step(
                 if bundle.result.timeline_sha256 is not None
                 else {}
             ),
+            # Only when the A5a clips were played.
+            **(
+                {
+                    "scene_clips_manifest_sha256": bundle.result.scene_clips_manifest_sha256,
+                    "video_scenes": bundle.result.video_scenes,
+                }
+                if bundle.result.scene_clips_manifest_sha256 is not None
+                else {}
+            ),
             # Absent for commercial bundles, so earlier step outputs keep their shape.
             **(
                 {"visual_usage_scope": context.visual_usage_scope}
@@ -1284,6 +1463,20 @@ async def execute_approved_assembly_step(
                 "width": context.width,
                 "height": context.height,
                 "output_format": "mp4-h264-aac-burned-ass",
+                # Only with A5a, so the input of an edit without clips keeps its shape.
+                **(
+                    {
+                        "scene_clips_manifest_artifact_id": scene_clips_manifest_artifact.id,
+                        "scene_clips_manifest_artifact_sha256": (
+                            scene_clips_manifest_artifact.sha256
+                        ),
+                        "scene_clip_artifact_ids": [
+                            artifact.id for artifact in scene_clip_artifacts
+                        ],
+                    }
+                    if scene_clips_manifest_artifact is not None
+                    else {}
+                ),
             },
         ),
         policy=RetryPolicy(max_attempts=2, timeout_seconds=timeout_seconds),
@@ -1575,6 +1768,56 @@ def _load_assembly_context(
     )
 
 
+def _scene_clip_sources(
+    *,
+    run: Run,
+    manifest_artifact: Artifact | None,
+    clip_artifacts: tuple[Artifact, ...],
+    storage_root: Path,
+) -> tuple[Path | None, tuple[Path, ...]]:
+    """Where the A5a manifest and clips of this run are kept, after checking their records.
+
+    The files themselves are read and checked by the adapter, so a missing or
+    changed one fails the step with an explicit code instead of before it.
+    """
+    if manifest_artifact is None:
+        if clip_artifacts:
+            raise ValueError("assembly scene clips need their manifest")
+        return None, ()
+    run_id = _persisted_id(run.id, "run")
+    if (
+        manifest_artifact.run_id != run_id
+        or manifest_artifact.artifact_type != SCENE_CLIPS_MANIFEST_ARTIFACT_TYPE
+        or manifest_artifact.media_type != "application/json"
+        or not isinstance(manifest_artifact.step_run_id, int)
+    ):
+        raise ValueError("assembly scene clips manifest source is invalid")
+    if any(
+        artifact.run_id != run_id
+        or artifact.artifact_type != SCENE_CLIP_ARTIFACT_TYPE
+        or artifact.media_type != "video/mp4"
+        or artifact.step_run_id != manifest_artifact.step_run_id
+        for artifact in clip_artifacts
+    ):
+        raise ValueError("assembly scene clip sources are invalid")
+    if len({artifact.id for artifact in clip_artifacts}) != len(clip_artifacts):
+        raise ValueError("assembly scene clip sources contain duplicates")
+    return (
+        _stored_path(storage_root, manifest_artifact),
+        tuple(_stored_path(storage_root, artifact) for artifact in clip_artifacts),
+    )
+
+
+def _stored_path(storage_root: Path, artifact: Artifact) -> Path:
+    root = storage_root.resolve()
+    path = (root / artifact.relative_path).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("assembly source artifact escapes storage root") from exc
+    return path
+
+
 def _validate_visual_manifest(
     path: Path,
     *,
@@ -1728,6 +1971,9 @@ def _validate_adapter_result(
         )
     ):
         raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_INVALID_PROVENANCE")
+    # An edit given the A5a clips must say it played exactly that manifest.
+    if result.scene_clips_manifest_sha256 != request.scene_clips_manifest_sha256:
+        raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_SCENE_CLIPS_NOT_PLAYED")
     if result.video_codec.strip().casefold() != "h264":
         raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_H264_REQUIRED")
     if result.audio_codec.strip().casefold() != "aac":

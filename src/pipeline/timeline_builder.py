@@ -13,6 +13,9 @@ model only said which words to animate (see ``animation_plan``):
 
 On-screen texts are the caption words themselves, so they keep the spelling of
 the approved narration whatever capitals or punctuation the model wrote.
+
+When step A5a animated the scenes, ``timeline_v3_with_videos`` turns the v2
+timeline into a v3 one whose clips play those videos instead of zooming in.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ from src.pipeline.timeline import (
     Overlay,
     TimelineClip,
     TimelineV2,
+    TimelineV3,
     TimelineWord,
     VideoFormat,
 )
@@ -205,6 +209,52 @@ def scene_cuts_sha256(spans: Sequence[SceneSpan]) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class SceneVideo:
+    """A video generated from one clip's image (step A5a), played instead of the zoom."""
+
+    file_name: str
+    sha256: str
+    duration_ms: int
+
+
+def timeline_v3_with_videos(
+    timeline: TimelineV2,
+    videos: Mapping[int, SceneVideo],
+) -> TimelineV3:
+    """The same timeline where each clip in ``videos`` (by index) plays its video.
+
+    A clip with a video has no zoom; the others keep their image and effect.
+    Raise ``TimelineBuildError`` when a video does not belong to a clip or is too
+    short for it.
+    """
+    if not set(videos) <= {clip.index for clip in timeline.clips}:
+        raise TimelineBuildError("a video belongs to no clip of the timeline")
+    clips: list[dict[str, Any]] = []
+    for clip in timeline.clips:
+        video = videos.get(clip.index)
+        clips.append(
+            {
+                **clip.model_dump(),
+                "effect": "none" if video is not None else clip.effect,
+                "video": video.file_name if video is not None else None,
+                "video_sha256": video.sha256 if video is not None else None,
+                "video_ms": video.duration_ms if video is not None else None,
+            }
+        )
+    try:
+        return TimelineV3.model_validate(
+            {
+                **timeline.model_dump(exclude={"schema_version", "clips"}),
+                "schema_version": 3,
+                "clips": clips,
+            }
+        )
+    except ValidationError as exc:
+        error = exc.errors(include_url=False)[0]
+        raise TimelineBuildError(str(error.get("msg", "is invalid"))) from exc
 
 
 def _clips(
