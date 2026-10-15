@@ -1,8 +1,8 @@
 import React, { useMemo } from 'react';
-import { AbsoluteFill, Audio, Img, spring, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
+import { AbsoluteFill, Audio, Img, OffthreadVideo, Sequence, spring, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
 import { parseTimeline } from './timeline';
-import type { ClosingOverlay, ListOverlay, Overlay, TimelineV2 } from './timeline';
-import { activeWord, badgeFlight, clamp01, clipState, closingWords, ease, listLayout, overlayOpacity, phraseBlocks, progress, returnEnd } from './timing';
+import type { ClosingOverlay, ListOverlay, Overlay, Timeline } from './timeline';
+import { activeWord, badgeFlight, clamp01, clipState, clipVideoTiming, closingWords, ease, listLayout, overlayOpacity, phraseBlocks, progress, returnEnd } from './timing';
 import type { BadgeFlight } from './timing';
 
 const ACCENT = '#FFC83D';
@@ -20,6 +20,15 @@ export const ExplainerV1: React.FC<Record<string, unknown>> = (props) => {
     <AbsoluteFill style={{ backgroundColor: '#0b0d12', overflow: 'hidden' }}>
       {timeline.clips.map((clip, index) => {
         const state = clipState(timeline, index, now);
+        const videoTiming = clipVideoTiming(timeline, index);
+        if (videoTiming && 'video' in clip && clip.video) return (
+          <Sequence key={clip.index} from={videoTiming.from} durationInFrames={videoTiming.durationInFrames} layout="none">
+            <AbsoluteFill style={{ opacity: state.visible ? state.opacity : 0 }}>
+              <OffthreadVideo src={staticFile(clip.video)} muted playbackRate={videoTiming.playbackRate}
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            </AbsoluteFill>
+          </Sequence>
+        );
         if (!state.visible) return null;
         return <AbsoluteFill key={clip.index} style={{ opacity: state.opacity }}>
           <Img src={staticFile(clip.image)} style={{
@@ -38,7 +47,7 @@ export const ExplainerV1: React.FC<Record<string, unknown>> = (props) => {
   );
 };
 
-const OverlayCard: React.FC<{ timeline: TimelineV2; overlay: Overlay; now: number; flight: BadgeFlight | null }> = ({ timeline, overlay, now, flight }) => (
+const OverlayCard: React.FC<{ timeline: Timeline; overlay: Overlay; now: number; flight: BadgeFlight | null }> = ({ timeline, overlay, now, flight }) => (
   <AbsoluteFill style={{
     opacity: overlayOpacity(now, overlay.start_ms, overlay.end_ms),
     background: 'linear-gradient(180deg, rgba(8,10,16,0.78), rgba(8,10,16,0.92))',
@@ -54,7 +63,7 @@ const OverlayCard: React.FC<{ timeline: TimelineV2; overlay: Overlay; now: numbe
   </AbsoluteFill>
 );
 
-const ListPanel: React.FC<{ timeline: TimelineV2; card: ListOverlay; now: number; flight: BadgeFlight | null }> = ({ timeline, card, now, flight }) => {
+const ListPanel: React.FC<{ timeline: Timeline; card: ListOverlay; now: number; flight: BadgeFlight | null }> = ({ timeline, card, now, flight }) => {
   const l = listLayout(timeline.width, timeline.height, card.items.length);
   const portrait = timeline.format === 'short';
   const entered = ease(progress(now, card.item_start_ms, card.item_end_ms));
@@ -95,7 +104,7 @@ const Badge: React.FC<{ number: number; check: number; highlight: boolean; size:
   </div>
 );
 
-const TravelBadge: React.FC<{ timeline: TimelineV2; flight: BadgeFlight }> = ({ timeline, flight }) => {
+const TravelBadge: React.FC<{ timeline: Timeline; flight: BadgeFlight }> = ({ timeline, flight }) => {
   const { card, corner: t } = flight;
   const l = listLayout(timeline.width, timeline.height, card.items.length);
   const rowX = l.left + l.badge / 2;
@@ -111,7 +120,7 @@ const TravelBadge: React.FC<{ timeline: TimelineV2; flight: BadgeFlight }> = ({ 
   </div>;
 };
 
-const Closing: React.FC<{ timeline: TimelineV2; card: ClosingOverlay; now: number }> = ({ timeline, card, now }) => {
+const Closing: React.FC<{ timeline: Timeline; card: ClosingOverlay; now: number }> = ({ timeline, card, now }) => {
   const { fps } = useVideoConfig();
   const sentence = useMemo(() => closingWords(timeline.words, card), [timeline.words, card]);
   // Bound long closing sentences to the safe central area; font remains a system font.
@@ -129,7 +138,7 @@ const Closing: React.FC<{ timeline: TimelineV2; card: ClosingOverlay; now: numbe
   </div>;
 };
 
-const Captions: React.FC<{ timeline: TimelineV2; now: number; lowered: boolean }> = ({ timeline, now, lowered }) => {
+const Captions: React.FC<{ timeline: Timeline; now: number; lowered: boolean }> = ({ timeline, now, lowered }) => {
   const { fps } = useVideoConfig();
   const phrases = useMemo(() => phraseBlocks(timeline.words), [timeline.words]);
   const index = activeWord(timeline.words, now);

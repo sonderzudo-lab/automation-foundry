@@ -1,4 +1,20 @@
-import type { Clip, ClosingOverlay, ListOverlay, TimelineV2, Word } from './timeline.ts';
+import { clipWindow } from './timeline.ts';
+import type { Clip, ClosingOverlay, ListOverlay, Timeline, Word } from './timeline.ts';
+
+/** Sequence offsets stay fractional: the source clock starts at the exact window start. */
+export function clipVideoTiming(t: Timeline, i: number): { from: number; durationInFrames: number; playbackRate: number } | null {
+  if (t.schema_version !== 3) return null;
+  const clip = t.clips[i];
+  if (clip.video === null || clip.video_ms === null) return null;
+  const window = clipWindow(t, clip);
+  const length = window.end_ms - window.start_ms;
+  const from = window.start_ms * t.fps / 1000;
+  return {
+    from,
+    durationInFrames: window.end_ms * t.fps / 1000 - from,
+    playbackRate: Math.min(1, clip.video_ms / length),
+  };
+}
 
 export const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
 export function progress(now: number, start: number, end: number): number {
@@ -10,7 +26,7 @@ export function ease(n: number): number {
 }
 
 /** Incoming image is composited over an opaque outgoing image: no black dip. */
-export function clipState(t: TimelineV2, i: number, now: number): { visible: boolean; opacity: number; scale: number; xPercent: number } {
+export function clipState(t: Timeline, i: number, now: number): { visible: boolean; opacity: number; scale: number; xPercent: number } {
   const c = t.clips[i];
   const next = t.clips[i + 1];
   const start = c.start_ms - (c.transition_in === 'crossfade' ? t.transition_ms / 2 : 0);
@@ -89,7 +105,7 @@ export function returnEnd(card: ListOverlay): number {
   return Math.min(card.start_ms + 330, card.item_start_ms);
 }
 /** At most one badge travels. A zero-gap handoff goes directly to the next row. */
-export function badgeFlight(t: TimelineV2, now: number): BadgeFlight | null {
+export function badgeFlight(t: Timeline, now: number): BadgeFlight | null {
   const cards = t.overlays.filter((o): o is ListOverlay => o.kind === 'list');
   const closing = t.overlays.find(o => o.kind === 'closing_sentence');
   for (let i = 0; i < cards.length; i++) {
