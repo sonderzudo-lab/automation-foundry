@@ -24,6 +24,7 @@ a fake.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import hashlib
 import json
 import os
@@ -45,6 +46,8 @@ from uuid import uuid4
 
 import psutil
 import structlog
+
+from src.runtime.windows import _configure_kernel32, _job_limit_information
 
 log = structlog.get_logger(__name__)
 
@@ -91,6 +94,11 @@ _FRAME_PREFIX = "frame"
 _HTTP_TIMEOUT_SECONDS = 10.0
 _LOG_TAIL_CHARS = 2_000
 _ENCODE_TIMEOUT_SECONDS = 120.0
+_WATCH_INTERVAL_SECONDS = 0.2
+_PROCESS_TERMINATE = 0x0001
+_PROCESS_SET_QUOTA = 0x0100
+_PROCESS_SUSPEND_RESUME = 0x0800
+_CREATE_SUSPENDED = 0x00000004
 
 
 class SceneVideoError(RuntimeError):
@@ -389,7 +397,18 @@ class ComfyUILtx23Renderer:
         self._port: int | None = None
         self._comfyui: Path | None = None
         self._python: Path | None = None
-        self._prepared = False
+        self._job: _KillOnCloseJob | None = None
+        # Descendants seen while ComfyUI ran (pid -> creation time). A process the
+        # job cannot hold (a Microsoft Store Python breaks away) is still killed.
+        self._descendants: dict[int, float] = {}
+        self._watch_stop: threading.Event | None = None
+        self._watcher: threading.Thread | None = None
+        self._released = False
+        # close() may run while start() is still checking in another thread (the
+        # step's attempt timed out): the lock and the flag stop that start from
+        # launching anything afterwards.
+        self._lock = threading.RLock()
+        self._closed = False
 
     @property
     def provider(self) -> str:
@@ -425,29 +444,31 @@ class ComfyUILtx23Renderer:
     def start(self, *, timeout_seconds: float) -> None:
         """Check everything, then start ComfyUI and wait until it answers.
 
-        The checks run once per renderer; a restart after a clip timeout only
-        checks the RAM again.
+        The weights are checked before every start, also after a clip timeout;
+        the install, FFmpeg and the release of the text model only once.
         """
         if self.running:
             return
-        self.close()
+        self._stop_process()
+        self._ensure_open()
         deadline = time.monotonic() + timeout_seconds
-        if not self._prepared:
+        if self._comfyui is None or self._python is None:
             comfyui, python = self._verified_install()
-            models = self._verified_models()
             if self._encoder is None:
                 self._encoder = ffmpeg_clip_encoder(
                     _verified_ffmpeg(self._config.ffmpeg_path, self._config.ffmpeg_sha256)
                 )
-            self._write_workspace(models)
-            if self._release_text_model is not None:
-                # Best effort, as in A3 and A5: a failure shows up as a lack of memory.
-                try:
-                    self._release_text_model()
-                except Exception:
-                    log.warning("scene_animation_text_model_release_failed")
             self._comfyui, self._python = comfyui, python
-            self._prepared = True
+        models = self._verified_models()
+        self._ensure_open()
+        self._write_workspace(models)
+        if self._release_text_model is not None and not self._released:
+            # Best effort, as in A3 and A5: a failure shows up as a lack of memory.
+            try:
+                self._release_text_model()
+            except Exception:
+                log.warning("scene_animation_text_model_release_failed")
+            self._released = True
         available = self._available_ram_bytes()
         if available < self._config.min_free_ram_bytes:
             log.warning(
@@ -526,16 +547,39 @@ class ComfyUILtx23Renderer:
         )
 
     def close(self) -> None:
-        """Stop the whole process tree, if any, and release the log file."""
-        process, self._process, self._port = self._process, None, None
-        if process is not None:
-            if process.poll() is None:
-                _kill_process_tree(process)
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=30)
-        if self._log_handle is not None:
-            self._log_handle.close()
-            self._log_handle = None
+        """Stop the whole process tree for good; a start still checking will not launch."""
+        with self._lock:
+            self._closed = True
+            self._stop_process()
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise SceneVideoUnavailableError("CONTENT_SCENE_ANIMATION_RUNTIME_CLOSED")
+
+    def _stop_process(self) -> None:
+        """Kill ComfyUI and every process it started, even after ComfyUI itself exited."""
+        with self._lock:
+            process, self._process, self._port = self._process, None, None
+            job, self._job = self._job, None
+            watch_stop, watcher = self._watch_stop, self._watcher
+            self._watch_stop, self._watcher = None, None
+            if watch_stop is not None and watcher is not None:
+                watch_stop.set()
+                watcher.join(timeout=5)
+            if process is not None:
+                self._track_descendants(process)
+            if job is not None:
+                job.terminate()
+            if process is not None:
+                if job is None or process.poll() is None:
+                    _kill_process_tree(process)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=30)
+            descendants, self._descendants = self._descendants, {}
+            _kill_known_processes(descendants)
+            if self._log_handle is not None:
+                self._log_handle.close()
+                self._log_handle = None
 
     def _verified_install(self) -> tuple[Path, Path]:
         try:
@@ -561,6 +605,7 @@ class ComfyUILtx23Renderer:
         except OSError as exc:
             raise SceneVideoMisconfiguredError("CONTENT_SCENE_ANIMATION_MODEL_UNAVAILABLE") from exc
         for relative, expected in sorted(self._config.inventory.items()):
+            self._ensure_open()
             path = models / relative
             if path.is_symlink() or not path.is_file():
                 raise SceneVideoMisconfiguredError("CONTENT_SCENE_ANIMATION_MODEL_UNAVAILABLE")
@@ -602,33 +647,51 @@ class ComfyUILtx23Renderer:
             arguments.append("--use-sage-attention")
         if self._config.fp16_accumulation:
             arguments += ["--fast", "fp16_accumulation"]
-        self._log_handle = self.log_path.open("ab")
-        try:
-            self._process = subprocess.Popen(
-                arguments,
-                cwd=self._comfyui,
-                stdin=subprocess.DEVNULL,
-                stdout=self._log_handle,
-                stderr=subprocess.STDOUT,
-                shell=False,
-                start_new_session=sys.platform != "win32",
-                env={
-                    **os.environ,
-                    "HF_HUB_OFFLINE": "1",
-                    "TRANSFORMERS_OFFLINE": "1",
-                    "PYTHONNOUSERSITE": "1",
-                },
+        with self._lock:
+            self._ensure_open()
+            if time.monotonic() >= deadline:
+                # The checks took the whole start budget: launching now would overrun it.
+                raise SceneVideoUnavailableError("CONTENT_SCENE_ANIMATION_COMFYUI_START_TIMEOUT")
+            self._log_handle = self.log_path.open("ab")
+            try:
+                process = subprocess.Popen(
+                    arguments,
+                    cwd=self._comfyui,
+                    stdin=subprocess.DEVNULL,
+                    stdout=self._log_handle,
+                    stderr=subprocess.STDOUT,
+                    shell=False,
+                    start_new_session=sys.platform != "win32",
+                    # Suspended until it is in the job: the venv's python.exe starts
+                    # the real interpreter at once, which must not escape the job.
+                    creationflags=_CREATE_SUSPENDED if sys.platform == "win32" else 0,
+                    env={
+                        **os.environ,
+                        "HF_HUB_OFFLINE": "1",
+                        "TRANSFORMERS_OFFLINE": "1",
+                        "PYTHONNOUSERSITE": "1",
+                    },
+                )
+            except OSError as exc:
+                self._stop_process()
+                raise SceneVideoUnavailableError(
+                    "CONTENT_SCENE_ANIMATION_COMFYUI_START_FAILED"
+                ) from exc
+            self._process = process
+            self._job = _attach_kill_on_close_job(process)
+            self._watch_stop = threading.Event()
+            self._watcher = threading.Thread(
+                target=self._watch_descendants, args=(process, self._watch_stop), daemon=True
             )
-        except OSError as exc:
-            self.close()
-            raise SceneVideoUnavailableError(
-                "CONTENT_SCENE_ANIMATION_COMFYUI_START_FAILED"
-            ) from exc
-        self._port = port
+            self._watcher.start()
+            if sys.platform == "win32" and not _resume_process(process.pid):
+                self._stop_process()
+                raise SceneVideoUnavailableError("CONTENT_SCENE_ANIMATION_COMFYUI_START_FAILED")
+            self._port = port
         while True:
-            if self._process.poll() is not None:
+            if process.poll() is not None:
                 self._log_tail("scene_animation_comfyui_exited")
-                self.close()
+                self._stop_process()
                 raise SceneVideoUnavailableError("CONTENT_SCENE_ANIMATION_COMFYUI_EXITED")
             try:
                 stats = self._call("GET", "/system_stats")
@@ -639,7 +702,7 @@ class ComfyUILtx23Renderer:
                 version = system.get("comfyui_version") if isinstance(system, dict) else None
                 if version != COMFYUI_VERSION:
                     # Another program answered on this port, or the checkout changed.
-                    self.close()
+                    self._stop_process()
                     raise SceneVideoMisconfiguredError(
                         "CONTENT_SCENE_ANIMATION_COMFYUI_VERSION_MISMATCH"
                     )
@@ -647,7 +710,7 @@ class ComfyUILtx23Renderer:
                 return
             if time.monotonic() >= deadline:
                 self._log_tail("scene_animation_comfyui_start_timeout")
-                self.close()
+                self._stop_process()
                 raise SceneVideoUnavailableError("CONTENT_SCENE_ANIMATION_COMFYUI_START_TIMEOUT")
             time.sleep(min(self._config.poll_interval_seconds, 1.0))
 
@@ -658,7 +721,7 @@ class ComfyUILtx23Renderer:
             # ComfyUI refuses a graph it cannot run (unknown node, missing file).
             raise SceneVideoMisconfiguredError("CONTENT_SCENE_ANIMATION_GRAPH_REFUSED") from exc
         except (OSError, ValueError) as exc:
-            self.close()
+            self._stop_process()
             raise SceneVideoUnavailableError("CONTENT_SCENE_ANIMATION_COMFYUI_UNREACHABLE") from exc
         prompt_id = queued.get("prompt_id")
         if not isinstance(prompt_id, str) or not prompt_id:
@@ -666,7 +729,7 @@ class ComfyUILtx23Renderer:
         while True:
             if not self.running:
                 self._log_tail("scene_animation_comfyui_exited")
-                self.close()
+                self._stop_process()
                 raise SceneVideoUnavailableError("CONTENT_SCENE_ANIMATION_COMFYUI_EXITED")
             try:
                 history = self._call("GET", f"/history/{prompt_id}")
@@ -678,7 +741,7 @@ class ComfyUILtx23Renderer:
                 return status if isinstance(status, dict) else {}
             if time.monotonic() >= deadline:
                 # The clip is abandoned with the whole tree; the next one starts again.
-                self.close()
+                self._stop_process()
                 raise SceneClipTimeoutError("CONTENT_SCENE_ANIMATION_CLIP_TIMEOUT")
             time.sleep(self._config.poll_interval_seconds)
 
@@ -701,6 +764,20 @@ class ComfyUILtx23Renderer:
         if not isinstance(decoded, dict):
             raise ValueError("ComfyUI answered something other than an object")
         return decoded
+
+    def _watch_descendants(self, process: subprocess.Popen[bytes], stop: threading.Event) -> None:
+        # HTTP calls may block for seconds; this keeps seeing short-lived helpers.
+        while not stop.wait(_WATCH_INTERVAL_SECONDS):
+            self._track_descendants(process)
+
+    def _track_descendants(self, process: subprocess.Popen[bytes]) -> None:
+        try:
+            children = psutil.Process(process.pid).children(recursive=True)
+        except psutil.Error:
+            return
+        for child in children:
+            with contextlib.suppress(psutil.Error):
+                self._descendants.setdefault(child.pid, child.create_time())
 
     def _log_tail(self, event: str) -> None:
         with contextlib.suppress(OSError):
@@ -812,6 +889,91 @@ def _kill_process_tree(process: subprocess.Popen[Any]) -> None:
             os.killpg(process.pid, signal.SIGKILL)
     with contextlib.suppress(OSError):
         process.kill()
+
+
+class _KillOnCloseJob:
+    """A Windows job holding ComfyUI and every process it starts.
+
+    Terminating the job kills them all, even when ComfyUI itself already exited
+    and ``taskkill /T`` could no longer find its descendants.
+    """
+
+    def __init__(self, pid: int) -> None:
+        if sys.platform != "win32":
+            raise OSError("job objects exist only on Windows")
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        _configure_kernel32(kernel32)
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.TerminateJobObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        kernel32.TerminateJobObject.restype = ctypes.c_int
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            raise ctypes.WinError(ctypes.get_last_error())
+        information = _job_limit_information()
+        process = None
+        try:
+            if not kernel32.SetInformationJobObject(
+                job, 9, ctypes.byref(information), ctypes.sizeof(information)
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            process = kernel32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, 0, pid)
+            if not process or not kernel32.AssignProcessToJobObject(job, process):
+                raise ctypes.WinError(ctypes.get_last_error())
+        except OSError:
+            kernel32.CloseHandle(job)
+            raise
+        finally:
+            if process:
+                kernel32.CloseHandle(process)
+        self._kernel32 = kernel32
+        self._job = job
+
+    def terminate(self) -> None:
+        if self._job:
+            self._kernel32.TerminateJobObject(self._job, 1)
+            self._kernel32.CloseHandle(self._job)
+            self._job = None
+
+
+def _kill_known_processes(known: Mapping[int, float]) -> None:
+    """Kill each process still alive under the same pid and creation time."""
+    for pid, created in known.items():
+        with contextlib.suppress(psutil.Error):
+            process = psutil.Process(pid)
+            if process.create_time() == created:
+                process.kill()
+
+
+def _resume_process(pid: int) -> bool:
+    """Resume a process created suspended (all of its threads)."""
+    if sys.platform != "win32":
+        return True
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    handle = kernel32.OpenProcess(_PROCESS_SUSPEND_RESUME, 0, pid)
+    if not handle:
+        return False
+    try:
+        return bool(ntdll.NtResumeProcess(handle) == 0)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _attach_kill_on_close_job(process: subprocess.Popen[Any]) -> _KillOnCloseJob | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        return _KillOnCloseJob(process.pid)
+    except OSError:
+        # Still stopped through taskkill /T, which needs ComfyUI to be alive.
+        log.warning("scene_animation_job_object_unavailable")
+        return None
 
 
 class _PeakSampler:
@@ -926,11 +1088,17 @@ def _sha256_file(path: Path) -> str:
 
 
 def _sha256_unchanged_file(path: Path) -> str:
-    """Hash a multi-gigabyte weight file once per size and modification time."""
+    """Hash a multi-gigabyte weight file once per identity, size and timestamps.
+
+    A file replaced by another one gets a new file id and creation time, so it is
+    read again even when size and modification time were made to match.
+    """
     stat = path.stat()
-    return _sha256_file_cached(str(path), stat.st_size, stat.st_mtime_ns)
+    return _sha256_file_cached(
+        str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+    )
 
 
 @lru_cache(maxsize=16)
-def _sha256_file_cached(path: str, _size: int, _mtime_ns: int) -> str:
+def _sha256_file_cached(path: str, _inode: int, _size: int, _mtime_ns: int, _ctime_ns: int) -> str:
     return _sha256_file(Path(path))

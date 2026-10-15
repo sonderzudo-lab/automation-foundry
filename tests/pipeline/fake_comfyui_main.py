@@ -4,7 +4,8 @@ Copied as ``main.py`` into a temporary ComfyUI folder and started by the real
 renderer as a separate process. ``FAKE_COMFYUI_MODE`` chooses what it does with
 each prompt: ``ok`` writes the requested frames, ``error`` reports an execution
 error, ``hang`` never finishes (and keeps a child process alive, so the tests
-can check that the whole tree is killed), ``exit`` stops before listening.
+can check that the whole tree is killed), ``exit`` stops before listening,
+``orphan`` starts a child and then dies, leaving the child behind.
 Everything it receives is written to ``FAKE_COMFYUI_RECORD``.
 """
 
@@ -15,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -40,6 +42,12 @@ record.mkdir(parents=True, exist_ok=True)
 (record / "offline").write_text(os.environ.get("HF_HUB_OFFLINE", ""), encoding="utf-8")
 if mode == "exit":
     sys.exit(3)
+if mode == "orphan":
+    # A helper that outlives ComfyUI, which then dies while starting.
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    (record / "child_pid").write_text(str(child.pid), encoding="utf-8")
+    time.sleep(0.5)
+    sys.exit(4)
 if mode == "hang":
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
     (record / "child_pid").write_text(str(child.pid), encoding="utf-8")

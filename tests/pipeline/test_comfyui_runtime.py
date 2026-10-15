@@ -296,6 +296,59 @@ def test_a_clip_past_its_timeout_kills_the_whole_process_tree(
     assert _gone(int((record / "child_pid").read_text(encoding="utf-8")))
 
 
+def test_a_helper_left_by_a_comfyui_that_died_is_killed_too(
+    tmp_path: Path, record: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_COMFYUI_MODE", "orphan")
+    renderer = _renderer(_install(tmp_path), tmp_path)
+
+    with pytest.raises(SceneVideoUnavailableError) as raised:
+        renderer.start(timeout_seconds=30)
+
+    assert raised.value.code == "CONTENT_SCENE_ANIMATION_COMFYUI_EXITED"
+    assert _gone(int((record / "child_pid").read_text(encoding="utf-8")))
+
+
+def test_a_closed_renderer_never_launches(tmp_path: Path, record: Path) -> None:
+    renderer = _renderer(_install(tmp_path), tmp_path)
+    renderer.close()
+
+    with pytest.raises(SceneVideoUnavailableError) as raised:
+        renderer.start(timeout_seconds=30)
+
+    assert raised.value.code == "CONTENT_SCENE_ANIMATION_RUNTIME_CLOSED"
+    assert not (record / "argv.json").exists()
+
+
+def test_checks_that_use_up_the_start_time_launch_nothing(tmp_path: Path, record: Path) -> None:
+    renderer = _renderer(_install(tmp_path), tmp_path)
+
+    with pytest.raises(SceneVideoUnavailableError) as raised:
+        renderer.start(timeout_seconds=0)
+
+    assert raised.value.code == "CONTENT_SCENE_ANIMATION_COMFYUI_START_TIMEOUT"
+    assert not (record / "argv.json").exists()
+
+
+def test_the_weights_are_checked_again_on_a_restart(
+    tmp_path: Path, record: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_COMFYUI_MODE", "hang")
+    config = _install(tmp_path)
+    renderer = _renderer(config, tmp_path)
+    try:
+        renderer.start(timeout_seconds=30)
+        with pytest.raises(SceneClipTimeoutError):
+            renderer.render(_request(tmp_path), timeout_seconds=0.5)
+        (tmp_path / "models" / f"checkpoints/{LTX23_CHECKPOINT}").write_bytes(b"swapped!!!")
+        with pytest.raises(SceneVideoMisconfiguredError) as raised:
+            renderer.start(timeout_seconds=30)
+    finally:
+        renderer.close()
+
+    assert raised.value.code == "CONTENT_SCENE_ANIMATION_MODEL_HASH_MISMATCH"
+
+
 def test_a_clip_the_graph_fails_on_leaves_the_runtime_running(
     tmp_path: Path, record: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
