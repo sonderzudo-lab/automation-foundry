@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -39,6 +40,7 @@ from src.pipeline.captions import (
     execute_approved_caption_step,
     get_configured_caption_adapter,
 )
+from src.pipeline.comfyui_runtime import ComfyUIConfig, ComfyUILtx23Renderer
 from src.pipeline.final_review import (
     FINAL_REVIEW_APPROVAL_ACTION,
     FinalVideoReview,
@@ -47,6 +49,7 @@ from src.pipeline.final_review import (
     request_final_video_approval,
 )
 from src.pipeline.local_export import LocalExportPackage, load_local_export_package
+from src.pipeline.motion_generation import MOTION_MODEL_TIMEOUT_SECONDS, motion_text_model
 from src.pipeline.narration_review import (
     NARRATION_REVIEW_APPROVAL_ACTION,
     NarrationReview,
@@ -55,6 +58,12 @@ from src.pipeline.narration_review import (
     finalize_narration_approval,
     load_narration_review,
     request_narration_approval,
+)
+from src.pipeline.scene_animation import (
+    LTX23_QUALITY_TEST_BACKEND,
+    RendererFactory,
+    SceneAnimationLimits,
+    execute_scene_animation_step,
 )
 from src.pipeline.script_gen import (
     OPENING_STYLE_LABELS,
@@ -346,6 +355,7 @@ async def execute_content_script_run(
     caption_adapter: CaptionAdapter | None = None,
     assembly_adapter: AssemblyAdapter | None = None,
     storage_root: Path | None = None,
+    scene_renderer_factory: RendererFactory | None = None,
 ) -> ContentScriptRunResult:
     """Execute A1 as one GPU step and persist its reviewable local evidence."""
     input_data = ContentScriptInput.model_validate(input_payload or {})
@@ -655,6 +665,7 @@ async def execute_content_script_run(
         visual_replayed = True
         caption_replayed = True
         assembly_replayed = True
+        scene_animation_replayed = True
         similarity_replayed = True
         alignment_gate_replayed = True
         audio_artifact: Artifact | None = None
@@ -809,6 +820,27 @@ async def execute_content_script_run(
             )
             caption_replayed = caption_result.replayed
         if (
+            _scene_animation_enabled()
+            and audio_artifact is not None
+            and visual_result is not None
+            and caption_result is not None
+            and RunStatus(run.status) is RunStatus.RUNNING
+        ):
+            # A5a: each approved image becomes a clip before the montage.
+            scene_animation_replayed = await _animate_scenes(
+                session,
+                run=run,
+                approval=approval,
+                approval_input=approval_input,
+                audio_artifact=audio_artifact,
+                visual_manifest_artifact_id=visual_result.manifest_artifact_id,
+                visual_artifact_ids=visual_result.visual_artifact_ids,
+                caption_artifact_id=caption_result.artifact_id,
+                idempotency_key=idempotency_key,
+                storage_root=root,
+                renderer_factory=scene_renderer_factory,
+            )
+        if (
             _assembly_enabled()
             and audio_artifact is not None
             and visual_result is not None
@@ -943,6 +975,7 @@ async def execute_content_script_run(
                 and tts_result.replayed
                 and visual_replayed
                 and caption_replayed
+                and scene_animation_replayed
                 and assembly_replayed
                 and similarity_replayed
                 and alignment_gate_replayed
@@ -1570,6 +1603,137 @@ def _remotion_quality_test_config() -> RemotionQualityTestConfig | None:
     )
 
 
+def _scene_animation_enabled() -> bool:
+    backend = getattr(settings, "content_scene_animation_backend", "disabled")
+    return bool(backend == LTX23_QUALITY_TEST_BACKEND)
+
+
+def _scene_animation_limits() -> SceneAnimationLimits:
+    # The motion plan is asked inside the attempt: leave room for one call in
+    # flight, as the animated edit of A5 does.
+    text_call_seconds = MOTION_MODEL_TIMEOUT_SECONDS
+    if getattr(settings, "content_text_model_provider", "ollama") == "codex_exec":
+        text_call_seconds += float(
+            getattr(settings, "content_text_model_codex_timeout_seconds", 300)
+        )
+    try:
+        limits = SceneAnimationLimits(
+            timeout_seconds=float(settings.celery_soft_time_limit_seconds - 15),
+            clip_timeout_seconds=float(settings.content_scene_animation_clip_timeout_seconds),
+            startup_timeout_seconds=float(
+                settings.content_scene_animation_startup_timeout_seconds
+            ),
+            seconds_per_frame=float(settings.content_scene_animation_seconds_per_frame),
+            max_attempts=int(settings.content_scene_animation_max_attempts),
+            text_call_seconds=text_call_seconds,
+        )
+    except ValueError as exc:
+        raise ContentScriptRunNotRunnableError(
+            "A5a scene animation limits are invalid"
+        ) from exc
+    if limits.timeout_seconds < limits.shortest_useful_attempt_seconds:
+        raise ContentScriptRunNotRunnableError(
+            "A5a scene animation needs a longer CELERY_SOFT_TIME_LIMIT_SECONDS: at least "
+            f"{math.ceil(limits.shortest_useful_attempt_seconds) + 15} s with these settings"
+        )
+    return limits
+
+
+def _scene_renderer_config() -> ComfyUIConfig:
+    comfyui_dir = settings.content_scene_animation_comfyui_dir
+    python_path = settings.content_scene_animation_python_path
+    if not comfyui_dir or not comfyui_dir.strip() or not python_path or not python_path.strip():
+        raise ContentScriptRunNotRunnableError(
+            "A5a scene animation requires the ComfyUI folder and its Python"
+        )
+    ffmpeg_hash = (settings.content_ffmpeg_expected_sha256 or "").strip().lower()
+    if len(ffmpeg_hash) != 64 or any(char not in "0123456789abcdef" for char in ffmpeg_hash):
+        raise ContentScriptRunNotRunnableError(
+            "A5a scene animation requires a pinned FFmpeg hash"
+        )
+    models_dir = settings.content_scene_animation_models_dir
+    return ComfyUIConfig(
+        comfyui_dir=comfyui_dir,
+        python_path=python_path,
+        models_dir=models_dir if models_dir and models_dir.strip() else None,
+        ffmpeg_path=settings.content_ffmpeg_path,
+        ffmpeg_sha256=ffmpeg_hash,
+        min_free_ram_bytes=int(settings.content_scene_animation_min_free_ram_gb * 1024**3),
+        sage_attention=settings.content_scene_animation_sage_attention,
+        fp16_accumulation=settings.content_scene_animation_fp16_accumulation,
+    )
+
+
+def _configured_scene_renderer_factory() -> RendererFactory:
+    config = _scene_renderer_config()
+
+    def build(workspace: Path) -> ComfyUILtx23Renderer:
+        return ComfyUILtx23Renderer(
+            config,
+            workspace=workspace,
+            # The motion plan may have loaded the local model; the video model needs the RAM.
+            release_text_model=release_ollama_scene_model,
+        )
+
+    return build
+
+
+async def _animate_scenes(
+    session: AsyncSession,
+    *,
+    run: Run,
+    approval: Approval,
+    approval_input: dict[str, object],
+    audio_artifact: Artifact,
+    visual_manifest_artifact_id: int | None,
+    visual_artifact_ids: tuple[int, ...],
+    caption_artifact_id: int | None,
+    idempotency_key: str,
+    storage_root: Path,
+    renderer_factory: RendererFactory | None,
+) -> bool:
+    """Run A5a on the A3 images and A4 words; return whether it was a replay."""
+    manifest = (
+        await session.get(Artifact, visual_manifest_artifact_id)
+        if visual_manifest_artifact_id is not None
+        else None
+    )
+    caption = (
+        await session.get(Artifact, caption_artifact_id)
+        if caption_artifact_id is not None
+        else None
+    )
+    visuals: list[Artifact] = []
+    for artifact_id in visual_artifact_ids:
+        visual = await session.get(Artifact, artifact_id)
+        if visual is None:
+            raise ContentScriptRunNotRunnableError(
+                "completed A3 step is missing a scene animation source image"
+            )
+        visuals.append(visual)
+    if manifest is None or caption is None:
+        raise ContentScriptRunNotRunnableError(
+            "completed A3/A4 steps are missing scene animation source artifacts"
+        )
+    result = await execute_scene_animation_step(
+        session,
+        run=run,
+        approval=approval,
+        approval_input_payload=approval_input,
+        audio_artifact=audio_artifact,
+        visual_manifest_artifact=manifest,
+        visual_artifacts=tuple(visuals),
+        caption_artifact=caption,
+        idempotency_key=idempotency_key,
+        storage_root=storage_root,
+        renderer_factory=renderer_factory or _configured_scene_renderer_factory(),
+        motion_model=motion_text_model(),
+        limits=_scene_animation_limits(),
+        gpu_power_watts=int(getattr(settings, "gpu_power_watts", 400)),
+    )
+    return result.replayed
+
+
 def _validate_pipeline_backend_dependencies() -> None:
     if _thumbnail_review_enabled() and not _final_review_enabled():
         raise ContentScriptRunNotRunnableError(
@@ -1619,6 +1783,15 @@ def _validate_pipeline_backend_dependencies() -> None:
         )
     # Refuse an animated edit that cannot fit its step before any work starts.
     _remotion_quality_test_config()
+    if _scene_animation_enabled():
+        if not (_visuals_enabled() and _captions_enabled()) or (
+            _assembly_backend() != REMOTION_QUALITY_TEST_BACKEND
+        ):
+            raise ContentScriptRunNotRunnableError(
+                "A5a scene animation requires A3 visuals, A4 captions and the Remotion A5"
+            )
+        _scene_animation_limits()
+        _scene_renderer_config()
 
 
 async def _load_completed_evidence(

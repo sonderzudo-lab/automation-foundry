@@ -173,6 +173,28 @@ class Settings(BaseSettings):
     content_ffprobe_expected_sha256: str | None = None
     # Node.js que roda o CLI do Remotion instalado em render/remotion/node_modules.
     content_remotion_node_path: str = Field(default="node", min_length=1, max_length=1000)
+    # A5a anima cada imagem aprovada no A3 com o LTX-2.3, num ComfyUI v0.40.0 de
+    # ambiente virtual próprio, iniciado pelo step em loopback e encerrado no fim de
+    # cada tentativa. Os pesos ficam na pasta de modelos e são conferidos por SHA-256
+    # (inventário fixado no código) antes de cada início; nada é baixado.
+    content_scene_animation_backend: Literal["disabled", "ltx23_quality_test"] = "disabled"
+    content_scene_animation_comfyui_dir: str | None = Field(default=None, max_length=1000)
+    content_scene_animation_python_path: str | None = Field(default=None, max_length=1000)
+    # Pasta com checkpoints/, latent_upscale_models/ e text_encoders/; vazio usa a
+    # pasta models/ do ComfyUI.
+    content_scene_animation_models_dir: str | None = Field(default=None, max_length=1000)
+    # Abaixo dessa RAM livre a tentativa falha como retryable sem iniciar o ComfyUI:
+    # um clipe de 9 s chegou a 63,7 GB numa máquina de 64 GB.
+    content_scene_animation_min_free_ram_gb: float = Field(default=40.0, ge=1, le=1024)
+    content_scene_animation_startup_timeout_seconds: int = Field(default=180, ge=10, le=900)
+    # Teto de um clipe; acima dele a cena fica com a imagem (generation_failed).
+    content_scene_animation_clip_timeout_seconds: int = Field(default=300, ge=30, le=900)
+    # Estimativa usada para não começar um clipe que não cabe no tempo da tentativa.
+    content_scene_animation_seconds_per_frame: float = Field(default=0.8, gt=0, le=60)
+    # Tentativas do step A5a: cada uma continua dos clipes prontos.
+    content_scene_animation_max_attempts: int = Field(default=6, ge=1, le=20)
+    content_scene_animation_sage_attention: bool = False
+    content_scene_animation_fp16_accumulation: bool = False
     # A6 usa comparação lexical determinística local; o escopo inicial é a automação.
     content_similarity_threshold: float = Field(default=0.85, gt=0, le=1)
     content_similarity_window: int = Field(default=20, ge=1, le=100)
