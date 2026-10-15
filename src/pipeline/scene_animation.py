@@ -91,6 +91,7 @@ from src.platform.models import (
     Automation,
     LedgerEntryType,
     MetricKind,
+    MetricPoint,
     QueueClass,
     Run,
     RunStatus,
@@ -202,7 +203,6 @@ class _Clip:
     seconds: Decimal
     peak_vram_mib: int | None
     peak_ram_bytes: int | None
-    rendered_now: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,13 +314,13 @@ async def execute_scene_animation_step(
                 session, run_id=run_id, step_key=step_key, code=exc.code
             )
         # Every finished clip is published, whatever stopped the attempt.
-        await _publish_clips(
+        await _publish_attempt(
             session,
             run=run,
             step_run=step_run,
             step_key=step_key,
             storage_root=storage_root,
-            clips=render.clips,
+            render=render,
             gpu_power_watts=gpu_power_watts,
             dimensions={
                 "queue": QueueClass.GPU.value,
@@ -588,6 +588,9 @@ class _Rendering:
         self.exhausted = False
         self.progressed = False
         self.identity: dict[str, str] = {}
+        # GPU time of every render call of this attempt, and of the ones that failed.
+        self.render_seconds = Decimal(0)
+        self.failures: list[tuple[int, str, Decimal]] = []
         self._seeds: dict[int, int] = {}
         self._keys: dict[int, str] = {}
 
@@ -702,7 +705,9 @@ class _Rendering:
             return False
         timeout = min(self._limits.clip_timeout_seconds, remaining)
         key = self._keys[scene.index]
-        output = self._clips_dir / f"scene-{scene.index:03d}-{key[:16]}.mp4"
+        # Rendered under a temporary name; the final name carries the SHA-256, so a
+        # clip made again never overwrites one an earlier attempt published.
+        output = self._clips_dir / f".scene-{scene.index:03d}-{key[:16]}.{uuid4().hex}.partial.mp4"
         request = ClipRenderRequest(
             index=scene.index,
             image_path=scene.image_path,
@@ -715,18 +720,25 @@ class _Rendering:
             height=self._height,
             output_path=output,
         )
+        began = self._clock()
         try:
             result = await asyncio.to_thread(renderer.render, request, timeout_seconds=timeout)
-        except SceneClipTimeoutError as exc:
-            self._loaded = False
-            if timeout < self._limits.clip_timeout_seconds:
-                # Stopped by the attempt's budget, not by its own limit: try again later.
-                return False
+        except (SceneClipTimeoutError, SceneClipFailedError) as exc:
+            output.unlink(missing_ok=True)
+            spent = self._spent_since(began)
+            if isinstance(exc, SceneClipTimeoutError):
+                self._loaded = False
+                if timeout < self._limits.clip_timeout_seconds:
+                    # Stopped by the attempt's budget, not by its own limit: try again later.
+                    return False
+            self.failures.append((scene.index, exc.code, spent))
             await asyncio.to_thread(self._mark_failed, scene.index, key, exc.code)
             return True
-        except SceneClipFailedError as exc:
-            await asyncio.to_thread(self._mark_failed, scene.index, key, exc.code)
-            return True
+        except BaseException:
+            output.unlink(missing_ok=True)
+            self._spent_since(began)
+            raise
+        self._spent_since(began)
         self._loaded = True
         clip = await asyncio.to_thread(
             self._store_clip,
@@ -749,6 +761,11 @@ class _Rendering:
     def _remaining(self) -> float:
         return self._deadline - self._clock()
 
+    def _spent_since(self, began: float) -> Decimal:
+        spent = Decimal(str(max(0.0, self._clock() - began))).quantize(_SECONDS_QUANTUM)
+        self.render_seconds += spent
+        return spent
+
     def _mark_failed(self, index: int, key: str, code: str) -> None:
         log.warning("scene_animation_scene_kept_still", index=index, code=code)
         self.stills[index] = "generation_failed"
@@ -770,10 +787,14 @@ class _Rendering:
         with path.open("r+b") as handle:
             os.fsync(handle.fileno())
         sha256 = _sha256_file(path)
+        final = self._clips_dir / f"scene-{index:03d}-{key[:16]}-{sha256[:16]}.mp4"
+        os.replace(path, final)
+        path = final
         _write_json_atomic(
-            path.with_suffix(".json"),
+            self._record_path(index, key),
             {
                 "key": key,
+                "video": final.name,
                 "sha256": sha256,
                 "seconds": str(seconds),
                 "peak_vram_mib": peak_vram_mib,
@@ -788,20 +809,34 @@ class _Rendering:
             seconds=seconds,
             peak_vram_mib=peak_vram_mib,
             peak_ram_bytes=peak_ram_bytes,
-            rendered_now=True,
         )
 
+    def _record_path(self, index: int, key: str) -> Path:
+        return self._clips_dir / f"scene-{index:03d}-{key[:16]}.json"
+
     def _cached_clip(self, index: int, key: str) -> _Clip | None:
-        """A clip made by an earlier attempt, only if it still matches its record."""
-        path = self._clips_dir / f"scene-{index:03d}-{key[:16]}.mp4"
-        record = _read_json(path.with_suffix(".json"))
-        if record is None or not path.is_file():
+        """A clip made by an earlier attempt, only if it still matches its record.
+
+        A clip that no longer matches is made again under a new name; the changed
+        file is left in place, since an earlier attempt may have published it.
+        """
+        record_path = self._record_path(index, key)
+        record = _read_json(record_path)
+        if record is None:
             return None
-        sha256 = record.get("sha256")
-        if record.get("key") != key or not isinstance(sha256, str) or _sha256_file(path) != sha256:
+        sha256, video = record.get("sha256"), record.get("video")
+        expected = f"scene-{index:03d}-{key[:16]}-"
+        path = self._clips_dir / str(video)
+        if (
+            record.get("key") != key
+            or not isinstance(sha256, str)
+            or not isinstance(video, str)
+            or video != f"{expected}{sha256[:16]}.mp4"
+            or not path.is_file()
+            or _sha256_file(path) != sha256
+        ):
             log.warning("scene_animation_cached_clip_discarded", index=index)
-            path.unlink(missing_ok=True)
-            path.with_suffix(".json").unlink(missing_ok=True)
+            record_path.unlink(missing_ok=True)
             return None
         vram, ram = record.get("peak_vram_mib"), record.get("peak_ram_bytes")
         return _Clip(
@@ -812,7 +847,6 @@ class _Rendering:
             seconds=Decimal(str(record.get("seconds", "0"))),
             peak_vram_mib=vram if isinstance(vram, int) else None,
             peak_ram_bytes=ram if isinstance(ram, int) else None,
-            rendered_now=False,
         )
 
 
@@ -945,93 +979,140 @@ async def _runtime_failure(
     return RetryableTaskError(code)
 
 
-async def _publish_clips(
+async def _publish_attempt(
     session: AsyncSession,
     *,
     run: Run,
     step_run: StepRun,
     step_key: str,
     storage_root: Path,
-    clips: dict[int, _Clip],
+    render: _Rendering,
     gpu_power_watts: int,
     dimensions: dict[str, object],
 ) -> None:
-    """Register every finished clip once, with the observations of the new ones."""
+    """Register every finished clip and the GPU time this attempt spent.
+
+    The observations of a clip are recorded once per run, from its cache record,
+    whichever attempt publishes it first: also a clip whose own attempt stopped
+    before publishing it. Failed and abandoned renders are recorded per attempt.
+    """
     run_id = _persisted_id(run.id, "run")
     automation = await session.get(Automation, run.automation_id)
     if automation is None:
         raise ValueError("scene animation automation does not exist")
+
+    async def observe(
+        key: str,
+        name: str,
+        kind: MetricKind,
+        value: Decimal | int,
+        unit: str,
+        extra: dict[str, object],
+    ) -> None:
+        recorded = await session.scalar(
+            select(MetricPoint.id).where(
+                MetricPoint.automation_id == automation.id,
+                MetricPoint.idempotency_key == key,
+            )
+        )
+        if recorded is not None:
+            return
+        await record_metric_point(
+            session,
+            automation=automation,
+            run=run,
+            step_run=step_run,
+            idempotency_key=key,
+            name=name,
+            kind=kind,
+            value=value,
+            unit=unit,
+            source=_SOURCE,
+            confidence="0.5" if name.endswith("_kwh") else None,
+            dimensions={**dimensions, **extra},
+        )
+
     async with session.begin_nested():
-        for clip in sorted(clips.values(), key=lambda item: item.index):
+        for clip in sorted(render.clips.values(), key=lambda item: item.index):
             artifact_key = _clip_artifact_key(step_key, clip.index, clip.sha256)
             existing = await session.scalar(
                 select(Artifact).where(
                     Artifact.run_id == run_id, Artifact.idempotency_key == artifact_key
                 )
             )
-            if existing is not None:
-                if existing.sha256 != clip.sha256:
-                    raise ValueError("a published clip changed")
-                continue
-            await register_local_artifact(
-                session,
-                run=run,
-                step_run=step_run,
-                storage_root=storage_root,
-                file_path=clip.path,
-                idempotency_key=artifact_key,
-                artifact_type=SCENE_CLIP_ARTIFACT,
-                media_type="video/mp4",
-                origin=_SOURCE,
-                sensitivity=ArtifactSensitivity.INTERNAL,
-                retention_days=_CLIP_RETENTION_DAYS,
-                expected_sha256=clip.sha256,
-            )
-            if not clip.rendered_now:
-                continue
-            clip_dimensions = {**dimensions, "scene_index": clip.index}
-            observations: list[tuple[str, MetricKind, Decimal | int, str]] = [
-                ("content_scene_clip_gpu_seconds", MetricKind.DURATION, clip.seconds, "seconds"),
-                (
-                    "content_scene_clip_energy_estimate_kwh",
-                    MetricKind.GAUGE,
-                    _energy_kwh(clip.seconds, gpu_power_watts),
-                    "kWh",
-                ),
-            ]
-            if clip.peak_vram_mib is not None:
-                observations.append(
-                    (
-                        "content_scene_clip_peak_vram_mib",
-                        MetricKind.GAUGE,
-                        clip.peak_vram_mib,
-                        "MiB",
-                    )
-                )
-            if clip.peak_ram_bytes is not None:
-                observations.append(
-                    (
-                        "content_scene_clip_peak_ram_bytes",
-                        MetricKind.GAUGE,
-                        clip.peak_ram_bytes,
-                        "bytes",
-                    )
-                )
-            for name, kind, value, unit in observations:
-                await record_metric_point(
+            if existing is None:
+                await register_local_artifact(
                     session,
-                    automation=automation,
                     run=run,
                     step_run=step_run,
-                    idempotency_key=f"{artifact_key}:{name}",
-                    name=name,
-                    kind=kind,
-                    value=value,
-                    unit=unit,
-                    source=_SOURCE,
-                    confidence="0.5" if name.endswith("_kwh") else None,
-                    dimensions=clip_dimensions,
+                    storage_root=storage_root,
+                    file_path=clip.path,
+                    idempotency_key=artifact_key,
+                    artifact_type=SCENE_CLIP_ARTIFACT,
+                    media_type="video/mp4",
+                    origin=_SOURCE,
+                    sensitivity=ArtifactSensitivity.INTERNAL,
+                    retention_days=_CLIP_RETENTION_DAYS,
+                    expected_sha256=clip.sha256,
                 )
+            elif existing.sha256 != clip.sha256:
+                raise ValueError("a published clip changed")
+            prefix = f"run-{run_id}:a5a:clip-{clip.index:03d}-{clip.sha256[:16]}"
+            for name, kind, value, unit in _clip_observations(clip, gpu_power_watts):
+                await observe(
+                    f"{prefix}:{name}", name, kind, value, unit, {"scene_index": clip.index}
+                )
+        attempt = f"{step_key}:attempt-{step_run.attempt}"
+        for index, code, seconds in render.failures:
+            await observe(
+                f"{attempt}:scene-{index:03d}:failed-gpu-seconds",
+                "content_scene_clip_failed_gpu_seconds",
+                MetricKind.DURATION,
+                seconds,
+                "seconds",
+                {"scene_index": index, "code": code},
+            )
+        if render.render_seconds > 0:
+            for name, kind, value, unit in (
+                (
+                    "content_scene_animation_attempt_gpu_seconds",
+                    MetricKind.DURATION,
+                    render.render_seconds,
+                    "seconds",
+                ),
+                (
+                    "content_scene_animation_attempt_energy_estimate_kwh",
+                    MetricKind.GAUGE,
+                    _energy_kwh(render.render_seconds, gpu_power_watts),
+                    "kWh",
+                ),
+            ):
+                await observe(
+                    f"{attempt}:{name}", name, kind, value, unit, {"attempt": step_run.attempt}
+                )
+
+
+def _clip_observations(
+    clip: _Clip, gpu_power_watts: int
+) -> list[tuple[str, MetricKind, Decimal | int, str]]:
+    observations: list[tuple[str, MetricKind, Decimal | int, str]] = [
+        ("content_scene_clip_gpu_seconds", MetricKind.DURATION, clip.seconds, "seconds"),
+        (
+            "content_scene_clip_energy_estimate_kwh",
+            MetricKind.GAUGE,
+            _energy_kwh(clip.seconds, gpu_power_watts),
+            "kWh",
+        ),
+    ]
+    if clip.peak_vram_mib is not None:
+        observations.append(
+            ("content_scene_clip_peak_vram_mib", MetricKind.GAUGE, clip.peak_vram_mib, "MiB")
+        )
+    if clip.peak_ram_bytes is not None:
+        observations.append(
+            ("content_scene_clip_peak_ram_bytes", MetricKind.GAUGE, clip.peak_ram_bytes, "bytes")
+        )
+    return observations
 
 
 async def _record_step_observations(

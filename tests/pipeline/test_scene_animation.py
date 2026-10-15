@@ -120,6 +120,8 @@ class _Renderer:
     requests: list[ClipRenderRequest] = field(default_factory=list)
     workspaces: list[Path] = field(default_factory=list)
     is_running: bool = False
+    # Make every render produce different bytes, as a real model may.
+    vary: bool = False
 
     provider = "local-comfyui-ltx23"
     model_id = "fake-ltx23@test"
@@ -149,6 +151,7 @@ class _Renderer:
         self.requests.append(request)
         outcome = self.outcomes.get(request.index, "ok")
         if outcome == "fail":
+            self.clock.now += 30
             raise SceneClipFailedError("CONTENT_SCENE_ANIMATION_CLIP_FAILED")
         if outcome == "timeout":
             self.clock.now += timeout_seconds
@@ -156,7 +159,8 @@ class _Renderer:
             raise SceneClipTimeoutError("CONTENT_SCENE_ANIMATION_CLIP_TIMEOUT")
         self.clock.now += self.seconds
         request.output_path.write_bytes(
-            b"\x00\x00\x00\x18ftypisom" + f"{request.index}:{request.seed}".encode()
+            b"\x00\x00\x00\x18ftypisom"
+            + f"{request.index}:{request.seed}:{len(self.rendered) if self.vary else 0}".encode()
         )
         return ClipRenderResult(
             seconds=self.seconds, peak_vram_mib=20_000, peak_ram_bytes=50 * 1024**3
@@ -479,6 +483,58 @@ async def test_ready_clips_are_reused_and_a_changed_clip_is_made_again(
 
     assert renderer.rendered == [1, 2, 1]
     assert _manifest(storage, evidence.run).scenes[0] == clip
+    # The GPU time of each clip is counted once per run, whichever step published it.
+    gpu = (
+        await session.scalars(
+            select(MetricPoint).where(MetricPoint.name == "content_scene_clip_gpu_seconds")
+        )
+    ).all()
+    assert len(gpu) == 2
+
+
+async def test_a_clip_made_again_never_overwrites_a_published_one(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    storage = tmp_path / "storage"
+    evidence = await _after_a4(session, storage, key="a5a-immutable")
+    renderer = _Renderer(clock=_Clock(), vary=True)
+    await _animate(session, evidence, storage, renderer)
+    first = _manifest(storage, evidence.run).scenes[0]
+    assert first.kind == "clip" and evidence.run.id is not None
+    clips = scene_clips_directory(storage, run_id=evidence.run.id) / "clips"
+    (clips / first.video).write_bytes(b"\x00\x00\x00\x18ftypisom tampered")
+
+    await _animate(session, evidence, storage, renderer, key="a5a-immutable-2")
+
+    again = _manifest(storage, evidence.run).scenes[0]
+    assert again.kind == "clip" and again.video != first.video
+    assert (clips / first.video).read_bytes().endswith(b"tampered")
+    published = await session.scalar(select(Artifact).where(Artifact.sha256 == first.video_sha256))
+    assert published is not None and published.relative_path.endswith(first.video)
+
+
+async def test_a_clip_found_unpublished_gets_its_observations_from_its_record(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    storage = tmp_path / "storage"
+    evidence = await _after_a4(session, storage, key="a5a-recovery")
+    renderer = _Renderer(clock=_Clock())
+    await _animate(session, evidence, storage, renderer)
+    # As if the worker died after the clip was stored and before it was published.
+    for point in (await session.scalars(select(MetricPoint))).all():
+        if point.idempotency_key.split(":a5a:")[-1].startswith("clip-001"):
+            await session.delete(point)
+    await session.commit()
+
+    await _animate(session, evidence, storage, renderer, key="a5a-recovery-2")
+
+    assert renderer.rendered == [1, 2]
+    gpu = (
+        await session.scalars(
+            select(MetricPoint).where(MetricPoint.name == "content_scene_clip_gpu_seconds")
+        )
+    ).all()
+    assert sorted(point.value for point in gpu) == [Decimal("100"), Decimal("100")]
 
 
 async def test_an_exhausted_budget_publishes_ready_clips_and_the_next_attempt_continues(
@@ -546,6 +602,16 @@ async def test_a_scene_the_model_fails_on_keeps_its_image(
     assert first.kind == "still" and first.reason == "generation_failed"
     assert manifest.scenes[1].kind == "clip"
     assert evidence.run.status == RunStatus.RUNNING.value
+    # The time spent on the failed scene is not lost.
+    failed = await session.scalar(
+        select(MetricPoint).where(MetricPoint.name == "content_scene_clip_failed_gpu_seconds")
+    )
+    assert failed is not None and failed.value == Decimal("30")
+    assert failed.dimensions["code"] == "CONTENT_SCENE_ANIMATION_CLIP_FAILED"
+    attempt = await session.scalar(
+        select(MetricPoint).where(MetricPoint.name == "content_scene_animation_attempt_gpu_seconds")
+    )
+    assert attempt is not None and attempt.value == Decimal("130")
 
     # A later step does not try the failed scene again.
     await _animate(session, evidence, storage, renderer, key="a5a-fallback-2")
