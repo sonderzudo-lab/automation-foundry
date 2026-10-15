@@ -9,8 +9,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import wave
@@ -130,11 +132,20 @@ _REMOTION_LICENSE_ID = (
     "check remotion.dev/license before monetizing)"
 )
 _RENDER_LOG_TAIL_CHARS = 2_000
+# Time kept, inside the adapter budget, for probing the MP4 after the render, and
+# the least a render is given; with less left the attempt stops before rendering.
+_PROBE_RESERVE_SECONDS = 60.0
+_MIN_RENDER_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
 class RemotionQualityTestConfig:
-    """Local Node.js and the in-repository Remotion project that draws the timeline."""
+    """Local Node.js and the in-repository Remotion project that draws the timeline.
+
+    ``timeout_seconds`` is one budget for the whole attempt: plan, render and
+    probe. Only a text model call already in flight may pass it, by at most that
+    call's own timeout, so the caller keeps that much below the step timeout.
+    """
 
     node_path: str
     ffprobe_path: str
@@ -590,6 +601,8 @@ def build_remotion_quality_test_adapter(
     def assemble(request: AssemblyRequest, destination: Path) -> AssemblyAdapterResult:
         if not 1 <= config.timeout_seconds <= 3600:
             raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_REMOTION_TIMEOUT_INVALID")
+        # A timed-out step does not stop this thread, so the attempt bounds itself.
+        deadline = time.monotonic() + config.timeout_seconds
         if request.visual_manifest_path is None or not request.visual_paths:
             raise AssemblyPermanentAdapterError("CONTENT_ASSEMBLY_REMOTION_MANIFEST_REQUIRED")
         project = _verified_remotion_project(Path(config.project_dir))
@@ -638,7 +651,12 @@ def build_remotion_quality_test_adapter(
             return None
 
         try:
-            written = write_animation_plan(text_model, narration=narration, check=fits)
+            written = write_animation_plan(
+                text_model,
+                narration=narration,
+                check=fits,
+                deadline=deadline - _PROBE_RESERVE_SECONDS - _MIN_RENDER_SECONDS,
+            )
             built = build(written.plan)
         except (AnimationPlanError, TimelineBuildError) as exc:
             raise AssemblyPermanentAdapterError(
@@ -685,8 +703,13 @@ def build_remotion_quality_test_adapter(
                 f"--public-dir={public}",
                 "--gl=angle",
             ]
+            render_seconds = deadline - time.monotonic() - _PROBE_RESERVE_SECONDS
+            if render_seconds < _MIN_RENDER_SECONDS:
+                raise AssemblyRetryableAdapterError(
+                    "CONTENT_ASSEMBLY_REMOTION_TIME_BUDGET_EXHAUSTED"
+                )
             try:
-                completed = runner(arguments, project.directory, config.timeout_seconds)
+                completed = runner(arguments, project.directory, render_seconds)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 raise AssemblyRetryableAdapterError(
                     "CONTENT_ASSEMBLY_REMOTION_UNAVAILABLE"
@@ -701,7 +724,7 @@ def build_remotion_quality_test_adapter(
         probe = _probe_rendered_video(
             ffprobe,
             destination,
-            timeout_seconds=min(config.timeout_seconds, 60.0),
+            timeout_seconds=max(1.0, min(_PROBE_RESERVE_SECONDS, deadline - time.monotonic())),
         )
         # Kept next to the video so the drawn timeline can be inspected by its hash.
         _write_text_atomic(destination.parent / "timeline.json", timeline_json)
@@ -810,7 +833,11 @@ def _run_process_tree(
     cwd: Path,
     timeout_seconds: float,
 ) -> subprocess.CompletedProcess[str]:
-    """Run without a shell; on timeout stop the whole tree (Remotion starts a browser)."""
+    """Run without a shell; on timeout stop the whole tree (Remotion starts a browser).
+
+    Outside Windows the program leads its own session, so its process group holds
+    every descendant and is killed at once.
+    """
     process = subprocess.Popen(
         arguments,
         cwd=cwd,
@@ -821,18 +848,21 @@ def _run_process_tree(
         encoding="utf-8",
         errors="replace",
         shell=False,
+        start_new_session=sys.platform != "win32",
     )
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         _kill_process_tree(process)
-        process.communicate()
+        # A descendant that escaped still holds the pipes; never wait on it forever.
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=30)
         raise
     return subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
 
 
 def _kill_process_tree(process: subprocess.Popen[str]) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         taskkill = Path(os.environ.get("SYSTEMROOT", "C:/Windows")) / "System32" / "taskkill.exe"
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             subprocess.run(
@@ -843,6 +873,9 @@ def _kill_process_tree(process: subprocess.Popen[str]) -> None:
                 check=False,
                 shell=False,
             )
+    else:
+        with contextlib.suppress(OSError):
+            os.killpg(process.pid, signal.SIGKILL)
     process.kill()
 
 

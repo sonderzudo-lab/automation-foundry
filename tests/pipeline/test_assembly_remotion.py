@@ -11,6 +11,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -290,7 +291,8 @@ def test_the_render_is_the_boundary_call_with_a_checked_timeline(tmp_path: Path)
         f"--public-dir={workspace / 'public'}",
         "--gl=angle",
     ]
-    assert cwd == project.resolve() and timeout == 600
+    # The render gets what is left of the 600 s budget, minus the 60 s kept to probe.
+    assert cwd == project.resolve() and 500 < timeout <= 540
     # The public folder holds the narration and every image under its timeline name.
     assert renderer.public_files == {"narration.wav", "visual-001.png", "visual-002.png"}
     assert not workspace.exists()
@@ -500,7 +502,7 @@ def test_a1_runs_the_animated_edit_on_the_gpu_queue(monkeypatch: pytest.MonkeyPa
     config = a1_executor._remotion_quality_test_config()
     assert config is not None
     assert (config.node_path, config.ffprobe_sha256, config.timeout_seconds) == (
-        "node", "a" * 64, 1_785.0,
+        "node", "a" * 64, 1_785.0 - 120 - 30,
     )
     assert a1_executor._ffmpeg_quality_test_config() is None
 
@@ -613,3 +615,76 @@ async def test_a5_refuses_a_gpu_queue_without_gpu_power(session: AsyncSession) -
             timeout_seconds=5,
             queue=QueueClass.GPU,
         )
+
+
+class _SlowTextModel(_TextModel):
+    """Each answer takes ``seconds`` on the fake clock."""
+
+    def __init__(self, clock: list[float], seconds: float, *outcomes: str) -> None:
+        super().__init__(*outcomes)
+        self.clock = clock
+        self.seconds = seconds
+
+    def complete(self, request: TextModelRequest) -> TextModelResult:
+        self.clock[0] += self.seconds
+        return super().complete(request)
+
+
+@pytest.mark.parametrize(("plan_seconds", "render_timeout"), [(500.0, 40.0), (520.0, None)])
+def test_planning_and_rendering_share_one_time_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    plan_seconds: float,
+    render_timeout: float | None,
+) -> None:
+    clock = [1_000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    renderer = _FakeRenderer()
+    model = _SlowTextModel(clock, plan_seconds, json.dumps(_PLAN, ensure_ascii=False))
+    adapter = _adapter(tmp_path, renderer, model)
+
+    if render_timeout is None:
+        # 600 s budget - 520 s of planning leaves 20 s, under the 30 s minimum render.
+        with pytest.raises(AssemblyRetryableAdapterError, match="TIME_BUDGET_EXHAUSTED"):
+            adapter(_request(tmp_path), tmp_path / "out" / "video.mp4")
+        assert [call[0][1:] for call in renderer.calls] == [["--version"]]
+    else:
+        adapter(_request(tmp_path), tmp_path / "out" / "video.mp4")
+        assert renderer.calls[-1][2] == render_timeout
+
+
+def test_no_plan_attempt_starts_once_the_budget_is_spent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [1_000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    # The first answer is refused and took the whole planning time.
+    model = _SlowTextModel(clock, 520.0, "not json", json.dumps(_PLAN, ensure_ascii=False))
+    renderer = _FakeRenderer()
+
+    with pytest.raises(AssemblyRetryableAdapterError, match="ANIMATION_MODEL_UNAVAILABLE"):
+        _adapter(tmp_path, renderer, model)(_request(tmp_path), tmp_path / "out" / "video.mp4")
+
+    assert len(model.requests) == 1
+    assert [call[0][1:] for call in renderer.calls] == [["--version"]]
+
+
+def test_a1_refuses_an_animated_edit_that_cannot_fit_its_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        a1_executor,
+        "settings",
+        SimpleNamespace(
+            content_assembly_backend="remotion_quality_test",
+            content_ffprobe_expected_sha256="a" * 64,
+            content_text_model_provider="codex_exec",
+            content_text_model_codex_timeout_seconds=300,
+            celery_soft_time_limit_seconds=300,
+        ),
+    )
+
+    # 120 s local reserve + 300 s Codex call + 30 s margin + 150 s minimum + 15 s.
+    with pytest.raises(a1_executor.ContentScriptRunNotRunnableError, match="at least 615 s"):
+        a1_executor._remotion_quality_test_config()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 from decimal import Decimal
 from typing import Any
 
@@ -12,6 +13,7 @@ import pytest
 from src.pipeline import animation_generation
 from src.pipeline.animation_generation import (
     ANIMATION_PLAN_ATTEMPTS,
+    AnimationPlanTimeError,
     animation_plan_request,
     write_animation_plan,
 )
@@ -126,6 +128,15 @@ def test_the_caller_can_refuse_a_plan_for_a_reason_of_its_own() -> None:
     assert seen == [1, 0]
     assert written.attempts == 2 and written.plan.highlights == []
     assert "refused because it has a highlight with no free time" in model.requests[1].user
+
+
+def test_no_attempt_starts_after_the_deadline() -> None:
+    model = _TextModel(_answer(_PLAN))
+
+    with pytest.raises(AnimationPlanTimeError):
+        write_animation_plan(model, narration=_NARRATION, deadline=time.monotonic() - 1)
+
+    assert model.requests == []
 
 
 def test_no_acceptable_answer_fails_closed_after_the_attempt_ceiling() -> None:

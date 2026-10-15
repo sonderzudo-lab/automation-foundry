@@ -9,6 +9,7 @@ unchecked reaches the screen.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -57,6 +58,10 @@ _SYSTEM = (
 )
 
 
+class AnimationPlanTimeError(TimeoutError):
+    """The time for the plan ran out before an acceptable answer arrived."""
+
+
 @dataclass(frozen=True, slots=True)
 class WrittenAnimationPlan:
     """An accepted plan, the answer that carried it and how many attempts it took."""
@@ -97,19 +102,24 @@ def write_animation_plan(
     *,
     narration: str,
     check: Callable[[AnimationPlan], str | None] | None = None,
+    deadline: float | None = None,
 ) -> WrittenAnimationPlan:
     """Return the first plan the checks accept, asking again with each refusal.
 
     ``check`` may refuse a plan that matches the narration for a reason of its
     own, such as animations that do not fit the spoken timings; it returns that
-    reason, phrased to follow "it", or None. Raises ``AnimationPlanError`` when the narration is empty or too long for one
-    request, or when no answer is accepted within ``ANIMATION_PLAN_ATTEMPTS``.
+    reason, phrased to follow "it", or None. No attempt starts after
+    ``deadline`` (a ``time.monotonic()`` value): ``AnimationPlanTimeError``.
+    Raises ``AnimationPlanError`` when the narration is empty or too long for
+    one request, or when no answer is accepted within ``ANIMATION_PLAN_ATTEMPTS``.
     Text model failures (unreachable, not signed in) propagate unchanged.
     """
     if not narration.strip():
         raise AnimationPlanError("the narration is empty")
     refused: tuple[str, str] | None = None
     for attempt in range(1, ANIMATION_PLAN_ATTEMPTS + 1):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise AnimationPlanTimeError(f"no time left for attempt {attempt}")
         try:
             request = animation_plan_request(narration=narration, refused=refused)
         except ValueError as exc:

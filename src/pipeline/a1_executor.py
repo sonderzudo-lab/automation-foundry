@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import settings
 from src.intelligence.similarity import execute_similarity_gate_step
 from src.operations.retention_policy import resolve_retention_days
+from src.pipeline.animation_generation import ANIMATION_MODEL_TIMEOUT_SECONDS
 from src.pipeline.assembly import (
     REMOTION_QUALITY_TEST_BACKEND,
     AssemblyAdapter,
@@ -1532,6 +1533,11 @@ def _ffmpeg_quality_test_config() -> FFmpegQualityTestConfig | None:
     )
 
 
+_REMOTION_STEP_MARGIN_SECONDS = 30.0
+# Planning, at least 30 s of render and the 60 s kept to probe the MP4.
+_REMOTION_MIN_BUDGET_SECONDS = 150.0
+
+
 def _remotion_quality_test_config() -> RemotionQualityTestConfig | None:
     if _assembly_backend() != REMOTION_QUALITY_TEST_BACKEND:
         return None
@@ -1540,14 +1546,27 @@ def _remotion_quality_test_config() -> RemotionQualityTestConfig | None:
         raise ContentScriptRunNotRunnableError(
             "Remotion quality test requires a pinned ffprobe hash"
         )
+    # A timed-out step leaves its worker thread running, so the adapter must end
+    # first: its budget leaves room for one text model call already in flight
+    # (the Codex call plus, after its usage limit, the local reserve).
+    step_seconds = float(settings.celery_soft_time_limit_seconds - 15)
+    text_call_seconds = ANIMATION_MODEL_TIMEOUT_SECONDS
+    if getattr(settings, "content_text_model_provider", "ollama") == "codex_exec":
+        text_call_seconds += float(
+            getattr(settings, "content_text_model_codex_timeout_seconds", 300)
+        )
+    budget = step_seconds - text_call_seconds - _REMOTION_STEP_MARGIN_SECONDS
+    if budget < _REMOTION_MIN_BUDGET_SECONDS:
+        raise ContentScriptRunNotRunnableError(
+            "Remotion quality test needs a longer CELERY_SOFT_TIME_LIMIT_SECONDS: "
+            f"at least {int(step_seconds - budget + _REMOTION_MIN_BUDGET_SECONDS + 15)} s "
+            "with the configured text model"
+        )
     return RemotionQualityTestConfig(
         node_path=str(getattr(settings, "content_remotion_node_path", "node")),
         ffprobe_path=str(getattr(settings, "content_ffprobe_path", "ffprobe")),
         ffprobe_sha256=ffprobe_hash,
-        timeout_seconds=max(
-            1.0,
-            float(settings.celery_soft_time_limit_seconds - 15),
-        ),
+        timeout_seconds=min(budget, 3600.0),
     )
 
 
@@ -1598,6 +1617,8 @@ def _validate_pipeline_backend_dependencies() -> None:
         raise ContentScriptRunNotRunnableError(
             "A5 assembly requires both A3 visuals and A4 captions"
         )
+    # Refuse an animated edit that cannot fit its step before any work starts.
+    _remotion_quality_test_config()
 
 
 async def _load_completed_evidence(
