@@ -15,7 +15,15 @@ from src.operations.retention_policy import (
     resolve_retention_days,
     resolve_retention_policy,
 )
-from src.pipeline import a1_executor, assembly, caption_alignment, captions, tts, visuals
+from src.pipeline import (
+    a1_executor,
+    assembly,
+    caption_alignment,
+    captions,
+    scene_animation,
+    tts,
+    visuals,
+)
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src"
 _ARTIFACT_TYPE_LITERAL = re.compile(r"""artifact_type=["']([a-z0-9_]+)["']""")
@@ -90,6 +98,8 @@ def test_current_policy_preserves_the_ninety_day_pipeline_baseline() -> None:
         "visual_draft_image": 90,
         "caption_ass": 90,
         "caption_alignment_report": 90,
+        "scene_clip_video": 90,
+        "scene_clips_manifest": 90,
         "final_video": 90,
         "originality_report": 90,
         "operations_brief": 180,
@@ -100,6 +110,25 @@ def test_current_policy_preserves_the_ninety_day_pipeline_baseline() -> None:
         entry.artifact_type: entry.retention_days
         for entry in declared_retention_policies()
     } == expected
+
+
+@pytest.mark.parametrize(
+    ("artifact_type", "producer_retention_days"),
+    [
+        (scene_animation.SCENE_CLIP_ARTIFACT, scene_animation._CLIP_RETENTION_DAYS),
+        (scene_animation.SCENE_CLIPS_MANIFEST_ARTIFACT, scene_animation._MANIFEST_RETENTION_DAYS),
+    ],
+)
+def test_scene_animation_artifacts_have_declared_ninety_day_retention(
+    artifact_type: str,
+    producer_retention_days: int | None,
+) -> None:
+    entry = resolve_retention_policy(artifact_type)
+
+    assert entry.declared is True
+    assert entry.indefinite is False
+    assert entry.producer == "content-engine:a5a"
+    assert entry.retention_days == producer_retention_days == 90
 
 
 @pytest.mark.parametrize(
