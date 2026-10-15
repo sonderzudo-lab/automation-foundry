@@ -678,7 +678,12 @@ class ComfyUILtx23Renderer:
                     "CONTENT_SCENE_ANIMATION_COMFYUI_START_FAILED"
                 ) from exc
             self._process = process
-            self._job = _attach_kill_on_close_job(process)
+            try:
+                self._job = _attach_kill_on_close_job(process)
+            except SceneVideoUnavailableError:
+                # Still suspended: nothing of ComfyUI ran yet.
+                self._stop_process()
+                raise
             self._watch_stop = threading.Event()
             self._watcher = threading.Thread(
                 target=self._watch_descendants, args=(process, self._watch_stop), daemon=True
@@ -966,14 +971,18 @@ def _resume_process(pid: int) -> bool:
 
 
 def _attach_kill_on_close_job(process: subprocess.Popen[Any]) -> _KillOnCloseJob | None:
+    """The job of a process created suspended; None outside Windows.
+
+    Raises ``SceneVideoUnavailableError`` when the job cannot be made: without
+    it a helper started by a ComfyUI that then exits could outlive the step.
+    """
     if sys.platform != "win32":
         return None
     try:
         return _KillOnCloseJob(process.pid)
-    except OSError:
-        # Still stopped through taskkill /T, which needs ComfyUI to be alive.
+    except OSError as exc:
         log.warning("scene_animation_job_object_unavailable")
-        return None
+        raise SceneVideoUnavailableError("CONTENT_SCENE_ANIMATION_JOB_OBJECT_FAILED") from exc
 
 
 class _PeakSampler:

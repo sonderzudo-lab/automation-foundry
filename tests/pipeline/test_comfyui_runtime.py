@@ -398,3 +398,24 @@ def test_the_runtime_and_the_contract_agree_on_fps_and_inventory_digest() -> Non
     assert LTX23_FPS == SCENE_CLIP_FPS
     inventory = {"b": "2", "a": "1"}
     assert model_inventory_sha256(inventory) == hashlib.sha256(b"a:1\nb:2").hexdigest()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="job objects exist only on Windows")
+def test_comfyui_never_runs_outside_its_job(
+    tmp_path: Path, record: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.pipeline import comfyui_runtime
+
+    def refuse(_pid: int) -> None:
+        raise OSError("no job")
+
+    monkeypatch.setattr(comfyui_runtime, "_KillOnCloseJob", refuse)
+    renderer = _renderer(_install(tmp_path), tmp_path)
+
+    with pytest.raises(SceneVideoUnavailableError) as raised:
+        renderer.start(timeout_seconds=30)
+
+    assert raised.value.code == "CONTENT_SCENE_ANIMATION_JOB_OBJECT_FAILED"
+    # It was killed while still suspended, before the fake wrote anything.
+    assert not (record / "argv.json").exists()
+    assert not renderer.running
