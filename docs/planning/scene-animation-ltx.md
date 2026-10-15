@@ -1,8 +1,8 @@
 # Plano: cenas animadas por IA com LTX-2.3 (proposta)
 
 Proposta de 2026-10-15, a pedido do proprietário, depois do teste fora da pipeline em
-`D:\automation-foundry\labs\video-wan22-i2v\` (números e scripts no README de lá). Nada
-deste plano está ligado à pipeline. As decisões do proprietário estão na seção 7; os
+`D:\automation-foundry\labs\video-wan22-i2v\` (números e scripts no README de lá). A fatia 1
+(step A5a) foi juntada em 2026-10-15, desligada por padrão; o A5 ainda não lê o manifesto. As decisões do proprietário estão na seção 7; os
 contratos da seção 3 foram escritos com testes na fatia 0 (2026-10-15).
 
 ## 1. Resultado esperado
@@ -136,7 +136,7 @@ Mesmo desenho das rodadas de rascunho das imagens (`visual_drafts.py` e
 | Fatia | Faixa | O que entrega |
 | --- | --- | --- |
 | 0 | Integradora | **Feita em 2026-10-15**: contratos da seção 3 com testes (seção 6 de `docs/reference/content-contracts-v1.md`), decisão 14 na arquitetura, faixa E em `lanes.md` |
-| 1 | E (nova, Claude) | `src/pipeline/motion_generation.py` (pede as frases ao modelo de texto e reenvia o motivo da recusa), `src/pipeline/scene_animation.py` (step A5a, orçamento por tentativa, cache, fallback, métricas), `src/pipeline/comfyui_runtime.py` com fake, config e `.env.example` |
+| 1 | E (nova, Claude) | **Juntada em 2026-10-15** (merge `e7d5dca`), desligada por padrão e sem geração real ainda: `src/pipeline/motion_generation.py` (pede as frases ao modelo de texto e reenvia o motivo da recusa), `src/pipeline/scene_animation.py` (step A5a, orçamento por tentativa, cache, fallback, métricas), `src/pipeline/comfyui_runtime.py` com fake, config e `.env.example` |
 | 2 | C (Codex) | `ExplainerV1` desenhando clipes de vídeo do timeline v3 |
 | 3 | D (Claude) | A5 Remotion lendo o manifesto de cenas, conferindo cortes e montando o timeline v3 |
 | 4 | E (Claude) | Gate de clipes da seção 8: rodadas, approval, página e rota dos MP4 |

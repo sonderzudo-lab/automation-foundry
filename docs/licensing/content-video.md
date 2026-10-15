@@ -1,6 +1,7 @@
 # Licenças das cenas animadas por IA
 
-Status: nenhum backend implementado. O plano está em
+Status: backend `ltx23_quality_test` implementado no A5a (2026-10-15), desligado por padrão
+e sem nenhum clipe gerado pela pipeline ainda. O plano está em
 `docs/planning/scene-animation-ltx.md`; o teste fora da pipeline está em
 `D:\automation-foundry\labs\video-wan22-i2v\`.
 
