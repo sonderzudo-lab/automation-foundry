@@ -29,17 +29,24 @@ trabalhar ao mesmo tempo, desde que cada um tenha uma faixa própria. Todos segu
 | A — modelo de texto e plano de cenas (etapas 1–3) | Claude Code | `feat/text-model-provider` | **juntada em 2026-10-14** |
 | B — teste do Remotion (etapa 4, fora da pipeline) | Codex | `spike/remotion-timeline` | **substituída** pela demo em `D:\automation-foundry\labs\remotion-html-demo\` |
 | C — modelos de animação no Remotion (etapa 4) | Codex | `feat/remotion-explainer` | só `render/remotion/**` |
-| D — plano de animação, timeline v2 e backend A5 (etapa 4) | Claude Code | `feat/animated-assembly` | `src/pipeline/animation_generation.py` e `src/pipeline/timeline_builder.py` (novos), `src/pipeline/assembly.py` (só o adapter novo), `src/pipeline/a1_executor.py` (só a escolha de fila e adapter do A5), `src/core/config.py` (só campos novos), `.env.example`, testes correspondentes |
+| D — plano de animação, timeline v2 e backend A5 (etapa 4) | Claude Code | `claude/animated-assembly-fc5846` — **juntada em 2026-10-14** | `src/pipeline/animation_generation.py` e `src/pipeline/timeline_builder.py` (novos), `src/pipeline/assembly.py` (só o adapter novo), `src/pipeline/a1_executor.py` (só a escolha de fila e adapter do A5), `src/core/config.py` (só campos novos), `.env.example`, testes correspondentes |
 | Integradora | proprietário + sessão principal | `chore/project-skills` | contratos, docs, merges |
 
 ### Fronteira entre as faixas C e D
 
-As duas faixas só se encontram nesta chamada, que nenhuma delas pode mudar sozinha:
+As duas faixas só se encontram nesta chamada, que nenhuma delas pode mudar sozinha. O A5
+(`remotion_quality_test` em `src/pipeline/assembly.py`) a executa com `render/remotion` como
+pasta de trabalho, pelo `node` e sem o atalho `npx`, porque no Windows o atalho do npm deixa o
+processo real rodando depois de um timeout (juntado em 2026-10-14):
 
 ```text
-npx remotion render render/remotion/src/index.ts ExplainerV1 <saída.mp4>
+node node_modules/@remotion/cli/remotion-cli.js render src/index.ts ExplainerV1 <saída.mp4>
     --props=<timeline.json> --public-dir=<pasta> --gl=angle
 ```
+
+Antes de chamar, o A5 confere que `remotion` e `@remotion/cli` estão em 4.0.531 no
+`render/remotion/package-lock.json`. Para testar a mão dentro de `render/remotion`,
+`npx remotion render ...` com os mesmos argumentos é equivalente.
 
 - `<timeline.json>` é um `TimelineV2` válido, sem nenhum campo a mais
   (`docs/reference/schemas/timeline-v2.schema.json`).
