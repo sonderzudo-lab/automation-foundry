@@ -9,6 +9,7 @@ unchecked reaches the screen.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import structlog
@@ -91,10 +92,17 @@ def animation_plan_request(
     )
 
 
-def write_animation_plan(model: TextModel, *, narration: str) -> WrittenAnimationPlan:
+def write_animation_plan(
+    model: TextModel,
+    *,
+    narration: str,
+    check: Callable[[AnimationPlan], str | None] | None = None,
+) -> WrittenAnimationPlan:
     """Return the first plan the checks accept, asking again with each refusal.
 
-    Raises ``AnimationPlanError`` when the narration is empty or too long for one
+    ``check`` may refuse a plan that matches the narration for a reason of its
+    own, such as animations that do not fit the spoken timings; it returns that
+    reason, phrased to follow "it", or None. Raises ``AnimationPlanError`` when the narration is empty or too long for one
     request, or when no answer is accepted within ``ANIMATION_PLAN_ATTEMPTS``.
     Text model failures (unreachable, not signed in) propagate unchanged.
     """
@@ -110,9 +118,12 @@ def write_animation_plan(model: TextModel, *, narration: str) -> WrittenAnimatio
         try:
             plan = parse_animation_plan(result.text, narration=narration)
         except AnimationPlanError as exc:
-            # The reason is written by the checks, never copied from the answer.
-            log.warning("animation_plan_refused", attempt=attempt, reason=str(exc))
-            refused = (result.text, str(exc))
-            continue
-        return WrittenAnimationPlan(plan=plan, result=result, attempts=attempt)
+            problem: str | None = str(exc)
+        else:
+            problem = check(plan) if check is not None else None
+            if problem is None:
+                return WrittenAnimationPlan(plan=plan, result=result, attempts=attempt)
+        # The reason is written by the checks, never copied from the answer.
+        log.warning("animation_plan_refused", attempt=attempt, reason=problem)
+        refused = (result.text, str(problem))
     raise AnimationPlanError(f"no acceptable plan in {ANIMATION_PLAN_ATTEMPTS} attempts")

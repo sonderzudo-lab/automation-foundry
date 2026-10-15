@@ -15,7 +15,11 @@ from src.pipeline.animation_generation import (
     animation_plan_request,
     write_animation_plan,
 )
-from src.pipeline.animation_plan import AnimationPlanError, animation_plan_response_schema
+from src.pipeline.animation_plan import (
+    AnimationPlan,
+    AnimationPlanError,
+    animation_plan_response_schema,
+)
 from src.pipeline.text_model import (
     TextModelPermanentError,
     TextModelProviderName,
@@ -107,6 +111,21 @@ def test_a_refused_answer_is_asked_again_with_the_reason() -> None:
     retry = model.requests[1].user
     assert "refused because it has an anchor for item 1 that does not contain its label" in retry
     assert "A olhada rápida" in retry
+
+
+def test_the_caller_can_refuse_a_plan_for_a_reason_of_its_own() -> None:
+    model = _TextModel(_answer(_PLAN), _answer({**_PLAN, "highlights": []}))
+    seen: list[int] = []
+
+    def check(plan: AnimationPlan) -> str | None:
+        seen.append(len(plan.highlights))
+        return "has a highlight with no free time on screen" if plan.highlights else None
+
+    written = write_animation_plan(model, narration=_NARRATION, check=check)
+
+    assert seen == [1, 0]
+    assert written.attempts == 2 and written.plan.highlights == []
+    assert "refused because it has a highlight with no free time" in model.requests[1].user
 
 
 def test_no_acceptable_answer_fails_closed_after_the_attempt_ceiling() -> None:
