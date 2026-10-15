@@ -63,6 +63,7 @@ from src.pipeline.scene_animation import (
     LTX23_QUALITY_TEST_BACKEND,
     RendererFactory,
     SceneAnimationLimits,
+    SceneAnimationResult,
     execute_scene_animation_step,
 )
 from src.pipeline.script_gen import (
@@ -676,6 +677,7 @@ async def execute_content_script_run(
         caption_replayed = True
         assembly_replayed = True
         scene_animation_replayed = True
+        scene_animation: SceneAnimationResult | None = None
         similarity_replayed = True
         alignment_gate_replayed = True
         audio_artifact: Artifact | None = None
@@ -837,7 +839,7 @@ async def execute_content_script_run(
             and RunStatus(run.status) is RunStatus.RUNNING
         ):
             # A5a: each approved image becomes a clip before the montage.
-            scene_animation_replayed = await _animate_scenes(
+            scene_animation = await _animate_scenes(
                 session,
                 run=run,
                 approval=approval,
@@ -850,6 +852,7 @@ async def execute_content_script_run(
                 storage_root=root,
                 renderer_factory=scene_renderer_factory,
             )
+            scene_animation_replayed = scene_animation.replayed
         if (
             _assembly_enabled()
             and audio_artifact is not None
@@ -874,6 +877,12 @@ async def execute_content_script_run(
                 raise ContentScriptRunNotRunnableError(
                     "completed A3/A4 steps are missing assembly source artifacts"
                 )
+            # With A5a on, the montage plays its clips; without it, the A3 images.
+            scene_clips_manifest, scene_clips = (
+                await _load_scene_clips(session, scene_animation)
+                if _scene_animation_enabled()
+                else (None, ())
+            )
             assembly_result = await execute_approved_assembly_step(
                 session,
                 run=run,
@@ -902,6 +911,8 @@ async def execute_content_script_run(
                 finalize_run=False,
                 queue=_assembly_queue(),
                 gpu_power_watts=int(getattr(settings, "gpu_power_watts", 400)),
+                scene_clips_manifest_artifact=scene_clips_manifest,
+                scene_clip_artifacts=scene_clips,
             )
             assembly_replayed = assembly_result.replayed
             if (
@@ -1701,8 +1712,8 @@ async def _animate_scenes(
     idempotency_key: str,
     storage_root: Path,
     renderer_factory: RendererFactory | None,
-) -> bool:
-    """Run A5a on the A3 images and A4 words; return whether it was a replay."""
+) -> SceneAnimationResult:
+    """Run A5a on the A3 images and A4 words; return its manifest and clips."""
     manifest = (
         await session.get(Artifact, visual_manifest_artifact_id)
         if visual_manifest_artifact_id is not None
@@ -1741,7 +1752,32 @@ async def _animate_scenes(
         limits=_scene_animation_limits(),
         gpu_power_watts=int(getattr(settings, "gpu_power_watts", 400)),
     )
-    return result.replayed
+    return result
+
+
+async def _load_scene_clips(
+    session: AsyncSession,
+    scene_animation: SceneAnimationResult | None,
+) -> tuple[Artifact, tuple[Artifact, ...]]:
+    """The manifest and clips A5a published, which the montage must play."""
+    if scene_animation is None or scene_animation.manifest_artifact_id is None:
+        raise ContentScriptRunNotRunnableError(
+            "completed A5a step is missing its scene clips manifest"
+        )
+    manifest = await session.get(Artifact, scene_animation.manifest_artifact_id)
+    clips: list[Artifact] = []
+    for artifact_id in scene_animation.clip_artifact_ids:
+        clip = await session.get(Artifact, artifact_id)
+        if clip is None:
+            raise ContentScriptRunNotRunnableError(
+                "completed A5a step is missing one of its clips"
+            )
+        clips.append(clip)
+    if manifest is None:
+        raise ContentScriptRunNotRunnableError(
+            "completed A5a step is missing its scene clips manifest"
+        )
+    return manifest, tuple(clips)
 
 
 def _validate_pipeline_backend_dependencies() -> None:

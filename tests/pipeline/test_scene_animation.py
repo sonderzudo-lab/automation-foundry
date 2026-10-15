@@ -705,7 +705,7 @@ async def test_a1_runs_a5a_with_the_configured_limits(
     renderer = _Renderer(clock=_Clock())
     assert evidence.caption.id is not None
 
-    replayed = await a1_executor._animate_scenes(
+    result = await a1_executor._animate_scenes(
         session,
         run=evidence.run,
         approval=evidence.approval,
@@ -719,7 +719,8 @@ async def test_a1_runs_a5a_with_the_configured_limits(
         renderer_factory=renderer.factory,
     )
 
-    assert replayed is False and renderer.rendered == [1, 2]
+    assert result.replayed is False and renderer.rendered == [1, 2]
+    assert result.manifest_artifact_id is not None and len(result.clip_artifact_ids) == 2
     assert len(model.requests) == 1
 
 
