@@ -146,7 +146,8 @@ _RENDER_LOG_TAIL_CHARS = 2_000
 # the least a render is given; with less left the attempt stops before rendering.
 _PROBE_RESERVE_SECONDS = 60.0
 _MIN_RENDER_SECONDS = 30.0
-# Artifact types published by step A5a (``scene_animation``, which imports this module).
+# Step A5a and the artifact types it publishes (``scene_animation`` imports this module).
+SCENE_ANIMATION_STEP_NAME = "animate-scenes-a5a"
 SCENE_CLIPS_MANIFEST_ARTIFACT_TYPE = "scene_clips_manifest"
 SCENE_CLIP_ARTIFACT_TYPE = "scene_clip_video"
 
@@ -1358,7 +1359,8 @@ async def execute_approved_assembly_step(
         caption_artifact=caption_artifact,
         storage_root=storage_root,
     )
-    scene_clips_manifest_path, scene_clip_paths = _scene_clip_sources(
+    scene_clips_manifest_path, scene_clip_paths = await _scene_clip_sources(
+        session,
         run=run,
         manifest_artifact=scene_clips_manifest_artifact,
         clip_artifacts=scene_clip_artifacts,
@@ -1768,7 +1770,8 @@ def _load_assembly_context(
     )
 
 
-def _scene_clip_sources(
+async def _scene_clip_sources(
+    session: AsyncSession,
     *,
     run: Run,
     manifest_artifact: Artifact | None,
@@ -1777,8 +1780,11 @@ def _scene_clip_sources(
 ) -> tuple[Path | None, tuple[Path, ...]]:
     """Where the A5a manifest and clips of this run are kept, after checking their records.
 
-    The files themselves are read and checked by the adapter, so a missing or
-    changed one fails the step with an explicit code instead of before it.
+    Every record must come from an attempt of step A5a of this run. A clip may
+    come from an earlier attempt than the manifest: an attempt that ran out of
+    time publishes its clips and the next one reuses them. The files themselves
+    are read and checked by the adapter, so a missing or changed one fails the
+    step with an explicit code instead of before it.
     """
     if manifest_artifact is None:
         if clip_artifacts:
@@ -1789,17 +1795,27 @@ def _scene_clip_sources(
         manifest_artifact.run_id != run_id
         or manifest_artifact.artifact_type != SCENE_CLIPS_MANIFEST_ARTIFACT_TYPE
         or manifest_artifact.media_type != "application/json"
-        or not isinstance(manifest_artifact.step_run_id, int)
     ):
         raise ValueError("assembly scene clips manifest source is invalid")
     if any(
         artifact.run_id != run_id
         or artifact.artifact_type != SCENE_CLIP_ARTIFACT_TYPE
         or artifact.media_type != "video/mp4"
-        or artifact.step_run_id != manifest_artifact.step_run_id
         for artifact in clip_artifacts
     ):
         raise ValueError("assembly scene clip sources are invalid")
+    for step_run_id in {
+        artifact.step_run_id for artifact in (manifest_artifact, *clip_artifacts)
+    }:
+        step_run = (
+            await session.get(StepRun, step_run_id) if isinstance(step_run_id, int) else None
+        )
+        if (
+            step_run is None
+            or step_run.run_id != run_id
+            or step_run.name != SCENE_ANIMATION_STEP_NAME
+        ):
+            raise ValueError("assembly scene clip sources were not made by step A5a")
     if len({artifact.id for artifact in clip_artifacts}) != len(clip_artifacts):
         raise ValueError("assembly scene clip sources contain duplicates")
     return (

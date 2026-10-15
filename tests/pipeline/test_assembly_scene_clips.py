@@ -63,7 +63,15 @@ from tests.pipeline.test_assembly_remotion import (
     _TextModel,
 )
 from tests.pipeline.test_captions import _script
-from tests.pipeline.test_scene_animation import _after_a4, _animate, _Clock, _Renderer
+from tests.pipeline.test_scene_animation import (
+    _after_a4,
+    _animate,
+    _attempts,
+    _Clock,
+    _Evidence,
+    _limits,
+    _Renderer,
+)
 
 _DURATION_MS = 15_000
 
@@ -371,6 +379,7 @@ def test_the_a5a_artifact_types_are_the_ones_a5a_publishes() -> None:
         scene_animation.SCENE_CLIPS_MANIFEST_ARTIFACT
     )
     assert assembly.SCENE_CLIP_ARTIFACT_TYPE == scene_animation.SCENE_CLIP_ARTIFACT
+    assert assembly.SCENE_ANIMATION_STEP_NAME == scene_animation.SCENE_ANIMATION_STEP_NAME
 
 
 @pytest.fixture
@@ -389,14 +398,17 @@ async def _a5_after_a5a(
     tmp_path: Path,
     *,
     key: str,
-    before_a5: Callable[[tuple[Artifact, ...]], None] | None = None,
+    before_a5: Callable[[tuple[Artifact, ...], _Evidence], None] | None = None,
+    a5a_timeout: float = 1_000.0,
 ) -> tuple[StepRun, Path, Any]:
     storage = tmp_path / "storage"
     evidence = await _after_a4(session, storage, key=key)
-    animated = await _animate(session, evidence, storage, _Renderer(clock=_Clock()))
+    animated = await _animate(
+        session, evidence, storage, _Renderer(clock=_Clock()), limits=_limits(a5a_timeout)
+    )
     manifest, clips = await a1_executor._load_scene_clips(session, animated)
     if before_a5 is not None:
-        before_a5(clips)
+        before_a5(clips, evidence)
     narration = _script().narration
     plan: dict[str, Any] = {
         "schema_version": 1, "steps": None, "highlights": [], "closing_sentence": narration,
@@ -456,7 +468,7 @@ async def test_a5_plays_the_clips_a5a_published(session: AsyncSession, tmp_path:
 async def test_a5_fails_closed_when_a_published_clip_changed(
     session: AsyncSession, tmp_path: Path
 ) -> None:
-    def tamper(clips: tuple[Artifact, ...]) -> None:
+    def tamper(clips: tuple[Artifact, ...], _evidence: _Evidence) -> None:
         path = tmp_path / "storage" / clips[0].relative_path
         path.write_bytes(path.read_bytes() + b"tampered")
 
@@ -472,3 +484,42 @@ async def test_a5_fails_closed_when_a_published_clip_changed(
 async def test_a1_refuses_a_montage_without_the_a5a_manifest(session: AsyncSession) -> None:
     with pytest.raises(a1_executor.ContentScriptRunNotRunnableError, match="A5a"):
         await a1_executor._load_scene_clips(session, None)
+
+
+async def test_a5_plays_clips_published_by_two_a5a_attempts(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    seen: list[int | None] = []
+
+    def record(clips: tuple[Artifact, ...], _evidence: _Evidence) -> None:
+        seen.extend(clip.step_run_id for clip in clips)
+
+    # 140 s per attempt fits one clip: the first attempt runs out of time after
+    # the first clip and the second one reuses it and makes the next.
+    step, storage, run = await _a5_after_a5a(
+        session, tmp_path, key="a5-two-a5a-attempts", before_a5=record, a5a_timeout=140.0
+    )
+
+    attempts = await _attempts(session, run)
+    assert [attempt.status for attempt in attempts] == ["failed", "succeeded"]
+    assert seen == [attempts[0].id, attempts[1].id]
+    assert step.status == "succeeded"
+    assert (step.output_payload or {})["video_scenes"] == 2
+    stored = storage / "content-engine" / f"run-{run.id}" / "assembly" / "timeline.json"
+    timeline = TimelineV3.model_validate_json(stored.read_text(encoding="utf-8"))
+    assert [clip.video is not None for clip in timeline.clips] == [True, True, False]
+
+
+@pytest.mark.parametrize("source", ["another_step", "no_step"])
+async def test_a5_refuses_a_clip_that_step_a5a_did_not_make(
+    session: AsyncSession, tmp_path: Path, source: str
+) -> None:
+    def misattribute(clips: tuple[Artifact, ...], evidence: _Evidence) -> None:
+        clips[0].step_run_id = (
+            evidence.caption.step_run_id if source == "another_step" else 999_999
+        )
+
+    with pytest.raises(ValueError, match="were not made by step A5a"):
+        await _a5_after_a5a(
+            session, tmp_path, key=f"a5-foreign-clip-{source}", before_a5=misattribute
+        )
