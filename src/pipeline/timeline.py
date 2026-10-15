@@ -12,13 +12,18 @@ and the final review keep checking the same evidence.
 
 Times are whole milliseconds so Python and the JavaScript renderer read exactly
 the same values without decimal or floating point conversions.
+
+Version 2 (``TimelineV2``) adds animated overlays drawn by a versioned template
+style: list cards, highlighted phrases and the closing sentence. Their texts
+come from the approved narration through the animation plan (see
+``animation_plan``) and their timings from the words.
 """
 
 from __future__ import annotations
 
 import json
 from decimal import ROUND_HALF_EVEN, Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -37,6 +42,10 @@ ClipTransition = Literal["cut", "crossfade"]
 # word_pop: one large word at a time, popping in as it is spoken.
 CaptionTemplate = Literal["phrase_blocks", "word_pop"]
 CAPTION_TEMPLATES: tuple[CaptionTemplate, ...] = ("phrase_blocks", "word_pop")
+# Set of animated templates a v2 timeline is drawn with; a new look is a new version.
+AnimationStyle = Literal["explainer_v1"]
+MAX_OVERLAYS = 20
+MAX_LIST_ITEMS = 5
 
 FORMAT_DIMENSIONS: dict[VideoFormat, tuple[int, int]] = {
     "short": (1080, 1920),
@@ -97,7 +106,121 @@ class Timeline(_Strict):
         return self
 
 
-def timeline_problem(timeline: Timeline) -> str | None:
+class ListOverlay(_Strict):
+    """One card of an animated list: the items so far, with ``active`` entering.
+
+    A list is shown as one card per item, in order. In the ``explainer_v1``
+    style the number of the active item leaves the card when it closes, waits
+    in a corner with its label while the item is explained and flies back to
+    its row, ticked, when the next card opens.
+    """
+
+    kind: Literal["list"]
+    start_ms: int = Field(ge=0, le=MAX_TIMELINE_MS)
+    end_ms: int = Field(ge=1, le=MAX_TIMELINE_MS)
+    title: str = Field(min_length=1, max_length=40)
+    items: list[str] = Field(min_length=2, max_length=MAX_LIST_ITEMS)
+    active: int = Field(ge=0, lt=MAX_LIST_ITEMS)
+    # When the active item is spoken: it enters at the start and is complete at the end.
+    item_start_ms: int = Field(ge=0, le=MAX_TIMELINE_MS)
+    item_end_ms: int = Field(ge=0, le=MAX_TIMELINE_MS)
+
+
+class HighlightOverlay(_Strict):
+    """A short phrase of the narration shown large while it is spoken."""
+
+    kind: Literal["highlight"]
+    start_ms: int = Field(ge=0, le=MAX_TIMELINE_MS)
+    end_ms: int = Field(ge=1, le=MAX_TIMELINE_MS)
+    text: str = Field(min_length=1, max_length=80)
+
+
+class ClosingOverlay(_Strict):
+    """The closing sentence, word by word as spoken, from ``word_from`` to the end."""
+
+    kind: Literal["closing_sentence"]
+    start_ms: int = Field(ge=0, le=MAX_TIMELINE_MS)
+    end_ms: int = Field(ge=1, le=MAX_TIMELINE_MS)
+    word_from: int = Field(ge=0, lt=MAX_TIMELINE_WORDS)
+    # Words from here to the end are drawn in the accent colour.
+    highlight_from: int = Field(ge=0, lt=MAX_TIMELINE_WORDS)
+
+
+Overlay = Annotated[
+    ListOverlay | HighlightOverlay | ClosingOverlay, Field(discriminator="kind")
+]
+
+
+class TimelineV2(_Strict):
+    """Timeline v1 plus animated overlays drawn over the images by a template style.
+
+    Clips, words and every v1 rule are unchanged. ``overlays`` never carry
+    timings written by a text model: the code derives them from the A4 words.
+    """
+
+    schema_version: Literal[2]
+    format: VideoFormat
+    width: int
+    height: int
+    fps: Literal[30]
+    duration_ms: int = Field(ge=MIN_CLIP_MS, le=MAX_TIMELINE_MS)
+    audio_sha256: str = Field(pattern=_SHA256)
+    caption_ass_sha256: str = Field(pattern=_SHA256)
+    caption_template: CaptionTemplate
+    transition_ms: int = Field(ge=0, le=MAX_TRANSITION_MS)
+    clips: list[TimelineClip] = Field(min_length=1, max_length=MAX_TIMELINE_CLIPS)
+    words: list[TimelineWord] = Field(max_length=MAX_TIMELINE_WORDS)
+    animation_style: AnimationStyle
+    overlays: list[Overlay] = Field(max_length=MAX_OVERLAYS)
+
+    @model_validator(mode="after")
+    def _check_timeline(self) -> TimelineV2:
+        problem = timeline_problem(self) or overlay_problem(self)
+        if problem is not None:
+            raise ValueError(problem)
+        return self
+
+
+def overlay_problem(timeline: TimelineV2) -> str | None:
+    """Return why the overlays of a v2 timeline cannot be drawn, or None."""
+    previous_end = 0
+    for position, overlay in enumerate(timeline.overlays, start=1):
+        if overlay.end_ms - overlay.start_ms < MIN_CLIP_MS:
+            return f"overlay {position} is shorter than {MIN_CLIP_MS} ms"
+        if overlay.end_ms > timeline.duration_ms:
+            return f"overlay {position} ends after the audio"
+        if overlay.start_ms < previous_end:
+            return f"overlay {position} starts before the previous overlay ends"
+        previous_end = overlay.end_ms
+        if isinstance(overlay, HighlightOverlay) and len(overlay.text.split()) > 8:
+            return f"highlight {position} has more than 8 words"
+        if isinstance(overlay, ListOverlay) and not (
+            overlay.start_ms <= overlay.item_start_ms <= overlay.item_end_ms <= overlay.end_ms
+        ):
+            return f"list card {position} does not speak its item inside the card"
+        if isinstance(overlay, ClosingOverlay):
+            if position != len(timeline.overlays) or overlay.end_ms != timeline.duration_ms:
+                return "the closing sentence must be the last overlay and end with the audio"
+            if not overlay.word_from <= overlay.highlight_from < len(timeline.words):
+                return "the closing sentence points outside the words"
+            if timeline.words[overlay.word_from].start_ms < overlay.start_ms:
+                return "the closing sentence starts after its first word is spoken"
+    lists = [overlay for overlay in timeline.overlays if isinstance(overlay, ListOverlay)]
+    if lists:
+        first = lists[0]
+        if any(card.items != first.items or card.title != first.title for card in lists):
+            return "every list card must show the same title and items"
+        if [card.active for card in lists] != list(range(len(first.items))):
+            return "a list needs one card per item, in order"
+    return None
+
+
+def timeline_v2_json_schema() -> dict[str, Any]:
+    """JSON Schema of the v2 timeline shared with the JavaScript render engine."""
+    return TimelineV2.model_json_schema()
+
+
+def timeline_problem(timeline: Timeline | TimelineV2) -> str | None:
     """Return why a timeline cannot be rendered, or None when it is consistent."""
     if (timeline.width, timeline.height) != FORMAT_DIMENSIONS[timeline.format]:
         return "dimensions do not match the format"
@@ -143,7 +266,7 @@ def timeline_json_schema() -> dict[str, Any]:
     return Timeline.model_json_schema()
 
 
-def timeline_to_json(timeline: Timeline) -> str:
+def timeline_to_json(timeline: Timeline | TimelineV2) -> str:
     """Canonical JSON text: same timeline, same bytes, so it can be hashed."""
     return json.dumps(
         timeline.model_dump(mode="json"),

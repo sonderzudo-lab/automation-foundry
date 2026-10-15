@@ -1,5 +1,6 @@
 # ── Segredos / ambiente ───────────────────────────────────────────────────────
 .env
+.env.bak*
 *.env.local
 
 # ── Python ────────────────────────────────────────────────────────────────────
@@ -70,3 +71,7 @@ logs/
 client_secret*.json
 token*.json
 credentials*.json
+
+# Remotion animation templates (lane C): dependencies and renders stay local
+render/remotion/node_modules/
+render/remotion/out/

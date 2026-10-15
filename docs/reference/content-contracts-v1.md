@@ -158,6 +158,76 @@ Validação do que um canal guarda; persistência fica para a etapa 5.
 - Na etapa 5: tabela própria do Content Engine com migration, vínculo da run com o canal e
   janela da similaridade (A6) restrita ao canal.
 
+## 5. Animações em HTML: timeline v2 e plano de animação
+
+Decidido com o proprietário em 2026-10-14, depois da demo fora da pipeline em
+`D:\automation-foundry\labs\remotion-html-demo\` (run 19 remontada no Remotion com lista
+animada, número que vai para o canto e volta com o check, frase final animada e legenda
+palavra por palavra). Os dois contratos abaixo têm código e testes, mas **não estão ligados
+à pipeline**.
+
+| Contrato | Código | Testes |
+| --- | --- | --- |
+| Plano de animação | `src/pipeline/animation_plan.py` | `tests/pipeline/test_animation_plan.py` |
+| Timeline v2 | `TimelineV2` em `src/pipeline/timeline.py` | `tests/pipeline/test_timeline_v2.py` |
+
+### Plano de animação (resposta do modelo de texto)
+
+```json
+{
+  "schema_version": 1,
+  "steps": {"title": "A sequência", "items": [
+    {"label": "A espiada automática", "anchor": "primeiro, a espiada automática"}
+  ]},
+  "highlights": [{"text": "interromper a tarefa"}],
+  "closing_sentence": "Deixar o celular longe não garante terminar a tarefa, mas cria ..."
+}
+```
+
+- O modelo **não escreve texto novo para a tela**. `parse_animation_plan(resposta,
+  narration=...)` exige que cada `label`, `anchor`, `highlight` e a `closing_sentence` estejam
+  na narração aprovada; a comparação ignora maiúsculas, pontuação e espaços, mas não acentos.
+  O único texto livre é o título da lista: de uma a quatro palavras, sem números.
+- `steps`: de 2 a 5 itens; o rótulo tem até 6 palavras e está dentro da âncora (2 a 12
+  palavras); as âncoras aparecem na ordem da narração.
+- `highlights`: até 3 frases de 2 a 8 palavras, sem repetição.
+- `closing_sentence`: uma das duas últimas frases da narração.
+- Campos vazios (`null` ou lista vazia) significam vídeo sem aquela animação.
+- Recusas levantam `AnimationPlanError` com o motivo em inglês, que pode ser reenviado ao
+  modelo, como no plano de cenas.
+
+### Timeline v2
+
+`TimelineV2` = todos os campos e regras do v1, mais `animation_style` (hoje só
+`explainer_v1`; um visual novo é uma versão nova) e `overlays`, que o código monta a partir
+do plano de animação e das palavras do A4:
+
+- `list`: um cartão por item, em ordem, com o mesmo título e itens em todos;
+  `item_start_ms`/`item_end_ms` dizem quando o item é falado, dentro do cartão. No
+  `explainer_v1` o número do item vai para o canto com o rótulo enquanto ele é explicado e
+  volta para a lista, marcado, quando o próximo cartão abre.
+- `highlight`: frase de até 8 palavras.
+- `closing_sentence`: aponta para as palavras (`word_from`, `highlight_from`), é a última
+  sobreposição e termina com o áudio.
+- Sobreposições não se cruzam, duram pelo menos 1 s e ficam dentro do áudio.
+- Schema versionado: `docs/reference/schemas/timeline-v2.schema.json`; exemplo válido:
+  `timeline-v2.example.json`. O v1 continua valendo e não mudou.
+
+### Decisões para a implementação
+
+- Os modelos visuais (`explainer_v1`) são componentes Remotion versionados **no repositório**,
+  em `render/remotion/`, com `package-lock.json` e versões exatas (Remotion 4.0.531).
+  `node_modules` fica fora do Git. Instalar dependências ali pede autorização.
+- O backend do A5 se chamará `remotion_quality_test`: subprocess sem shell, versões e hashes
+  conferidos, `--gl=angle` (GPU) e, por isso, **fila `gpu`**. O MP4 passa pelo mesmo
+  validador do FFmpeg. Na demo, 50 s de vídeo renderizaram em cerca de 40 s; desfoque atrás de
+  cartões (`backdrop-filter`) é proibido no template porque levou o render a mais de 10 min.
+- A legenda continua vindo do ASS verificado do A4; o gate de alinhamento e o A7 não mudam.
+- Fontes: a demo usou fontes do Windows. Para conteúdo monetizado, trocar por fontes de licença
+  livre (Google Fonts, OFL) guardadas localmente, o que exige autorização para baixar.
+- Licença do Remotion: gratuita para indivíduos e empresas pequenas; conferir
+  <https://www.remotion.dev/license> antes de monetizar.
+
 ## Fora destes contratos
 
 - Licença: o escopo `quality-test-only` de imagens e voz continua valendo até a decisão
