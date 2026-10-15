@@ -91,6 +91,14 @@ prevista em `docs/planning/lanes.md` é uma etapa externa a esta faixa.
   todas as versões transitivas preexistentes do lock do spike foram preservadas.
 - Navegador: copiado do spike para `node_modules/.remotion/`, sem download.
 - Mídia sintética: pronta; ffprobe confirmou WAV PCM S16LE, mono, 48 kHz e 12 s.
-- **Pendente:** render real e inspeção visual. O proprietário autorizou o teste, mas
-  a GPU estava em uso por outra execução e pediu para aguardar seu aviso de liberação.
+- Render real em 2026-10-15, após liberação da GPU pelo proprietário: a chamada exata
+  da fronteira, com entrypoint absoluto e `--gl=angle`, concluiu com concorrência 1.
+  `out/smoke/explainer.mp4` tem 3.757.032 bytes. ffprobe confirmou H.264, 1080×1920,
+  30 fps e 360 frames (vídeo de 12,000 s), mais AAC. O áudio e o contêiner terminam
+  em 12,011 s por empacotamento AAC; os frames seguem exatamente a duração exigida.
+- Inspeção de oito quadros do MP4: entrada dos itens, número no canto, retorno com check,
+  crossfade no corte de 6 s, highlight e frase final com destaque a partir do índice
+  absoluto correto. Evidência local ignorada pelo Git: `out/smoke/contact-sheet.png`.
+  Este render cobre o exemplo vertical com `word_pop`; `phrase_blocks` e dimensões
+  horizontais têm testes de lógica, mas não foram inspecionados em render real nesta rodada.
 - **Pendente após integração:** teste opt-in da faixa D e revisão cruzada do diff.
