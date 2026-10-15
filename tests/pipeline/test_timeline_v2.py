@@ -113,6 +113,26 @@ def test_a_list_without_its_last_card_is_refused() -> None:
         TimelineV2.model_validate(data)
 
 
+def _list_of(count: int) -> dict[str, Any]:
+    data = copy.deepcopy(_timeline())
+    items = [f"Item {chr(ord('a') + index)}" for index in range(count)]
+    data["overlays"] = [
+        {"kind": "list", "start_ms": 1_000 * index, "end_ms": 1_000 * index + 1_000,
+         "title": "A sequência", "items": items, "active": index,
+         "item_start_ms": 1_000 * index + 100, "item_end_ms": 1_000 * index + 900}
+        for index in range(min(count, 6))
+    ]
+    return data
+
+
+def test_a_list_has_at_most_six_items() -> None:
+    timeline = TimelineV2.model_validate(_list_of(6))
+
+    assert len(timeline.overlays) == 6
+    with pytest.raises(ValidationError, match="at most 6 items"):
+        TimelineV2.model_validate(_list_of(7))
+
+
 def test_committed_v2_schema_matches_the_model() -> None:
     committed = json.loads((_SCHEMAS / "timeline-v2.schema.json").read_text(encoding="utf-8"))
 

@@ -97,9 +97,9 @@ export function parseTimeline(value: unknown): TimelineV2 {
     interval(o, p);
     if (kind === 'list') {
       string(o.title, 1, 40, `${p}.title`);
-      array(o.items, 2, 5, `${p}.items`);
+      array(o.items, 2, 6, `${p}.items`);
       o.items.forEach(v => requireValue(typeof v === 'string', `${p}.items`));
-      integer(o.active, 0, 4, `${p}.active`);
+      integer(o.active, 0, 5, `${p}.active`);
       integer(o.item_start_ms, 0, MAX_MS, `${p}.item_start_ms`);
       integer(o.item_end_ms, 0, MAX_MS, `${p}.item_end_ms`);
     } else if (kind === 'highlight') {

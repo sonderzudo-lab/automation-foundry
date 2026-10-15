@@ -188,7 +188,7 @@ palavra por palavra). Os dois contratos abaixo têm código e testes, mas **não
   narration=...)` exige que cada `label`, `anchor`, `highlight` e a `closing_sentence` estejam
   na narração aprovada; a comparação ignora maiúsculas, pontuação e espaços, mas não acentos.
   O único texto livre é o título da lista: de uma a quatro palavras, sem números.
-- `steps`: de 2 a 5 itens; o rótulo tem até 6 palavras e está dentro da âncora (2 a 12
+- `steps`: de 2 a 6 itens; o rótulo tem até 6 palavras e está dentro da âncora (2 a 12
   palavras); as âncoras aparecem na ordem da narração.
 - `highlights`: até 3 frases de 2 a 8 palavras, sem repetição.
 - `closing_sentence`: uma das duas últimas frases da narração.

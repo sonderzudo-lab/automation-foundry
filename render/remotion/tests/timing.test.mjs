@@ -89,12 +89,14 @@ test('adjacent cards and item ending at the cut never produce invalid badge valu
   }
 });
 
-test('five-item layout fits above captions in both formats; overlay fade is local', () => {
+test('five- and six-item layouts fit above captions in both formats; overlay fade is local', () => {
   for (const [w, h] of [[1080, 1920], [1920, 1080]]) {
-    const l = listLayout(w, h, 5);
-    assert.ok(l.titleY > h * .08);
-    assert.ok(l.firstY + l.gap * 4 + l.badge / 2 < h * .76);
-    assert.ok(l.gap > l.badge);
+    for (const count of [5, 6]) {
+      const l = listLayout(w, h, count);
+      assert.ok(l.titleY > h * .08);
+      assert.ok(l.firstY + l.gap * (count - 1) + l.badge / 2 < h * .76);
+      assert.ok(l.gap > l.badge);
+    }
   }
   assert.equal(overlayOpacity(300, 300, 2300), 0);
   assert.equal(overlayOpacity(1000, 300, 2300), 1);

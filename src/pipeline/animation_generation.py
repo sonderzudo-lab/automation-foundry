@@ -43,7 +43,7 @@ _SYSTEM = (
     "- Never write new words for the screen. Every label, anchor, highlight and the "
     "closing sentence is copied from the narration exactly as written, with its "
     "accents. Only the list title is yours.\n"
-    "- steps: only when the narration announces a sequence of 2 to 5 items (for "
+    "- steps: only when the narration announces a sequence of 2 to 6 items (for "
     'example "primeiro, ... segundo, ..."); otherwise null. title: 1 to 4 words in '
     "Brazilian Portuguese, without digits. Each item has an anchor, 2 to 12 "
     "consecutive words of the narration that introduce it, and a label, 1 to 6 "

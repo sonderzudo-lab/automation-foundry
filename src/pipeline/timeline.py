@@ -46,7 +46,7 @@ CAPTION_TEMPLATES: tuple[CaptionTemplate, ...] = ("phrase_blocks", "word_pop")
 # Set of animated templates a v2 timeline is drawn with; a new look is a new version.
 AnimationStyle = Literal["explainer_v1"]
 MAX_OVERLAYS = 20
-MAX_LIST_ITEMS = 5
+MAX_LIST_ITEMS = 6
 # A generated video may be played at most this much slower to fill its clip.
 MAX_VIDEO_STRETCH = Fraction(5, 4)
 
