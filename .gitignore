@@ -75,3 +75,7 @@ credentials*.json
 # Remotion animation templates (lane C): dependencies and renders stay local
 render/remotion/node_modules/
 render/remotion/out/
+
+# Local tooling: preview servers and the generated code graph stay on this machine
+.claude/launch.json
+graphify-out/

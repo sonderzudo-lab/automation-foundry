@@ -1,0 +1,480 @@
+{
+  "experiment": "e8-script-critic",
+  "seed": 8,
+  "writer_model": "qwen3:14b",
+  "critic_model": "mistral-small3.2:24b",
+  "critic_num_ctx": 8192,
+  "max_rounds": 3,
+  "persona": "Coach de produtividade direto e prático, que fala com quem trabalha ou estuda",
+  "checklist": [
+    {
+      "id": "hook_specific",
+      "question": "A abertura faz uma promessa ou cria uma tensão específica deste tema, que não serviria para um vídeo sobre outro assunto?",
+      "problem": "A abertura é genérica: serviria para qualquer vídeo.",
+      "needs_quote": false
+    },
+    {
+      "id": "payoff",
+      "question": "O roteiro entrega, antes de terminar, o que a abertura promete?",
+      "problem": "O roteiro não entrega o que a abertura promete.",
+      "needs_quote": false
+    },
+    {
+      "id": "concrete_example",
+      "question": "Há pelo menos uma situação concreta do cotidiano que dá para imaginar, e não só afirmações gerais?",
+      "problem": "Falta um exemplo concreto do cotidiano.",
+      "needs_quote": false
+    },
+    {
+      "id": "no_repetition",
+      "question": "Cada parágrafo traz uma ideia nova, sem repetir a abertura nem uma ideia já dita com outras palavras?",
+      "problem": "Há uma ideia repetida com outras palavras.",
+      "needs_quote": true
+    },
+    {
+      "id": "portuguese",
+      "question": "O texto está em português do Brasil correto e natural para ser falado, sem erro de gramática ou concordância, palavra estrangeira ou frase truncada?",
+      "problem": "Há um erro de português ou uma frase que não soa natural falada.",
+      "needs_quote": true
+    },
+    {
+      "id": "single_cta",
+      "question": "O fechamento faz um único pedido ao espectador, ligado ao tema, em vez de fórmulas genéricas como 'curta e se inscreva'?",
+      "problem": "O fechamento usa um pedido genérico ou mais de um pedido.",
+      "needs_quote": true
+    }
+  ],
+  "loaded_after_first_review": [
+    {
+      "name": "qwen3:14b",
+      "model": "qwen3:14b",
+      "size": 12758621879,
+      "digest": "bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "qwen3",
+        "families": [
+          "qwen3"
+        ],
+        "parameter_size": "14.8B",
+        "quantization_level": "Q4_K_M"
+      },
+      "expires_at": "2026-10-13T22:22:17.6898945-03:00",
+      "size_vram": 12758621879,
+      "context_length": 40960
+    }
+  ],
+  "topics": [
+    {
+      "topic": "Por que uma lista de tarefas longa faz você render menos",
+      "opening_style": "contrarian",
+      "structure": "direct",
+      "labels": {
+        "A": [
+          "C"
+        ],
+        "B": [
+          "A",
+          "B"
+        ]
+      },
+      "arm_a": {
+        "narration": "Uma lista longa de tarefas não é produtividade. Ela prende a mente em revisões, travando o progresso real.\n\nVocês já se pegaram revisando uma lista de tarefas por horas, mas não conseguem avançar? A mente fica presa na tentação de marcar tarefas... Mas olha: uma lista longa não é produtividade. Ela é uma armadilha. Você passa tempo checando, mas nada avança. É como ter um escritório cheio de papéis e não conseguir pôr a mão em nada. A mente fica presa no ‘quem viu o quê’, em vez de executar. Vai por mim: reduza a lista para 3 tarefas por dia. Use uma única página. E, se quiser, comenta ‘produtivo’ e curta pra não perder a próxima dica!",
+        "seconds": 91.7
+      },
+      "arm_b": {
+        "stop_reason": "rewrite_failed",
+        "best_index": 0,
+        "versions": [
+          {
+            "narration": "Uma lista longa de tarefas não é produtividade. Ela prende a mente em revisões, travando o progresso real.\n\nVocês já se pegaram revisando uma lista de tarefas por horas, mas não conseguem avançar? A mente fica presa na tentação de marcar tarefas... Mas olha: uma lista longa não é produtividade. Ela é uma armadilha. Você passa tempo checando, mas nada avança. É como ter um escritório cheio de papéis e não conseguir pôr a mão em nada. A mente fica presa no ‘quem viu o quê’, em vez de executar. Vai por mim: reduza a lista para 3 tarefas por dia. Use uma única página. E, se quiser, comenta ‘produtivo’ e curta pra não perder a próxima dica!",
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Vai por mim: reduza a lista para 3 tarefas por dia.»"
+                },
+                {
+                  "source": "critic",
+                  "code": "no_repetition",
+                  "detail": "Há uma ideia repetida com outras palavras. Trecho: «Mas olha: uma lista longa não é produtividade.». Sugestão do revisor: Remover a repetição da ideia da abertura."
+                },
+                {
+                  "source": "critic",
+                  "code": "single_cta",
+                  "detail": "O fechamento usa um pedido genérico ou mais de um pedido. Trecho: «comenta ‘produtivo’ e curta pra não perder a próxima dica!». Sugestão do revisor: Manter apenas um pedido, como 'comenta ‘produtivo’ pra não perder a próxima dica!'"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 13.5
+            }
+          }
+        ]
+      },
+      "arm_c": {
+        "chosen": 0,
+        "candidates": [
+          {
+            "narration": "A lista longa não sobrecarrega você. É a sensação de que tudo deve ser feito agora que desgasta sua mente.\n\nTem 20 tarefas na sua lista? Calma — o problema não é a quantidade, mas a sensação de que você precisa fazer tudo agora.\n\nQuando você vê uma lista imensa, o cérebro entra em modo 'panic mode' — e você fica paralisado. Em vez de fazer 10 coisas, você faz ninguém. Foque em 1 ou 2 tarefas reais por dia. É isso que te dá progresso, não a exaustão de tentar controlar tudo.\n\nEscolha 2 coisas que importam hoje — e acerte. Sua mente agradece.",
+            "seconds": 80.0,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Tem 20 tarefas na sua lista?»"
+                },
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Em vez de fazer 10 coisas, você faz ninguém.»"
+                },
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Foque em 1 ou 2 tarefas reais por dia.»"
+                },
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Escolha 2 coisas que importam hoje — e acerte.»"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 11.9
+            }
+          },
+          {
+            "narration": "Sua lista com 20 tarefas não motiva — ela paralisa. A mente fica presa em 'como escolher' e o estresse drena sua energia.\n\n\"O cérebro fica preso em ‘qual começar’ e a pressão pega você de surpresa. Isso gasta energia mental, e você nem percebe. A solução? Escolher só 3 coisas realmente importantes. Se for estudante, foque no que vai te tirar da média. Profissional? Deixe os emails para depois do que realmente importa. A mente relaxa, e você avança. A lista curta não é limitação — é liberdade. Experimente: pegue a sua lista, apague tudo que não é essencial. Só 3 tarefas. Hoje. Vai ver como a produtividade aumenta sem bater cabeça no que é preciso fazer. Já tentou? Comenta ai embaixo!\"",
+            "seconds": 69.5,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Sua lista com 20 tarefas não motiva — ela paralisa.»"
+                },
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Escolher só 3 coisas realmente importantes.»"
+                },
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Só 3 tarefas.»"
+                },
+                {
+                  "source": "critic",
+                  "code": "portuguese",
+                  "detail": "Há um erro de português ou uma frase que não soa natural falada. Trecho: «Comenta ai embaixo!». Sugestão do revisor: Substituir por 'Comenta aí embaixo!'"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 5.4
+            }
+          },
+          {
+            "narration": "Olha: uma lista com 20 tarefas não é produtividade. É paralisia. Você fica preso no ‘o que fazer’ e não no ‘como fazer’.\n\n\"O cérebro humano não suporta multitarefas. Quando você tem uma lista cheia de coisas, fica preso no ‘qual priorizar’ e não no ‘como executar’. O pior: você desperdicia energia pra decidir o que fazer, e não pra avançar. Um estudante com 10 tarefas não avança; fica parado. Um funcionário com listas detalhadas perde foco, porque não sabe onde começar. A dica é: faça listas curtas, com 3 a 5 tarefas, e escreva cada uma como uma ação direta. Exemplo: ‘Escrever relatório’ vira ‘Pesquisar dados’, depois ‘Montar estrutura’. Pronto: o cérebro foca no ‘como’. Depois, você escolhe: ‘O que fazer’ fica fácil. Hoje, reduza a sua lista. Deixe nos comentários como você se sentiu. Se inscreva pra mais dicas de produtividade que funcionam! \"",
+            "seconds": 57.9,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Olha: uma lista com 20 tarefas não é produtividade.»"
+                },
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Um estudante com 10 tarefas não avança; fica parado.»"
+                },
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «A dica é: faça listas curtas, com 3 a 5 tarefas, e escreva cada uma como uma ação direta.»"
+                },
+                {
+                  "source": "critic",
+                  "code": "no_repetition",
+                  "detail": "Há uma ideia repetida com outras palavras. Trecho: «Você fica preso no ‘o que fazer’ e não no ‘como fazer’». Sugestão do revisor: Remover a repetição da abertura."
+                },
+                {
+                  "source": "critic",
+                  "code": "single_cta",
+                  "detail": "O fechamento usa um pedido genérico ou mais de um pedido. Trecho: «Se inscreva pra mais dicas de produtividade que funcionam!». Sugestão do revisor: Remover o pedido de inscrição ou torná-lo mais específico."
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 6.4
+            }
+          }
+        ]
+      }
+    },
+    {
+      "topic": "O erro de estudar relendo o material em vez de se testar",
+      "opening_style": "mistake",
+      "structure": "direct",
+      "labels": {
+        "A": [
+          "A"
+        ],
+        "B": [
+          "C"
+        ],
+        "C": [
+          "B"
+        ]
+      },
+      "arm_a": {
+        "narration": "Reler dá a sensação de controle, mas só testando você descobre o que realmente aprendeu.\n\n\"Você já viu alguém reler um capítulo 10 vezes e depois não lembrar nada? Isso é o que chamamos de ilusão de controle — o cérebro mente!\"\n\n\"Reler dá a sensação de que você domina o conteúdo, mas o verdadeiro teste? Só vem quando você tenta relembrar — sem olhar. Exemplo: você estuda uma lista de termos, mas ao fechar os olhos, não consegue lembrar nem a metade. O problema? Você confundiu repetição com domínio.\"\n\n\"Desligue o livro e faça um teste agora! Use cartões de revisão, explique o tema em voz alta ou peça a um amigo para cobrar você. A única maneira de descobrir se você realmente aprendeu é se desafiar — e não tem como fugir disso.\"",
+        "seconds": 44.7
+      },
+      "arm_b": {
+        "stop_reason": "clean",
+        "best_index": 1,
+        "versions": [
+          {
+            "narration": "Reler dá a sensação de controle, mas só testando você descobre o que realmente aprendeu.\n\n\"Você já viu alguém reler um capítulo 10 vezes e depois não lembrar nada? Isso é o que chamamos de ilusão de controle — o cérebro mente!\"\n\n\"Reler dá a sensação de que você domina o conteúdo, mas o verdadeiro teste? Só vem quando você tenta relembrar — sem olhar. Exemplo: você estuda uma lista de termos, mas ao fechar os olhos, não consegue lembrar nem a metade. O problema? Você confundiu repetição com domínio.\"\n\n\"Desligue o livro e faça um teste agora! Use cartões de revisão, explique o tema em voz alta ou peça a um amigo para cobrar você. A única maneira de descobrir se você realmente aprendeu é se desafiar — e não tem como fugir disso.\"",
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «\"Você já viu alguém reler um capítulo 10 vezes e depois não lembrar nada?»"
+                },
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Exemplo: você estuda uma lista de termos, mas ao fechar os olhos, não consegue lembrar nem a metade.»"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 15.5
+            }
+          },
+          {
+            "narration": "Reler dá a sensação de controle, mas só testando você descobre o que realmente aprendeu.\n\nVocê já viu alguém reler um capítulo muitas vezes e depois não lembrar nada? Isso é o que chamamos de ilusão de controle — o cérebro mente!\n\nReler dá a sensação de que você domina o conteúdo, mas o verdadeiro teste? Só vem quando você tenta relembrar — sem olhar. Exemplo: você estuda uma lista de termos, mas ao fechar os olhos, não consegue lembrar muitos deles. O problema? Você confundiu repetição com domínio.\n\nDesligue o livro e faça um teste agora! Use cartões de revisão, explique o tema em voz alta ou peça a um amigo para cobrar você. A única maneira de descobrir se você realmente aprendeu é se desafiar — e não tem como fugir disso.",
+            "review": {
+              "findings": [],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 15.4
+            }
+          }
+        ]
+      },
+      "arm_c": {
+        "chosen": 0,
+        "candidates": [
+          {
+            "narration": "Estudar repetindo o que já sabe? Isso não prepara para a prova — é apenas revisar. A solução? Teste-se com perguntas e responda sem olhar.\n\nVocê já se pegou lendo o mesmo conteúdo de novo e novo, mas na hora da prova tudo se esvai? Revisar é como ler uma receita sem cozinhar — você sabe o que é isso, mas não consegue executar. Aprendizado de verdade vem quando você testa — faz perguntas, responde sem olhar e descobre o que realmente falta. Pode parecer difícil, mas é aí que o cérebro cresce. O medo de errar é só um bloqueio mental. Se você acha que está preparado, tente: feche os olhos, responda e veja onde está falhando. Você é o que você testa. Vai que você se surpreende?",
+            "seconds": 57.5,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "opening_style",
+                  "detail": "A abertura contém uma pergunta, contra o estilo pedido."
+                },
+                {
+                  "source": "critic",
+                  "code": "portuguese",
+                  "detail": "Há um erro de português ou uma frase que não soa natural falada. Trecho: «feche os olhos». Sugestão do revisor: substituir por 'feche os seus olhos'"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 8.6
+            }
+          },
+          {
+            "narration": "Repetir o material é como assistir o mesmo filme 10 vezes: você só se acostuma, não memoriza. O jeito certo é testar o próprio conhecimento, mesmo que você erre.\n\nTestar o próprio conhecimento — sim, mesmo se errar — força o cérebro a ligar ideias. Imagina você estudando para uma prova e, ao invés de ler o conteúdo, pega um papel e começa a responder perguntas. A falta de certeza faz o cérebro trabalhar mais: ele busca, conecta, associa. Isso é memorização de verdade, não repetição cansativa. Da próxima vez, troque o relendo pelos testes. Pegue suas anotações, feche o livro e pergunte: “O que eu sei sobre isso?” Mesmo sem saber a resposta, o cérebro já está se preparando. Sua produtividade agradece.",
+            "seconds": 71.7,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 29 palavras; o máximo é 25."
+                },
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Repetir o material é como assistir o mesmo filme 10 vezes: você só se acostuma, não memoriza.»"
+                },
+                {
+                  "source": "critic",
+                  "code": "single_cta",
+                  "detail": "O fechamento usa um pedido genérico ou mais de um pedido. Trecho: «Sua produtividade agradece.». Sugestão do revisor: Substituir por um pedido específico, como 'Tente hoje mesmo'."
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 8.8
+            }
+          },
+          {
+            "narration": "Estudar relendo dá a ilusão de saber, mas na prova, você se pega sem memória nenhuma. Porém, testar-se é a chave para consolidar o aprendizado de verdade.\n\nVocê já repetiu um tópico mil vezes e passa a prova como se tivesse ouvido falar dele? É isso: o cérebro pensa que você aprendeu, mas na verdade está enganado. Quando você responde a perguntas, força a mente a buscar, a associar e a fixar o conteúdo de verdade. É como treinar um músculo: só se move quando você o põe para trabalhar. Pratique: faça resumos por voz, use cartões de memória, ou simule provas. Não leia – ponha a cabeça em modo de \"prova real\". Só assim você domina o assunto sem ilusões.",
+            "seconds": 96.0,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 27 palavras; o máximo é 25."
+                },
+                {
+                  "source": "critic",
+                  "code": "portuguese",
+                  "detail": "Há um erro de português ou uma frase que não soa natural falada. Trecho: «faça resumos por voz». Sugestão do revisor: substituir por 'faça resumos em voz alta'"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 9.4
+            }
+          }
+        ]
+      }
+    },
+    {
+      "topic": "Como começar uma tarefa que você está adiando há dias",
+      "opening_style": "scene",
+      "structure": "direct",
+      "labels": {
+        "A": [
+          "C"
+        ],
+        "B": [
+          "A",
+          "B"
+        ]
+      },
+      "arm_a": {
+        "narration": "Sentado na cadeira, olhando a tarefa que não começa. É aqui que o ritual muda tudo. Faça sempre a mesma coisa antes — o começo já está garantido.\n\nVamos dar um exemplo: antes de começar, tire 3 minutos para fazer a mesma coisa sempre — como preparar um café, abrir um caderno específico ou ligar uma playlist. Sua mente associa esse ritual ao ‘início’ da tarefa. Pronto: você já está no caminho. A motivação vem depois.\nComente aqui: qual ritual você já usou para superar a procrastinação? Se você ainda não experimentou, pegue um papel, escreva ‘início’ e faça um passo único agora. Me mostre o resultado na próxima postagem. Vamos lá?",
+        "seconds": 74.2
+      },
+      "arm_b": {
+        "stop_reason": "rewrite_failed",
+        "best_index": 0,
+        "versions": [
+          {
+            "narration": "Sentado na cadeira, olhando a tarefa que não começa. É aqui que o ritual muda tudo. Faça sempre a mesma coisa antes — o começo já está garantido.\n\nVamos dar um exemplo: antes de começar, tire 3 minutos para fazer a mesma coisa sempre — como preparar um café, abrir um caderno específico ou ligar uma playlist. Sua mente associa esse ritual ao ‘início’ da tarefa. Pronto: você já está no caminho. A motivação vem depois.\nComente aqui: qual ritual você já usou para superar a procrastinação? Se você ainda não experimentou, pegue um papel, escreva ‘início’ e faça um passo único agora. Me mostre o resultado na próxima postagem. Vamos lá?",
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 27 palavras; o máximo é 25."
+                },
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Vamos dar um exemplo: antes de começar, tire 3 minutos para fazer a mesma coisa sempre — como preparar um café, abrir um caderno específico ou ligar uma playlist.»"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 11.5
+            }
+          }
+        ]
+      },
+      "arm_c": {
+        "chosen": 0,
+        "candidates": [
+          {
+            "narration": "Pessoa sentada com cara de cansaço diante de um documento aberto. “Começar agora” é a tentação — mas o pior jeito de matar a procrastinação. Vai ver: o segredo é não começar agora.\n\nVocê já tentou começar uma tarefa, mas a mente fica travada? Isso acontece porque a procrastinação é um ciclo de hesitação. A dica é: não entre no jogo do \"vou começar agora\". Vá para outro ambiente, desligue a luz, feche a porta — qualquer coisa que desconecte você da rotina. Só precisa fazer algo rápido e simples, como abrir o Word e escrever uma palavra qualquer. O segredo é romper o loop mental. Quando você faz isso, o cérebro percebe que \"tá feito\" e deixa de resistir. Pronto, agora você pode voltar e encarar a tarefa sem medo de não terminar. Vai, experimenta já!",
+            "seconds": 71.2,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 32 palavras; o máximo é 25."
+                },
+                {
+                  "source": "critic",
+                  "code": "portuguese",
+                  "detail": "Há um erro de português ou uma frase que não soa natural falada. Trecho: «Vai ver: o segredo é não começar agora.». Sugestão do revisor: Substituir 'Vai ver' por 'Talvez' ou 'Quem sabe'."
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 12.5
+            }
+          },
+          {
+            "narration": "Você se senta na cadeira, olha para o documento vazio, e a mente fica em branco. Não começa com o objetivo final. Apenas abre o arquivo, escreve uma frase. Qualquer coisa. É o primeiro passo que importa.\n\nVocê já viu como fica fácil quando você não exige perfeição no primeiro momento? Só abre o arquivo, digita \"preciso fazer isso\" — pronto. O importante é não ficar parado. Isso gera movimento, e o cérebro já começa a rodar. Sabe aquela tarefa que você diz \"vou fazer amanhã\"? Amanhã acaba sendo outro dia. Mas se você fizer algo, mesmo que mínimo, o caminho já tem início. O segredo não é esperar estar preparado, mas agir mesmo sem estar. A motivação vem depois. Comente abaixo: qual foi a sua primeira frase para não adiar mais?",
+            "seconds": 221.4,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 37 palavras; o máximo é 25."
+                },
+                {
+                  "source": "code",
+                  "code": "opening_style",
+                  "detail": "A abertura começa com 'Você', contra o estilo pedido."
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 4.9
+            }
+          },
+          {
+            "narration": "Imagem: pessoa olhando tela com tarefas pendentes. O segredo não é forçar você a começar HOJE — é fazer algo SIMPLEMENTE rápido antes, pra que a tarefa pareça menos assustadora.\n\nVamos ao que realmente faz a diferença: limpe sua área de trabalho, arrume papelada, ou até tire um banho gelado — qualquer ação de 2 minutinhos que tire o peso da ansiedade. Isso é um “gancho mental”: você começa com algo simples, e o cérebro pensa: “Ah, tá começando!”. De repente, a tarefa que parecia montanha agora parece um passo.\n\nE pra finalizar: não adie mais. Hoje, escolha um pequeno ritual que te motive. Se funcionou, conta pra gente nos comentários — sua dica pode ajudar alguém que ainda está esperando o momento certo!",
+            "seconds": 73.0,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 29 palavras; o máximo é 25."
+                },
+                {
+                  "source": "code",
+                  "code": "long_sentence",
+                  "detail": "Frase com 31 palavras, longa demais para narrar; divida-a: «Vamos ao que realmente faz a diferença: limpe sua área de trabalho, arrume papelada, ou até tire um banho gelado — qualquer ação de 2 minutinhos que tire o peso da ansiedade.»"
+                },
+                {
+                  "source": "code",
+                  "code": "unsourced_claim",
+                  "detail": "Frase com dado sem fonte; reescreva sem o número ou o estudo: «Vamos ao que realmente faz a diferença: limpe sua área de trabalho, arrume papelada, ou até tire um banho gelado — qualquer ação de 2 minutinhos que tire o peso da ansiedade.»"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "seconds": 5.0
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

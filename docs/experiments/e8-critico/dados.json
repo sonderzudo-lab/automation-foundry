@@ -1,0 +1,466 @@
+{
+  "experiment": "e8-script-critic",
+  "seed": 8,
+  "writer_model": "qwen3:14b",
+  "critic_model": "mistral-small3.2:24b",
+  "critic_num_ctx": 8192,
+  "max_rounds": 3,
+  "persona": "Coach de produtividade direto e prático, que fala com quem trabalha ou estuda",
+  "checklist": [
+    {
+      "id": "hook_specific",
+      "question": "A abertura faz uma promessa ou cria uma tensão específica deste tema, que não serviria para um vídeo sobre outro assunto?",
+      "problem": "A abertura é genérica: serviria para qualquer vídeo.",
+      "needs_quote": false
+    },
+    {
+      "id": "payoff",
+      "question": "O roteiro entrega, antes de terminar, o que a abertura promete?",
+      "problem": "O roteiro não entrega o que a abertura promete.",
+      "needs_quote": false
+    },
+    {
+      "id": "concrete_example",
+      "question": "Há pelo menos uma situação concreta do cotidiano que dá para imaginar, e não só afirmações gerais?",
+      "problem": "Falta um exemplo concreto do cotidiano.",
+      "needs_quote": false
+    },
+    {
+      "id": "no_repetition",
+      "question": "Cada parágrafo traz uma ideia nova, sem repetir a abertura nem uma ideia já dita com outras palavras?",
+      "problem": "Há uma ideia repetida com outras palavras.",
+      "needs_quote": true
+    },
+    {
+      "id": "portuguese",
+      "question": "O texto está em português do Brasil correto e natural para ser falado, sem erro de gramática ou concordância, palavra estrangeira ou frase truncada?",
+      "problem": "Há um erro de português ou uma frase que não soa natural falada.",
+      "needs_quote": true
+    },
+    {
+      "id": "single_cta",
+      "question": "O fechamento faz um único pedido ao espectador, ligado ao tema, em vez de fórmulas genéricas como 'curta e se inscreva'?",
+      "problem": "O fechamento usa um pedido genérico ou mais de um pedido.",
+      "needs_quote": true
+    }
+  ],
+  "loaded_after_first_review": [
+    {
+      "name": "mistral-small3.2:24b",
+      "model": "mistral-small3.2:24b",
+      "size": 15204886773,
+      "digest": "5a408ab55df5c1b5cf46533c368813b30bf9e4d8fc39263bf2a3338cfa3b895b",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "mistral3",
+        "families": [
+          "mistral3"
+        ],
+        "parameter_size": "24.0B",
+        "quantization_level": "Q4_K_M"
+      },
+      "expires_at": "2026-10-13T22:46:09.5286074-03:00",
+      "size_vram": 15204886773,
+      "context_length": 8192
+    }
+  ],
+  "topics": [
+    {
+      "topic": "Por que uma lista de tarefas longa faz você render menos",
+      "opening_style": "contrarian",
+      "structure": "direct",
+      "labels": {
+        "A": [
+          "C"
+        ],
+        "B": [
+          "A",
+          "B"
+        ]
+      },
+      "arm_a": {
+        "narration": "Ter 20 tarefas não é o problema... é não saber por onde começar. Sua mente fica presa escolhendo, não fazendo — e isso atrapalha até o começo.\n\nVocê tem uma lista de 20 tarefas e está parado? A culpa não é a quantidade… é a falta de foco!\n\nListas longas sem ordem fazem seu cérebro gastar energia escolhendo o que fazer, não fazer. Exemplo: um aluno com 20 tarefas não sabe por onde começar — e esquece até o começo. Priorizar é o segredo: o que importa agora? O que é rápido? O que te dá energia?\n\nFaça sua lista de 3 tarefas prioritárias hoje. Comece pelo que te dá mais energia — e veja como avança sem perder tempo.",
+        "seconds": 49.7
+      },
+      "arm_b": {
+        "stop_reason": "no_improvement",
+        "best_index": 0,
+        "versions": [
+          {
+            "narration": "Ter 20 tarefas não é o problema... é não saber por onde começar. Sua mente fica presa escolhendo, não fazendo — e isso atrapalha até o começo.\n\nVocê tem uma lista de 20 tarefas e está parado? A culpa não é a quantidade… é a falta de foco!\n\nListas longas sem ordem fazem seu cérebro gastar energia escolhendo o que fazer, não fazer. Exemplo: um aluno com 20 tarefas não sabe por onde começar — e esquece até o começo. Priorizar é o segredo: o que importa agora? O que é rápido? O que te dá energia?\n\nFaça sua lista de 3 tarefas prioritárias hoje. Comece pelo que te dá mais energia — e veja como avança sem perder tempo.",
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 26 palavras; o máximo é 25."
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 4,
+              "seconds": 16.2
+            }
+          },
+          {
+            "narration": "Ter 20 tarefas não é o problema… é não saber por onde começar. Sua mente fica presa escolhendo, não fazendo — e isso atrapalha até o começo.\n\nVocê tem uma lista de 20 tarefas e está parado? A culpa não é a quantidade… é a falta de foco!\n\nListas longas sem ordem fazem seu cérebro gastar energia escolhendo o que fazer, não fazer. Exemplo: um aluno com 20 tarefas não sabe por onde começar — e esquece até o começo. Priorizar é o segredo: o que importa agora? O que é rápido? O que te dá energia?\n\nFaça sua lista de 3 tarefas prioritárias hoje. Comece pelo que te dá mais energia — e veja como avança sem perder tempo.",
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 26 palavras; o máximo é 25."
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 4,
+              "seconds": 16.0
+            }
+          }
+        ]
+      },
+      "arm_c": {
+        "chosen": 0,
+        "candidates": [
+          {
+            "narration": "A lista de 20+ tarefas não é produtividade — é sinal de que você vai desistir antes de começar. O cérebro vê muitas tarefas como impossíveis, e você já está procrastinando.\n\nVocê já parou pra pensar que aquela lista desorganizada no celular é um bloqueio? Pois é: o cérebro vê \"muitas coisas\" como \"nada vai dar certo\", e aí você já fica com a mente em standby.\n\nPegue um papel agora: escreva só 3 tarefas para hoje — até pequenas, como \"organizar a mesa\" ou \"ler 10 linhas do livro\". A sensação de \"consigo fazer algo\" acende uma luz no cérebro que diz: \"vamos lá, posso começar\".\n\nA produtividade não é sobre marcar tudo — é sobre fechar a porta do \"vou desistir\" e abrir a do \"vou experimentar\".\nEsse primeiro passo é tudo.",
+            "seconds": 61.4,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 30 palavras; o máximo é 25."
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 2,
+              "seconds": 7.2
+            }
+          },
+          {
+            "narration": "Listas longas de tarefas sobrecarregam o cérebro. Cada item se torna um obstáculo, não um passo.\n\nSeu cérebro não consegue priorizar quando tem 20 coisas para fazer. Você fica pensando: \"O que é mais importante? O que não posso deixar pra depois?\" Isso gasta energia, faz você se desanimar. Mas se você cria uma lista com 3 tarefas claras, como \"trabalhar 2 horas, ler 1 capítulo, responder 3 e-mails\", o cérebro foca. É como ter um caminho com pedras: você olha uma de cada vez, não todas juntas.\n\nTeste isso: hoje, escreva só 3 tarefas. Vai ver como você começa a andar, não a ficar parado. Menos itens, mais resultado. Você consegue, não é? Vamos lá?",
+            "seconds": 55.0,
+            "review": {
+              "findings": [
+                {
+                  "source": "critic",
+                  "code": "unsourced_claim",
+                  "detail": "A frase apresenta como fato um dado sem fonte; reescreva-a sem o número ou o estudo: «Seu cérebro não consegue priorizar quando tem 20 coisas para fazer.»"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 3,
+              "seconds": 8.5
+            }
+          },
+          {
+            "narration": "Sua lista de 200 tarefas não te organiza: apenas gasta sua energia e faz você se perder em opções infinitas.\n\nNossa mente não consegue priorizar centenas de tarefas. O cérebro fica travado escolhendo entre 200 opções, em vez de se concentrar no que realmente importa. Resultado? Esgotamento mental e indecisão crônica. A lista curta e precisa é a chave: selecione 3 tarefas essenciais por dia e execute-as com foco. A produtividade vira realidade, não ilusão. Vai lá: hoje, faça uma lista de 3 tarefas reais. Se sentir que não consegue, comece com 1. A produtividade começa com ações, não com caos. Comente abaixo e compartilhe sua estratégia favorita para se manter focado!",
+            "seconds": 60.1,
+            "review": {
+              "findings": [
+                {
+                  "source": "critic",
+                  "code": "unsourced_claim",
+                  "detail": "A frase apresenta como fato um dado sem fonte; reescreva-a sem o número ou o estudo: «Sua lista de 200 tarefas não te organiza: apenas gasta sua energia e faz você se perder em opções infinitas.»"
+                },
+                {
+                  "source": "critic",
+                  "code": "unsourced_claim",
+                  "detail": "A frase apresenta como fato um dado sem fonte; reescreva-a sem o número ou o estudo: «O cérebro fica travado escolhendo entre 200 opções, em vez de se concentrar no que realmente importa.»"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 4,
+              "seconds": 10.2
+            }
+          }
+        ]
+      }
+    },
+    {
+      "topic": "O erro de estudar relendo o material em vez de se testar",
+      "opening_style": "mistake",
+      "structure": "direct",
+      "labels": {
+        "A": [
+          "A",
+          "B"
+        ],
+        "B": [
+          "C"
+        ]
+      },
+      "arm_a": {
+        "narration": "Reler o mesmo capítulo dez vezes não te prepara para a prova – é a maior falha de quem estuda!\n\nVocê já releu 10 vezes um capítulo, mas na prova, não lembrou NADA? É o maior erro de quem estuda! Reler dá a sensação de controle, mas só engana você. O cérebro fica cansado, e não fixa o conteúdo. O segredo? Testar a si mesmo: use flashcards, faça simulações de prova, escreva sem olhar. A dificuldade no início é normal — mas ao se testar, você força o cérebro a guardar o conhecimento, não só a ver. Depois da aula, faça um quiz rápido. Use o celular para testar o que viu. No início, vai ser difícil, mas com 15 dias de prática, você vai ver a diferença: mais memória, menos ansiedade e provas que ficam fáceis!",
+        "seconds": 71.0
+      },
+      "arm_b": {
+        "stop_reason": "clean",
+        "best_index": 0,
+        "versions": [
+          {
+            "narration": "Reler o mesmo capítulo dez vezes não te prepara para a prova – é a maior falha de quem estuda!\n\nVocê já releu 10 vezes um capítulo, mas na prova, não lembrou NADA? É o maior erro de quem estuda! Reler dá a sensação de controle, mas só engana você. O cérebro fica cansado, e não fixa o conteúdo. O segredo? Testar a si mesmo: use flashcards, faça simulações de prova, escreva sem olhar. A dificuldade no início é normal — mas ao se testar, você força o cérebro a guardar o conhecimento, não só a ver. Depois da aula, faça um quiz rápido. Use o celular para testar o que viu. No início, vai ser difícil, mas com 15 dias de prática, você vai ver a diferença: mais memória, menos ansiedade e provas que ficam fáceis!",
+            "review": {
+              "findings": [],
+              "critic_answered": true,
+              "unverified": 1,
+              "unanswered": 0,
+              "flagged_claims": 2,
+              "seconds": 14.8
+            }
+          }
+        ]
+      },
+      "arm_c": {
+        "chosen": 0,
+        "candidates": [
+          {
+            "narration": "Repetir o mesmo capítulo três vezes e não lembrar: reler é como assistir um filme, você vê, mas não absorve. Sua mente fica presa no que não precisa memorizar.\n\nImagine que você encerra o livro, fecha os olhos e tenta dizer sozinho o que aprendeu. É difícil? Parabéns! Isso força seu cérebro a reconstruir o conhecimento — e só assim ele se fixa. O erro está em achar que \"ler mais\" = \"saber mais\". Teste-se, não leia. Seus olhos devem ficar fechados, não abertos. Agora, feche o livro. Pense: o que eu aprendi aqui? Se não lembrar, corra para o próximo vídeo. E se lembrar… está tudo sob controle. Mas a dica de hoje? Desligue o modo leitura, ligue o modo exame.",
+            "seconds": 60.7,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 29 palavras; o máximo é 25."
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 0,
+              "seconds": 5.4
+            }
+          },
+          {
+            "narration": "Reler é engano: o cérebro só memoriza quando você se testa. Estude de verdade, não apenas ‘ler’.\n\nReler é como assistir a um filme: você acha que entendeu tudo, mas na hora de aplicar, tudo foge da cabeça. Aprendizado de verdade vem da exposição ativa — como fazer quiz, resumir ou ensinar para uma pessoa. Só assim o cérebro consegue ligar os pontos e não só decorar. Pausa o vídeo agora! Vai lá, pega um material, fecha os olhos e reconta o que você estudou. Se não lembrar metade do conteúdo, está no caminho certo de mudar de vez — e passar a estudar de verdade, não apenas ‘ler’.",
+            "seconds": 68.7,
+            "review": {
+              "findings": [
+                {
+                  "source": "critic",
+                  "code": "unsourced_claim",
+                  "detail": "A frase apresenta como fato um dado sem fonte; reescreva-a sem o número ou o estudo: «Se não lembrar metade do conteúdo, está no caminho certo de mudar de vez — e passar a estudar de verdade, não apenas ‘ler’.»"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 1,
+              "seconds": 6.9
+            }
+          },
+          {
+            "narration": "Repetir o mesmo conteúdo 10 vezes e zerar no teste? Reler engana sua mente— o aprendizado só fixa quando você força o cérebro a relembrar.\n\n\"O cérebro se engana: quando você rele, não força a memória a trabalhar. É como se não usasse a mente como músculo. Mas quando você se testa, força o cérebro a relembrar, e só então o aprendizado se fixa. Exemplo: estudar rerependo resumos vs. fazer flashcards e se perguntar ‘qual é a fórmula?’— a diferença é gritante. Parar de relembrar. Comece agora: escreva de cabeça, use flashcards, ou crie perguntas. Seu cérebro agradece. E se você aplicar isso, vai mandar bem nos testes. Não deixe o engano te enganar— mude o método, e a memória vai te pagar de volta.\"",
+            "seconds": 96.1,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "opening_style",
+                  "detail": "A abertura contém uma pergunta, contra o estilo pedido."
+                },
+                {
+                  "source": "critic",
+                  "code": "portuguese",
+                  "detail": "Há um erro de português ou uma frase que não soa natural falada. Trecho: «rerependo». Sugestão do revisor: Corrigir para 'reler'."
+                },
+                {
+                  "source": "critic",
+                  "code": "unsourced_claim",
+                  "detail": "A frase apresenta como fato um dado sem fonte; reescreva-a sem o número ou o estudo: «Repetir o mesmo conteúdo 10 vezes e zerar no teste?»"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 1,
+              "seconds": 7.7
+            }
+          }
+        ]
+      }
+    },
+    {
+      "topic": "Como começar uma tarefa que você está adiando há dias",
+      "opening_style": "scene",
+      "structure": "direct",
+      "labels": {
+        "A": [
+          "C"
+        ],
+        "B": [
+          "A"
+        ],
+        "C": [
+          "B"
+        ]
+      },
+      "arm_a": {
+        "narration": "A tarefa adiada há dias ainda está no Desktop. Abra, escreva uma linha — mesmo que por um minuto. O encanador de leão de chácara não vai te julgar.\n\nAcordou, olhou pra aquela tarefa que está adiando há dias… e fez o que? Nada. Você não é o único. Mas tem um jeito simples de parar com isso. Vamos lá. Não pense em como começar. Simplesmente faça algo relacionado à tarefa, mesmo que por um minuto. Abra o documento, digite uma linha… isso é o suficiente. O esforço pra começar não importa. O que importa é a ação. O cérebro percebe que você começou e, de repente, o encanador de leão de chácara não vai te julgar. Vamos? Olha pra aquela tarefa e faça qualquer coisa agora. Só um minutinho. Seu cérebro agradece. É o primeiro passo. Não adie mais.",
+        "seconds": 71.2
+      },
+      "arm_b": {
+        "stop_reason": "no_improvement",
+        "best_index": 1,
+        "versions": [
+          {
+            "narration": "A tarefa adiada há dias ainda está no Desktop. Abra, escreva uma linha — mesmo que por um minuto. O encanador de leão de chácara não vai te julgar.\n\nAcordou, olhou pra aquela tarefa que está adiando há dias… e fez o que? Nada. Você não é o único. Mas tem um jeito simples de parar com isso. Vamos lá. Não pense em como começar. Simplesmente faça algo relacionado à tarefa, mesmo que por um minuto. Abra o documento, digite uma linha… isso é o suficiente. O esforço pra começar não importa. O que importa é a ação. O cérebro percebe que você começou e, de repente, o encanador de leão de chácara não vai te julgar. Vamos? Olha pra aquela tarefa e faça qualquer coisa agora. Só um minutinho. Seu cérebro agradece. É o primeiro passo. Não adie mais.",
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 28 palavras; o máximo é 25."
+                },
+                {
+                  "source": "critic",
+                  "code": "no_repetition",
+                  "detail": "Há uma ideia repetida com outras palavras. Trecho: «O encanador de leão de chácara não vai te julgar.». Sugestão do revisor: Remover a repetição ou substituir por outra ideia."
+                },
+                {
+                  "source": "critic",
+                  "code": "portuguese",
+                  "detail": "Há um erro de português ou uma frase que não soa natural falada. Trecho: «O encanador de leão de chácara não vai te julgar.». Sugestão do revisor: Corrigir a frase para o português do Brasil correto e natural."
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 0,
+              "seconds": 16.4
+            }
+          },
+          {
+            "narration": "Tarefa adiada há dias ainda está no Desktop. Abra, escreva uma linha — um minuto basta.\n\nAcordou, olhou pra aquela tarefa que está adiando há dias… e fez o que? Nada. Você não é o único. Mas tem um jeito simples de parar com isso. Vamos lá. Não pense em como começar. Simplesmente faça algo relacionado à tarefa, mesmo que por um minuto. Abra o documento, digite uma linha… isso é o suficiente. O esforço pra começar não importa. O que importa é a ação. O cérebro percebe que você começou e, de repente, tudo parece mais leve. Vamos? Olha pra aquela tarefa e faça qualquer coisa agora. Só um minutinho. Seu cérebro agradece e você já deu o primeiro passo. Não adie mais.",
+            "review": {
+              "findings": [
+                {
+                  "source": "critic",
+                  "code": "no_repetition",
+                  "detail": "Há uma ideia repetida com outras palavras. Trecho: «Tarefa adiada há dias ainda está no Desktop. Abra, escreva uma linha — um minuto basta.». Sugestão do revisor: Remover a repetição da abertura no corpo do texto."
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 0,
+              "seconds": 17.5
+            }
+          },
+          {
+            "narration": "Tarefa adiada há dias ainda está no Desktop. Abra, escreva uma linha — um minuto basta.\n\nAcordou, olhou pra aquela tarefa que está adiando há dias… e fez o que? Nada. Você não é o único. Mas tem um jeito simples de parar com isso. Vamos lá. Não pense em como começar. Simplesmente faça algo relacionado à tarefa, mesmo que por um minuto. Abra o documento, digite uma linha… isso é o suficiente. O esforço pra começar não importa. O que importa é a ação. O cérebro percebe que você começou e, de repente, tudo parece mais leve. Vamos? Olha pra aquela tarefa e faça qualquer coisa agora. Só um minutinho. Seu cérebro agradece e você já deu o primeiro passo. Não adie mais.",
+            "review": {
+              "findings": [
+                {
+                  "source": "critic",
+                  "code": "no_repetition",
+                  "detail": "Há uma ideia repetida com outras palavras. Trecho: «Tarefa adiada há dias ainda está no Desktop. Abra, escreva uma linha — um minuto basta.». Sugestão do revisor: Remover a repetição da abertura no corpo do texto."
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 0,
+              "seconds": 13.8
+            }
+          }
+        ]
+      },
+      "arm_c": {
+        "chosen": 1,
+        "candidates": [
+          {
+            "narration": "Pausa o vídeo agora — olha pra sua mesa. A tarefa que você adiou há dias está aí, mas o cérebro não vai te ajudar. O pior momento? Os primeiros 90 segundos, onde a resistência é maior. Mas há um atalho...\n\nNão espere “se sentir motivado”! Use um atalho: defina um prazo impossível (ex: “vou fazer 100% da tarefa em 5 minutos”) ou use um temporizador de 5 minutos. O corpo e a mente desistem em 30 segundos de foco — mas só se você começar.\n\nExperimente amanhã — e me conta no comentário: qual foi o atalho que funcionou pra você? Se quiser, eu crio um vídeo com técnicas para não recomeçar depois.",
+            "seconds": 60.0,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 40 palavras; o máximo é 25."
+                },
+                {
+                  "source": "code",
+                  "code": "opening_style",
+                  "detail": "A abertura contém uma pergunta, contra o estilo pedido."
+                },
+                {
+                  "source": "critic",
+                  "code": "portuguese",
+                  "detail": "Há um erro de português ou uma frase que não soa natural falada. Trecho: «onde a resistência é maior». Sugestão do revisor: Substituir 'onde' por 'em que'."
+                },
+                {
+                  "source": "critic",
+                  "code": "unsourced_claim",
+                  "detail": "A frase apresenta como fato um dado sem fonte; reescreva-a sem o número ou o estudo: «Os primeiros 90 segundos, onde a resistência é maior.»"
+                },
+                {
+                  "source": "critic",
+                  "code": "unsourced_claim",
+                  "detail": "A frase apresenta como fato um dado sem fonte; reescreva-a sem o número ou o estudo: «O corpo e a mente desistem em 30 segundos de foco — mas só se você começar.»"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 3,
+              "seconds": 10.6
+            }
+          },
+          {
+            "narration": "Sente-se na sua cadeira, olha para a tarefa que adiou por dias e sente o peso da procrastinação. Mas existe um jeito diferenciado de começar...\n\nVocê já tentou encarar a tarefa e só sente fobia? Pausa aí: não precisa ser herói. Troque o foco por 2 minutos — um café rápido, um post no Instagram, até organizar o lixo do chão. A mente desacelera, os pensamentos sobre a tarefa perdem força, e você ganha uma clareza inesperada. O cérebro se recarrega quando muda de contexto, tipo um reset invisível. O segredo não é força de vontade, é estratégia. Depois desse breve desvio, o medo diminui e o progresso começa.\n\nVai lá: pega o celular, faz uma pausa criativa e depois volta aqui. Se funcionou, comenta \"Sim\" no que eu sei da sua rotina. Até mais, produtivo!",
+            "seconds": 37.8,
+            "review": {
+              "findings": [],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 1,
+              "seconds": 7.0
+            }
+          },
+          {
+            "narration": "Mesa de trabalho: notificações piscam, celular vibra, você senta e tenta começar a tarefa... mas desiste. O real inimigo não é a dificuldade: é o ambiente e seu estado emocional.\n\nTroque de lugar. Vá para outro ambiente, desligue notificações e descanse só 30 segundos antes de começar. Seu cérebro se engana: ele acredita que você já fez metade do trabalho. Esse pequeno truque muda tudo — não é sobre dificuldade, é sobre como você começa.\n\nExperimente hoje: mude de lugar, feche o celular e descanse 30 segundos. Comente abaixo qual é seu método favorito para superar o adiamento. O começo é o que define — e agora, não há mais desculpas.\n\n(Você nem imagina como sua mente enlouquece quando pisa em um ambiente novo. Desligar aquele toque constante é como respirar fundo antes de correr.)",
+            "seconds": 60.2,
+            "review": {
+              "findings": [
+                {
+                  "source": "code",
+                  "code": "hook_too_long",
+                  "detail": "A abertura tem 30 palavras; o máximo é 25."
+                },
+                {
+                  "source": "critic",
+                  "code": "no_repetition",
+                  "detail": "Há uma ideia repetida com outras palavras. Trecho: «O começo é o que define — e agora, não há mais desculpas.». Sugestão do revisor: Evitar repetir a ideia de que o começo é importante, já mencionada na abertura."
+                },
+                {
+                  "source": "critic",
+                  "code": "unsourced_claim",
+                  "detail": "A frase apresenta como fato um dado sem fonte; reescreva-a sem o número ou o estudo: «Seu cérebro se engana: ele acredita que você já fez metade do trabalho.»"
+                }
+              ],
+              "critic_answered": true,
+              "unverified": 0,
+              "unanswered": 0,
+              "flagged_claims": 3,
+              "seconds": 11.4
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
