@@ -1,0 +1,885 @@
+{
+  "$defs": {
+    "ArtDirection": {
+      "additionalProperties": false,
+      "description": "How one video looks; every value is a name the render code knows.",
+      "properties": {
+        "palette": {
+          "enum": [
+            "sunny",
+            "night",
+            "mint",
+            "coral",
+            "ink",
+            "candy",
+            "sand"
+          ],
+          "title": "Palette",
+          "type": "string"
+        },
+        "typography": {
+          "enum": [
+            "rounded_bold",
+            "condensed_impact",
+            "clean_sans",
+            "serif_editorial"
+          ],
+          "title": "Typography",
+          "type": "string"
+        },
+        "caption_style": {
+          "enum": [
+            "word_pop",
+            "phrase_blocks",
+            "karaoke_highlight"
+          ],
+          "title": "Caption Style",
+          "type": "string"
+        },
+        "caption_position": {
+          "enum": [
+            "lower",
+            "middle"
+          ],
+          "title": "Caption Position",
+          "type": "string"
+        },
+        "motion": {
+          "enum": [
+            "calm",
+            "lively",
+            "punchy"
+          ],
+          "title": "Motion",
+          "type": "string"
+        },
+        "transition": {
+          "enum": [
+            "crossfade",
+            "slide",
+            "wipe"
+          ],
+          "title": "Transition",
+          "type": "string"
+        },
+        "corners": {
+          "enum": [
+            "rounded",
+            "square"
+          ],
+          "title": "Corners",
+          "type": "string"
+        }
+      },
+      "required": [
+        "palette",
+        "typography",
+        "caption_style",
+        "caption_position",
+        "motion",
+        "transition",
+        "corners"
+      ],
+      "title": "ArtDirection",
+      "type": "object"
+    },
+    "ClosingOverlayV4": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "closing_sentence",
+          "title": "Kind",
+          "type": "string"
+        },
+        "variant": {
+          "enum": [
+            "word_by_word",
+            "typewriter"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "word_from": {
+          "exclusiveMaximum": 60000,
+          "minimum": 0,
+          "title": "Word From",
+          "type": "integer"
+        },
+        "highlight_from": {
+          "exclusiveMaximum": 60000,
+          "minimum": 0,
+          "title": "Highlight From",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "variant",
+        "start_ms",
+        "end_ms",
+        "word_from",
+        "highlight_from"
+      ],
+      "title": "ClosingOverlayV4",
+      "type": "object"
+    },
+    "ComparisonOverlay": {
+      "additionalProperties": false,
+      "description": "Two sides shown as the narration reaches each one (myth and fact, before and after).",
+      "properties": {
+        "kind": {
+          "const": "comparison",
+          "title": "Kind",
+          "type": "string"
+        },
+        "variant": {
+          "enum": [
+            "split",
+            "versus",
+            "myth_fact"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "left_header": {
+          "maxLength": 24,
+          "minLength": 1,
+          "title": "Left Header",
+          "type": "string"
+        },
+        "left_text": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Left Text",
+          "type": "string"
+        },
+        "right_header": {
+          "maxLength": 24,
+          "minLength": 1,
+          "title": "Right Header",
+          "type": "string"
+        },
+        "right_text": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Right Text",
+          "type": "string"
+        },
+        "left_start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Left Start Ms",
+          "type": "integer"
+        },
+        "right_start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Right Start Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "variant",
+        "start_ms",
+        "end_ms",
+        "left_header",
+        "left_text",
+        "right_header",
+        "right_text",
+        "left_start_ms",
+        "right_start_ms"
+      ],
+      "title": "ComparisonOverlay",
+      "type": "object"
+    },
+    "HighlightOverlayV4": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "highlight",
+          "title": "Kind",
+          "type": "string"
+        },
+        "variant": {
+          "enum": [
+            "big_center",
+            "lower_third",
+            "marker"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "text": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "variant",
+        "start_ms",
+        "end_ms",
+        "text"
+      ],
+      "title": "HighlightOverlayV4",
+      "type": "object"
+    },
+    "KeywordItem": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "appear_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Appear Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "text",
+        "appear_ms"
+      ],
+      "title": "KeywordItem",
+      "type": "object"
+    },
+    "KeywordsOverlay": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "keywords",
+          "title": "Kind",
+          "type": "string"
+        },
+        "variant": {
+          "enum": [
+            "chips",
+            "stack"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/KeywordItem"
+          },
+          "maxItems": 4,
+          "minItems": 2,
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "variant",
+        "start_ms",
+        "end_ms",
+        "items"
+      ],
+      "title": "KeywordsOverlay",
+      "type": "object"
+    },
+    "ListOverlayV4": {
+      "additionalProperties": false,
+      "description": "One card per item, as in v2; ``variant`` picks checklist, stacked cards or a path.",
+      "properties": {
+        "kind": {
+          "const": "list",
+          "title": "Kind",
+          "type": "string"
+        },
+        "variant": {
+          "enum": [
+            "checklist",
+            "cards_stack",
+            "path"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "title": {
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 6,
+          "minItems": 2,
+          "title": "Items",
+          "type": "array"
+        },
+        "active": {
+          "exclusiveMaximum": 6,
+          "minimum": 0,
+          "title": "Active",
+          "type": "integer"
+        },
+        "item_start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Item Start Ms",
+          "type": "integer"
+        },
+        "item_end_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Item End Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "variant",
+        "start_ms",
+        "end_ms",
+        "title",
+        "items",
+        "active",
+        "item_start_ms",
+        "item_end_ms"
+      ],
+      "title": "ListOverlayV4",
+      "type": "object"
+    },
+    "NumberOverlay": {
+      "additionalProperties": false,
+      "description": "A number the narration says (digits or words), with a short label of its own words.",
+      "properties": {
+        "kind": {
+          "const": "number",
+          "title": "Kind",
+          "type": "string"
+        },
+        "variant": {
+          "enum": [
+            "count_up",
+            "badge"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "value_text": {
+          "maxLength": 30,
+          "minLength": 1,
+          "title": "Value Text",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "variant",
+        "start_ms",
+        "end_ms",
+        "value_text",
+        "label"
+      ],
+      "title": "NumberOverlay",
+      "type": "object"
+    },
+    "QuestionOverlay": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "question",
+          "title": "Kind",
+          "type": "string"
+        },
+        "variant": {
+          "enum": [
+            "bubble",
+            "full_screen"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "text": {
+          "maxLength": 120,
+          "minLength": 2,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "variant",
+        "start_ms",
+        "end_ms",
+        "text"
+      ],
+      "title": "QuestionOverlay",
+      "type": "object"
+    },
+    "QuoteOverlay": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "quote",
+          "title": "Kind",
+          "type": "string"
+        },
+        "variant": {
+          "enum": [
+            "card",
+            "minimal"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "text": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "variant",
+        "start_ms",
+        "end_ms",
+        "text"
+      ],
+      "title": "QuoteOverlay",
+      "type": "object"
+    },
+    "TimelineClipV3": {
+      "additionalProperties": false,
+      "description": "A v2 clip that may play a video generated from its image (step A5a).\n\n``video``, ``video_sha256`` and ``video_ms`` are all set or all null. With a\nvideo the clip has no zoom (``effect`` is ``none``). The video covers the\nclip's window (``clip_window``: the clip and half of each crossfade around\nit): it starts at the window start from its first frame and plays at\n``min(1, video_ms / window length)`` speed; a longer video is cut at the end\nof the window. A video may be at most ``MAX_VIDEO_STRETCH`` times slower.",
+      "properties": {
+        "index": {
+          "maximum": 600,
+          "minimum": 1,
+          "title": "Index",
+          "type": "integer"
+        },
+        "image": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.png$",
+          "title": "Image",
+          "type": "string"
+        },
+        "image_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Image Sha256",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "effect": {
+          "enum": [
+            "none",
+            "zoom_in",
+            "zoom_out",
+            "pan_left",
+            "pan_right"
+          ],
+          "title": "Effect",
+          "type": "string"
+        },
+        "transition_in": {
+          "enum": [
+            "cut",
+            "crossfade"
+          ],
+          "title": "Transition In",
+          "type": "string"
+        },
+        "video": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\.mp4$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Video"
+        },
+        "video_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Video Sha256"
+        },
+        "video_ms": {
+          "anyOf": [
+            {
+              "maximum": 14400000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Video Ms"
+        }
+      },
+      "required": [
+        "index",
+        "image",
+        "image_sha256",
+        "start_ms",
+        "end_ms",
+        "effect",
+        "transition_in",
+        "video",
+        "video_sha256",
+        "video_ms"
+      ],
+      "title": "TimelineClipV3",
+      "type": "object"
+    },
+    "TimelineWord": {
+      "additionalProperties": false,
+      "description": "One spoken word and the interval in which it is heard.",
+      "properties": {
+        "text": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "End Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "text",
+        "start_ms",
+        "end_ms"
+      ],
+      "title": "TimelineWord",
+      "type": "object"
+    },
+    "TitleCardOverlay": {
+      "additionalProperties": false,
+      "description": "An opening phrase of the narration, shown as the video starts.",
+      "properties": {
+        "kind": {
+          "const": "title_card",
+          "title": "Kind",
+          "type": "string"
+        },
+        "variant": {
+          "enum": [
+            "slam",
+            "slide"
+          ],
+          "title": "Variant",
+          "type": "string"
+        },
+        "start_ms": {
+          "maximum": 14400000,
+          "minimum": 0,
+          "title": "Start Ms",
+          "type": "integer"
+        },
+        "end_ms": {
+          "maximum": 14400000,
+          "minimum": 1,
+          "title": "End Ms",
+          "type": "integer"
+        },
+        "text": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "variant",
+        "start_ms",
+        "end_ms",
+        "text"
+      ],
+      "title": "TitleCardOverlay",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Timeline v3 drawn with the moment library and one art direction.\n\nCaptions follow ``art_direction.caption_style``; clips, words, generated\nvideos and every v3 rule are unchanged.",
+  "properties": {
+    "schema_version": {
+      "const": 4,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "format": {
+      "enum": [
+        "short",
+        "long"
+      ],
+      "title": "Format",
+      "type": "string"
+    },
+    "width": {
+      "title": "Width",
+      "type": "integer"
+    },
+    "height": {
+      "title": "Height",
+      "type": "integer"
+    },
+    "fps": {
+      "const": 30,
+      "title": "Fps",
+      "type": "integer"
+    },
+    "duration_ms": {
+      "maximum": 14400000,
+      "minimum": 1000,
+      "title": "Duration Ms",
+      "type": "integer"
+    },
+    "audio_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Audio Sha256",
+      "type": "string"
+    },
+    "caption_ass_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Caption Ass Sha256",
+      "type": "string"
+    },
+    "transition_ms": {
+      "maximum": 1000,
+      "minimum": 0,
+      "title": "Transition Ms",
+      "type": "integer"
+    },
+    "clips": {
+      "items": {
+        "$ref": "#/$defs/TimelineClipV3"
+      },
+      "maxItems": 600,
+      "minItems": 1,
+      "title": "Clips",
+      "type": "array"
+    },
+    "words": {
+      "items": {
+        "$ref": "#/$defs/TimelineWord"
+      },
+      "maxItems": 60000,
+      "title": "Words",
+      "type": "array"
+    },
+    "animation_style": {
+      "const": "library_v1",
+      "title": "Animation Style",
+      "type": "string"
+    },
+    "art_direction": {
+      "$ref": "#/$defs/ArtDirection"
+    },
+    "overlays": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "closing_sentence": "#/$defs/ClosingOverlayV4",
+            "comparison": "#/$defs/ComparisonOverlay",
+            "highlight": "#/$defs/HighlightOverlayV4",
+            "keywords": "#/$defs/KeywordsOverlay",
+            "list": "#/$defs/ListOverlayV4",
+            "number": "#/$defs/NumberOverlay",
+            "question": "#/$defs/QuestionOverlay",
+            "quote": "#/$defs/QuoteOverlay",
+            "title_card": "#/$defs/TitleCardOverlay"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/TitleCardOverlay"
+          },
+          {
+            "$ref": "#/$defs/ListOverlayV4"
+          },
+          {
+            "$ref": "#/$defs/ComparisonOverlay"
+          },
+          {
+            "$ref": "#/$defs/QuestionOverlay"
+          },
+          {
+            "$ref": "#/$defs/KeywordsOverlay"
+          },
+          {
+            "$ref": "#/$defs/NumberOverlay"
+          },
+          {
+            "$ref": "#/$defs/HighlightOverlayV4"
+          },
+          {
+            "$ref": "#/$defs/QuoteOverlay"
+          },
+          {
+            "$ref": "#/$defs/ClosingOverlayV4"
+          }
+        ]
+      },
+      "maxItems": 40,
+      "title": "Overlays",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "format",
+    "width",
+    "height",
+    "fps",
+    "duration_ms",
+    "audio_sha256",
+    "caption_ass_sha256",
+    "transition_ms",
+    "clips",
+    "words",
+    "animation_style",
+    "art_direction",
+    "overlays"
+  ],
+  "title": "TimelineV4",
+  "type": "object"
+}

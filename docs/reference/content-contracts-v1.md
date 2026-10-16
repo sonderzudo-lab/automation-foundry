@@ -292,6 +292,91 @@ os trechos a partir das mesmas evidências e recusa um manifesto feito para outr
   `timeline-v3.example.json`. O v2 continua valendo e não mudou; o `ExplainerV1` precisa
   aceitar o v3 (faixa C) antes de o A5 montá-lo (faixa D).
 
+## 7. Animações com biblioteca de momentos: timeline v4
+
+Contrato escrito em 2026-10-15, antes de qualquer plano ou renderizador usá-lo, para que cada
+vídeo seja composto por um roteiro de momentos e por uma direção de arte própria, em vez de um
+único visual fixo. Código e testes
+estão em `src/pipeline/animation_library.py` e `tests/pipeline/test_animation_library.py`.
+**Nenhum plano, construtor ou renderizador produz ou lê o v4 ainda**: o contrato existe e é
+testado, mas não está ligado à pipeline.
+
+| Contrato | Código | Testes |
+| --- | --- | --- |
+| Biblioteca de momentos e direção de arte | `src/pipeline/animation_library.py` | `tests/pipeline/test_animation_library.py` |
+| Timeline v4 | `TimelineV4` em `src/pipeline/animation_library.py` | `tests/pipeline/test_animation_library.py` |
+
+- `TimelineV4` = v3 com `schema_version: 4`, `animation_style: library_v1` (hoje o único valor),
+  `art_direction` e `overlays` do catálogo abaixo. Não há `caption_template`: a legenda segue
+  `art_direction.caption_style`. Clipes, palavras, vídeos gerados e todas as regras do v1, do
+  v2 e do v3 continuam valendo.
+- Schema versionado: `docs/reference/schemas/timeline-v4.schema.json`; exemplo válido:
+  `timeline-v4.example.json` (30 s, quatro clipes, dois deles com vídeo, e sobreposições de
+  título, lista em dois cartões, comparação, número e frase final). Um teste falha se o schema
+  commitado divergir do modelo.
+
+### Catálogo de momentos
+
+Cada momento é uma sobreposição com `kind`, `variant`, `start_ms` e `end_ms`. As variantes são
+nomes fechados; o código de render decide a aparência de cada um.
+
+| Momento (`kind`) | Variantes | Regras principais |
+| --- | --- | --- |
+| `title_card` | `slam`, `slide` | Frase de abertura, no máximo 60 caracteres; só pode ser a primeira sobreposição. |
+| `list` | `checklist`, `cards_stack`, `path` | 2 a 6 itens; um cartão por item, em ordem, todos com o mesmo título, itens e variante. |
+| `comparison` | `split`, `versus`, `myth_fact` | Dois lados com cabeçalho (até 24 caracteres) e texto (até 60); cada lado aparece quando é falado. |
+| `question` | `bubble`, `full_screen` | Até 120 caracteres e termina com `?`. |
+| `keywords` | `chips`, `stack` | 2 a 4 palavras-chave, cada uma com `appear_ms` dentro do cartão, em ordem. |
+| `number` | `count_up`, `badge` | `value_text` (dígitos ou palavras, até 30 caracteres) e `label` (até 40). |
+| `highlight` | `big_center`, `lower_third`, `marker` | Até 80 caracteres e no máximo 8 palavras. |
+| `quote` | `card`, `minimal` | Até 160 caracteres. |
+| `closing_sentence` | `word_by_word`, `typewriter` | Frase final: última sobreposição, termina com o áudio e aponta para as palavras (`word_from`, `highlight_from`). |
+
+- Cada momento é uma sobreposição; `list`, `comparison` e `keywords` também guardam os tempos
+  de cada parte (`item_start_ms`, `left_start_ms`, `appear_ms`), que precisam ficar dentro da
+  própria sobreposição e em ordem.
+- Cabeçalhos de lista e de comparação são o único texto livre sem números. Todo outro texto
+  na tela é copiado da narração aprovada, como nas versões anteriores.
+
+### Direção de arte e travas do canal
+
+`ArtDirection` escolhe um valor de cada lista fechada:
+
+| Campo | Valores |
+| --- | --- |
+| `palette` | `sunny`, `night`, `mint`, `coral`, `ink`, `candy`, `sand` |
+| `typography` | `rounded_bold`, `condensed_impact`, `clean_sans`, `serif_editorial` |
+| `caption_style` | `word_pop`, `phrase_blocks`, `karaoke_highlight` |
+| `caption_position` | `lower`, `middle` |
+| `motion` | `calm`, `lively`, `punchy` |
+| `transition` | `crossfade`, `slide`, `wipe` |
+| `corners` | `rounded`, `square` |
+
+- `ArtDirectionLocks` é a trava de um canal: cada campo fixa um valor para todos os vídeos
+  do canal, ou fica `null` e a escolha é do plano. `locks_problem` recusa a direção de arte que
+  quebra uma trava e diz qual campo e qual valor fixado.
+
+### Regra de variedade
+
+`variety_problem` recusa um plano que se parece com os vídeos recentes do canal:
+
+- O par paleta e tipografia precisa ser diferente do vídeo anterior, a não ser que o canal
+  trave os dois.
+- A sequência de momentos (`kind:variant`, em ordem) precisa ser diferente da de cada um dos
+  três vídeos anteriores. Um vídeo de um único momento nunca conta como sequência repetida.
+
+### Regras de sobreposição
+
+Além das regras do v2 e do v3 para sobreposições (duração de pelo menos 1 s, sem cruzamento,
+dentro do áudio), o v4 exige:
+
+- As sobreposições somam **no máximo 60% da duração** do vídeo; as imagens precisam aparecer.
+- O cartão de título, quando existe, é a primeira sobreposição; a frase final é a última e
+  termina com o áudio.
+- Uma lista tem um cartão por item, na ordem dos itens, e todos os cartões mostram o mesmo
+  título, itens e variante.
+- Até 40 sobreposições por vídeo.
+
 ## Fora destes contratos
 
 - Licença: o escopo `quality-test-only` de imagens e voz continua valendo até a decisão
