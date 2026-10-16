@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from functools import partial
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
@@ -25,13 +26,19 @@ import structlog
 
 from src.core.config import Settings, get_settings
 from src.pipeline import readiness_checks as checks
-from src.pipeline.assembly import FFMPEG_REQUIRED_BUILD_FLAGS
+from src.pipeline.assembly import (
+    FFMPEG_REQUIRED_BUILD_FLAGS,
+    REMOTION_PACKAGES,
+    REMOTION_PROJECT_DIR,
+    REMOTION_VERSION,
+)
 from src.pipeline.captions import (
     CTRANSLATE2_PACKAGE_VERSION,
     FASTER_WHISPER_PACKAGE_VERSION,
     FASTER_WHISPER_QUALITY_TEST_BACKEND,
     caption_snapshot_file_sizes,
 )
+from src.pipeline.comfyui_runtime import COMFYUI_VERSION, LTX23_MODEL_BYTES
 from src.pipeline.readiness_checks import ProbeCode, ProbeOutcome
 from src.pipeline.tts import (
     KOKORO_MODEL_REPOSITORY,
@@ -279,6 +286,74 @@ _GPU_RUNTIME = _Spec("gpu_runtime", "GPU · CUDA e carga dos modelos", {
         "carga real são confirmadas pelo próprio step na execução."
     ),
 })
+_SCENE_COMFYUI = _Spec("scene_comfyui", "Cenas animadas · ComfyUI e venv", {
+    ProbeCode.OK: (
+        "A pasta do ComfyUI, o main.py e o Python do venv existem e a versão fixada confere. "
+        "Nada foi executado nem iniciado."
+    ),
+    ProbeCode.INVALID_CONFIG: (
+        "CONTENT_SCENE_ANIMATION_COMFYUI_DIR ou CONTENT_SCENE_ANIMATION_PYTHON_PATH está "
+        "vazio. Informe a pasta do ComfyUI e o Python do venv dele."
+    ),
+    ProbeCode.MISSING: (
+        "A pasta do ComfyUI, o main.py ou o Python do venv não foi encontrado. Confira "
+        "CONTENT_SCENE_ANIMATION_COMFYUI_DIR e CONTENT_SCENE_ANIMATION_PYTHON_PATH."
+    ),
+    ProbeCode.INCOMPATIBLE: (
+        "A versão instalada do ComfyUI difere da fixada pelo adapter. Use a versão exigida."
+    ),
+    ProbeCode.UNAVAILABLE: _UNAVAILABLE_FILES,
+})
+_SCENE_WEIGHTS = _Spec("scene_weights", "Cenas animadas · pesos do LTX-2.3", {
+    ProbeCode.OK: (
+        "Os três arquivos fixados existem como arquivos regulares com o tamanho em bytes "
+        "esperado. Hash e conteúdo NÃO foram conferidos aqui: só o step calcula o SHA-256."
+    ),
+    ProbeCode.INVALID_CONFIG: (
+        "Não há pasta de modelos: informe CONTENT_SCENE_ANIMATION_MODELS_DIR ou a pasta "
+        "do ComfyUI em CONTENT_SCENE_ANIMATION_COMFYUI_DIR."
+    ),
+    ProbeCode.MISSING: (
+        "Nenhum dos pesos fixados foi encontrado na pasta de modelos. Copie os três "
+        "arquivos do inventário; o runtime não baixa modelos."
+    ),
+    ProbeCode.INCOMPLETE: (
+        "Há peso ausente, symlink ou arquivo de tamanho divergente. Refaça a cópia do "
+        "arquivo do inventário fixado."
+    ),
+    ProbeCode.UNAVAILABLE: _UNAVAILABLE_FILES,
+})
+_SCENE_RAM = _Spec("scene_ram", "Cenas animadas · RAM livre", {
+    ProbeCode.OK: (
+        "A RAM disponível agora está acima do mínimo configurado. O valor oscila: o step "
+        "confere de novo antes de iniciar o ComfyUI."
+    ),
+    ProbeCode.LOW_RAM: (
+        "A RAM disponível está abaixo de CONTENT_SCENE_ANIMATION_MIN_FREE_RAM_GB. Feche "
+        "programas (e descarregue o Ollama) antes da execução."
+    ),
+    ProbeCode.UNAVAILABLE: "Não foi possível ler a memória disponível do sistema.",
+})
+_SCENE_REMOTION = _Spec("scene_remotion", "Cenas animadas · renderizador Remotion", {
+    ProbeCode.OK: (
+        "node_modules existe, remotion e @remotion/cli estão na versão fixada no "
+        "package-lock.json e instalada, e o navegador headless está presente. Nada foi "
+        "executado nem renderizado."
+    ),
+    ProbeCode.MISSING: (
+        "render/remotion/node_modules ou o CLI do Remotion não foi encontrado. Rode "
+        "npm ci em render/remotion."
+    ),
+    ProbeCode.INCOMPATIBLE: (
+        "O package-lock.json ou a instalação não fixa remotion e @remotion/cli na versão "
+        "que a montagem exige. Reinstale com npm ci."
+    ),
+    ProbeCode.INCOMPLETE: (
+        "O navegador headless do Remotion não está instalado; a montagem não o baixa. "
+        "Instale-o antes da execução."
+    ),
+    ProbeCode.UNAVAILABLE: _UNAVAILABLE_FILES,
+})
 _PIPELINE = _Spec("pipeline_config", "Etapas · coerência da configuração", {
     ProbeCode.OK: "As etapas habilitadas formam uma cadeia coerente.",
 })
@@ -508,6 +583,16 @@ async def collect_content_readiness(
         "do modelo de imagem são conferidos apenas pela etapa A3."
     )
 
+    scene = config.content_scene_animation_backend != "disabled"
+    scene_off = (
+        "A animação de cenas está desabilitada (CONTENT_SCENE_ANIMATION_BACKEND); "
+        "nada foi consultado."
+    )
+    comfyui_dir = (config.content_scene_animation_comfyui_dir or "").strip()
+    models_dir = (config.content_scene_animation_models_dir or "").strip() or (
+        str(Path(comfyui_dir) / "models") if comfyui_dir else ""
+    )
+
     # (spec, enabled?, reason when not applicable, probe)
     plan: list[tuple[_Spec, bool, str, Callable[[], ProbeOutcome]]] = [
         (_STORAGE, True, "", partial(checks.probe_storage, config.storage_root)),
@@ -548,6 +633,27 @@ async def collect_content_readiness(
             checks.probe_visual_import_config,
             config.content_visual_import_root,
             config.content_visual_manifest_path,
+        )),
+        (_SCENE_COMFYUI, scene, scene_off, partial(
+            checks.probe_comfyui_install,
+            comfyui_dir,
+            config.content_scene_animation_python_path or "",
+            expected_version=COMFYUI_VERSION,
+        )),
+        (_SCENE_WEIGHTS, scene, scene_off, partial(
+            checks.probe_model_weights,
+            models_dir,
+            tuple(sorted(LTX23_MODEL_BYTES.items())),
+        )),
+        (_SCENE_RAM, scene, scene_off, partial(
+            checks.probe_free_ram,
+            int(config.content_scene_animation_min_free_ram_gb * 1024**3),
+        )),
+        (_SCENE_REMOTION, scene, scene_off, partial(
+            checks.probe_remotion_project,
+            str(REMOTION_PROJECT_DIR),
+            version=REMOTION_VERSION,
+            packages=REMOTION_PACKAGES,
         )),
     ]
 

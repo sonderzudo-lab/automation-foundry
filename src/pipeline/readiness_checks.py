@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -39,6 +40,7 @@ class ProbeCode(StrEnum):
     INCOMPATIBLE = "INCOMPATIBLE"
     UNAVAILABLE = "UNAVAILABLE"
     LOW_SPACE = "LOW_SPACE"
+    LOW_RAM = "LOW_RAM"
     TIMEOUT = "TIMEOUT"
     NOT_CHECKED = "NOT_CHECKED"
     DEFERRED = "DEFERRED"
@@ -258,5 +260,108 @@ def probe_visual_import_config(root: str, manifest: str) -> ProbeOutcome:
         if manifest_path.exists() and not manifest_path.is_file():
             return ProbeOutcome(ProbeCode.INVALID_CONFIG)
     except (OSError, RuntimeError, ValueError):
+        return ProbeOutcome(ProbeCode.UNAVAILABLE)
+    return ProbeOutcome(ProbeCode.OK)
+
+
+def probe_comfyui_install(
+    comfyui_dir: str, python_path: str, *, expected_version: str,
+) -> ProbeOutcome:
+    """ComfyUI folder, its entry point and venv Python exist at the pinned version.
+
+    Only reads ``comfyui_version.py``; the interpreter is never executed.
+    """
+    if not comfyui_dir.strip() or not python_path.strip():
+        return ProbeOutcome(ProbeCode.INVALID_CONFIG)
+    try:
+        root = Path(comfyui_dir).expanduser().resolve(strict=True)
+        python = Path(python_path).expanduser().resolve(strict=True)
+        if not root.is_dir() or not python.is_file() or not (root / "main.py").is_file():
+            return ProbeOutcome(ProbeCode.MISSING)
+        version_text = (root / "comfyui_version.py").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ProbeOutcome(ProbeCode.MISSING)
+    except (OSError, RuntimeError, UnicodeError):
+        return ProbeOutcome(ProbeCode.UNAVAILABLE)
+    if f'__version__ = "{expected_version}"' not in version_text:
+        return ProbeOutcome(ProbeCode.INCOMPATIBLE)
+    return ProbeOutcome(ProbeCode.OK)
+
+
+def probe_model_weights(
+    models_dir: str, expected_files: Sequence[tuple[str, int]],
+) -> ProbeOutcome:
+    """Each pinned weight is a regular file (no symlink) with the pinned byte size.
+
+    Mirrors the runtime's file checks; only the runtime hashes them.
+    """
+    if not models_dir.strip():
+        return ProbeOutcome(ProbeCode.INVALID_CONFIG)
+    try:
+        folder = Path(models_dir).expanduser().resolve(strict=True)
+        if not folder.is_dir():
+            return ProbeOutcome(ProbeCode.INVALID_CONFIG)
+        present = 0
+        for relative, size in expected_files:
+            candidate = folder / relative
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            present += 1
+            if candidate.stat().st_size != size:
+                return ProbeOutcome(ProbeCode.INCOMPLETE)
+    except FileNotFoundError:
+        return ProbeOutcome(ProbeCode.MISSING)
+    except (OSError, RuntimeError):
+        return ProbeOutcome(ProbeCode.UNAVAILABLE)
+    if present == len(expected_files):
+        return ProbeOutcome(ProbeCode.OK)
+    return ProbeOutcome(ProbeCode.MISSING if present == 0 else ProbeCode.INCOMPLETE)
+
+
+def probe_free_ram(min_free_bytes: int) -> ProbeOutcome:
+    """Available RAM right now against the configured minimum; advisory, it varies."""
+    import psutil
+
+    try:
+        available = int(psutil.virtual_memory().available)
+    except (OSError, psutil.Error):
+        return ProbeOutcome(ProbeCode.UNAVAILABLE)
+    return ProbeOutcome(ProbeCode.LOW_RAM if available < min_free_bytes else ProbeCode.OK)
+
+
+def probe_remotion_project(
+    directory: str, *, version: str, packages: Sequence[str],
+) -> ProbeOutcome:
+    """Remotion is installed and pinned like the A5 adapter demands.
+
+    Lock and installed package.json carry the exact version, the CLI and entry point
+    exist and the headless browser is already installed. Nothing is executed.
+    """
+    try:
+        root = Path(directory).expanduser().resolve(strict=True)
+        if not (root / "node_modules").is_dir():
+            return ProbeOutcome(ProbeCode.MISSING)
+        lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
+        locked = lock["packages"]
+        for name in packages:
+            entry = locked.get(f"node_modules/{name}") if isinstance(locked, dict) else None
+            if not isinstance(entry, dict) or entry.get("version") != version:
+                return ProbeOutcome(ProbeCode.INCOMPATIBLE)
+            installed = json.loads(
+                (root / "node_modules" / name / "package.json").read_text(encoding="utf-8")
+            )
+            if not isinstance(installed, dict) or installed.get("version") != version:
+                return ProbeOutcome(ProbeCode.INCOMPATIBLE)
+        cli = root / "node_modules" / "@remotion" / "cli" / "remotion-cli.js"
+        if not cli.is_file() or not (root / "src" / "index.ts").is_file():
+            return ProbeOutcome(ProbeCode.MISSING)
+        browsers = root / "node_modules" / ".remotion" / "chrome-headless-shell"
+        if not any(path.is_file() for path in browsers.rglob("chrome-headless-shell*")):
+            return ProbeOutcome(ProbeCode.INCOMPLETE)
+    except FileNotFoundError:
+        return ProbeOutcome(ProbeCode.MISSING)
+    except (json.JSONDecodeError, KeyError, TypeError, UnicodeError):
+        return ProbeOutcome(ProbeCode.INCOMPATIBLE)
+    except (OSError, RuntimeError):
         return ProbeOutcome(ProbeCode.UNAVAILABLE)
     return ProbeOutcome(ProbeCode.OK)

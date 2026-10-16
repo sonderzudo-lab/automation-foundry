@@ -77,6 +77,13 @@ LTX23_MODEL_SHA256: Mapping[str, str] = {
         "aaca463d11e6d8d2a4bdb0d6299214c15ef78a3f73e0ef8113d5a9d0219b3f6d"
     ),
 }
+# Exact byte sizes of the same files (lab ``models-ltx.json``). The readiness
+# diagnostic compares them without hashing 40 GB; the step still hashes.
+LTX23_MODEL_BYTES: Mapping[str, int] = {
+    f"checkpoints/{LTX23_CHECKPOINT}": 29_531_884_062,
+    f"latent_upscale_models/{LTX23_UPSCALER}": 995_743_560,
+    f"text_encoders/{LTX23_TEXT_ENCODER}": 9_447_702_218,
+}
 LTX23_FPS = 25
 # Generated size per format, both halves divisible by 32; FFmpeg scales it up.
 LTX23_GENERATION_SIZE = {"short": (704, 1280), "long": (1280, 704)}
