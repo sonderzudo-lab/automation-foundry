@@ -58,6 +58,9 @@ _SYSTEM = (
     "- One continuous shot: no cuts, fades, transitions or transformations.\n"
     "- No numbers or durations, no text, letters, logos, charts or visible screens.\n"
     "- Calm, natural and small movements that fit the narrated stretch.\n"
+    "A scene may come with the motion it had and a note from the operator, in any "
+    "language, saying what to change; write a new motion that follows the note and "
+    "still obeys every rule above.\n"
     "Write exactly one motion per scene, numbered 1, 2, 3 in order. Answer with the "
     "JSON object only."
 )
@@ -74,6 +77,9 @@ class MotionScene:
     index: int
     description: str
     narration_text: str
+    # Set when the operator sent the scene back: the motion it had and what to change.
+    previous_motion: str = ""
+    note: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +111,13 @@ def motion_plan_request(
         f"Scene {scene.index}\n"
         f"Image: {(scene.description.strip() or _NO_DESCRIPTION)[:_MAX_DESCRIPTION_CHARS]}\n"
         f"Narration: {scene.narration_text.strip()}"
+        + (
+            f"\nPrevious motion: {scene.previous_motion.strip()}"
+            f"\nNote from the operator on that motion (change it accordingly): "
+            f"{scene.note.strip()}"
+            if scene.note.strip()
+            else ""
+        )
         for scene in scenes
     ]
     user = "\n\n".join(blocks)
