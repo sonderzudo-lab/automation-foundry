@@ -1,0 +1,89 @@
+{% extends "review_base.html" %}
+{% import "_macros.html" as ui %}
+{% set review_effect = "Aprovar fica vinculado ao manifesto e ao SHA-256 de cada clipe e apenas libera a montagem local do vídeo; não publica, envia nem gasta. Rejeitar cancela a run." %}
+{% set still_labels = {"too_long": "Cena longa demais para um clipe", "generation_failed": "A geração do clipe falhou", "owner_choice": "Você escolheu manter a imagem"} %}
+{% block title %}Revisão A5a #{{ review.approval_id }} · Automation Foundry{% endblock %}
+{% block review_title %}Revisão humana dos clipes animados{% endblock %}
+{% block review_kicker %}{{ review.clip_count }} clipes de {{ review.scenes|length }} cenas · rodada {{ review.round_number }} · run #{{ review.run_id }}{% endblock %}
+{% block review_verify %}O manifesto e cada MP4 foram lidos do storage local e validados contra o tamanho e o SHA-256 registrados. A aprovação fica vinculada a este conjunto exato.{% endblock %}
+{% block review_hashes %}<span>Manifesto: {{ ui.hash_chip(review.manifest_sha256, "SHA-256 do manifesto") }}</span>{% endblock %}
+{% block review_body %}
+{% if review.usage_scope %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Teste de qualidade, não monetizável</h2></div>
+  <div class="card-content"><p class="text-sm">Estes clipes herdam o escopo das imagens de origem, que não têm uso comercial declarado. O vídeo montado com eles carrega a mesma marcação até o export local.</p></div>
+</section>
+{% endif %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">O que conferir</h2></div>
+  <div class="card-content">
+    <ul class="text-sm list-plain">
+      <li>O movimento combina com o trecho narrado e com a imagem de origem?</li>
+      <li>Surgiu alguém ou algo novo, ou o rosto e as mãos se deformaram?</li>
+      <li>Aparece texto, número, marca ou tela legível?</li>
+      <li>Algum corte, salto ou tremor estraga a cena?</li>
+    </ul>
+    <p class="text-sm muted mt-2">A checagem automática só filtra a frase de movimento; estes pontos dependem do seu olhar. Cenas que ficam com a imagem recebem o zoom da montagem.</p>
+  </div>
+</section>
+{% if review.requested_redo or review.requested_still %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Ajustes pedidos nesta rodada</h2><p class="card-description">Estes clipes foram refeitos, ou as cenas ficaram com a imagem, na rodada seguinte.</p></div>
+  <div class="card-content"><ul class="text-sm list-plain">
+    {% for index, note in review.requested_redo %}<li>Cena {{ index }}: {{ note }}</li>{% endfor %}
+    {% for index in review.requested_still %}<li>Cena {{ index }}: ficar com a imagem e zoom, sem gerar de novo</li>{% endfor %}
+  </ul></div>
+</section>
+{% endif %}
+{% set can_send_back = approval_status == "pending" and review.can_redo %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Clipes e trechos</h2><p class="card-description">Na ordem em que aparecem no vídeo, {{ review.width }}x{{ review.height }}.{% if can_send_back %} Para refazer um clipe, marque "Refazer" e diga o que mudar no movimento; ou marque "Manter a imagem" para a cena ficar sem animação. As outras cenas ficam como estão.{% endif %}</p></div>
+  <div class="card-content">
+    <div class="thumb-grid" role="list" aria-label="Clipes A5a">
+      {% for scene in review.scenes %}
+      <div class="card thumb" role="listitem">
+        {% if scene.is_clip %}
+        <video class="thumb-art" controls loop muted playsinline preload="metadata" aria-label="Clipe da cena {{ scene.index }} da run #{{ review.run_id }}" src="/approvals/{{ review.approval_id }}/scene-clips/{{ scene.clip_artifact_id }}">
+          Seu navegador não reproduz MP4 embutido. <a href="/approvals/{{ review.approval_id }}/scene-clips/{{ scene.clip_artifact_id }}">Abrir o arquivo verificado</a>.
+        </video>
+        {% endif %}
+        <span class="thumb-body"><strong>Cena {{ scene.index }}</strong>
+          {% if not scene.is_clip %}<span class="text-sm">Fica com a imagem e zoom. {{ still_labels.get(scene.still_reason, scene.still_reason) }}.</span>{% endif %}
+          {% if scene.narration_text %}<span class="text-sm">{{ scene.narration_text }}</span>{% else %}<span class="muted text-sm">Trecho da narração não registrado neste manifesto.</span>{% endif %}
+          <span class="muted text-sm">Imagem de origem</span>
+          <a href="/approvals/{{ review.approval_id }}/scene-clip-images/{{ scene.image_artifact_id }}"><img class="thumb-art" src="/approvals/{{ review.approval_id }}/scene-clip-images/{{ scene.image_artifact_id }}" alt="Imagem de origem da cena {{ scene.index }}"></a>
+          {% if scene.is_clip %}<span class="text-sm">Movimento: <em>{{ scene.motion }}</em></span>{% endif %}
+          {% if scene.revision_note %}<span class="text-sm">Refeito a partir do seu pedido: «{{ scene.revision_note }}»</span>{% endif %}
+          {% if can_send_back and scene.can_redo %}
+          <label class="check-row text-sm"><input class="checkbox" type="checkbox" name="redo" value="{{ scene.index }}" form="form-redo"> {% if scene.is_clip %}Refazer este clipe{% else %}Tentar animar de novo{% endif %}</label>
+          <textarea class="textarea" name="note_{{ scene.index }}" form="form-redo" maxlength="250" rows="2" aria-label="O que mudar no clipe {{ scene.index }}" placeholder="O que ficou ruim e que movimento você quer"></textarea>
+          {% endif %}
+          {% if can_send_back and scene.can_keep_still %}
+          <label class="check-row text-sm"><input class="checkbox" type="checkbox" name="still" value="{{ scene.index }}" form="form-redo"> Manter a imagem (sem animação)</label>
+          {% endif %}
+          {% if scene.is_clip %}
+          <span class="muted text-sm"><abbr title="{{ scene.clip_size_bytes }} bytes">{{ scene.clip_size_bytes|byte_size }}</abbr> · {{ scene.frames }} quadros</span>
+          <span class="hash-wrap">{{ ui.hash_chip(scene.clip_sha256, "SHA-256 do clipe " ~ scene.index) }}</span>
+          {% endif %}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% if can_send_back %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Refazer clipes marcados</h2><p class="card-description">Gera uma nova rodada só com os clipes marcados, a partir dos seus comentários, e reabre esta revisão. Até 7 cenas por rodada; não há limite de rodadas. Cada clipe refeito leva cerca de 75 segundos de GPU.</p></div>
+  <div class="card-content">
+    <form id="form-redo" method="post" action="/approvals/{{ review.approval_id }}/scene-clip-redo">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn" type="submit" name="confirmation" value="redo-scene-clips">{{ ui.icon("rotate-cw") }}Aplicar marcações e gerar nova rodada</button>
+    </form>
+  </div>
+</section>
+{% endif %}
+<section class="card">
+  <div class="card-header"><h2 class="card-title">Proveniência</h2></div>
+  <div class="card-content"><ul class="text-sm list-plain"><li>{{ review.model_id }} ({{ review.provider }}) · {{ review.license_id }}</li></ul></div>
+</section>
+{% endblock %}
