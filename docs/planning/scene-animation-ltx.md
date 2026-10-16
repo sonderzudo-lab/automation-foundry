@@ -139,8 +139,8 @@ Mesmo desenho das rodadas de rascunho das imagens (`visual_drafts.py` e
 | 1 | E (nova, Claude) | **Juntada em 2026-10-15** (merge `e7d5dca`), desligada por padrão e sem geração real ainda: `src/pipeline/motion_generation.py` (pede as frases ao modelo de texto e reenvia o motivo da recusa), `src/pipeline/scene_animation.py` (step A5a, orçamento por tentativa, cache, fallback, métricas), `src/pipeline/comfyui_runtime.py` com fake, config e `.env.example` |
 | 2 | C (Codex) | **Juntada em 2026-10-15** (merge `3f89ae1`, revisada pela sessão integradora): `ExplainerV1` aceita timeline v2 e v3 e toca o clipe com `<OffthreadVideo>` mudo na janela do clipe; conferido com um quadro parado e MP4 sintético, sem render completo |
 | 3 | D (Claude) | **Juntada em 2026-10-15** (merge `af4f055`, revisada pelo Codex em duas passadas): com o A5a ligado, o A5 confere o manifesto, os cortes e os MP4 e monta o timeline v3, aceitando clipes de tentativas anteriores do A5a; com o A5a desligado, segue no timeline v2 |
-| 4 | E (Claude) | Gate de clipes da seção 8: rodadas, approval, página e rota dos MP4 |
-| 5 | Integradora | Detalhe da run, verificação de preparação, teste opt-in real |
+| 4 | E (Claude) | **Juntada em 2026-10-15** (merge `754bec5`, revisada pela sessão integradora), desligada por padrão: gate de clipes da seção 8 com rodadas `draft-scenes-a5a-rN`, approval `review_content_scene_clips_a5a`, página e rotas dos MP4 com SHA-256 reconferido; a página só foi vista com clipes falsos, sem tocar vídeo de verdade |
+| 5 | Integradora | Verificação de preparação **juntada em 2026-10-15** (merge `2382eb5`): ComfyUI e venv, tamanhos exatos dos três pesos, RAM livre e Remotion fixado, sem rodar modelo. Faltam o detalhe da run e o teste opt-in real |
 | 6 | Proprietário + integradora | Uma run real A1→A7 com LTX na RTX 3090, medindo tempo, RAM e qualidade |
 
 As fatias 1 e 2 podem correr em paralelo depois da fatia 0; a 3 depende das duas; a 4
