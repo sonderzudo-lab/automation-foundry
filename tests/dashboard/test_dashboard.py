@@ -1507,14 +1507,16 @@ async def test_dashboard_home_renders_redacted_state_and_safe_controls(
     application_routes = [
         route for route in application.routes if isinstance(route, APIRoute)
     ]
-    assert len(application_routes) == 34
+    assert len(application_routes) == 37
     route_methods = [route.methods for route in application_routes]
     # +1 GET and +1 POST: the readiness page and its explicit, read-only diagnostic run.
     # +1 GET: the A3 review page serves each verified image.
-    assert route_methods.count({"GET"}) == 23
+    # +2 GET: the A5a clip review serves each verified clip and its source image.
+    assert route_methods.count({"GET"}) == 25
     # +1 POST: the quick run draws a topic from the operator's list.
     # +1 POST: specific A3 draft images are sent back with notes.
-    assert route_methods.count({"POST"}) == 11
+    # +1 POST: A5a clips are sent back with notes or kept as still images.
+    assert route_methods.count({"POST"}) == 12
 
 
 async def test_health_page_renders_only_redacted_probe_projection(

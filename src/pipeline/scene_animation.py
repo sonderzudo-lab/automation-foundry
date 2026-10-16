@@ -37,8 +37,8 @@ import json
 import os
 import shutil
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -70,6 +70,7 @@ from src.pipeline.scene_clips import (
     scene_clip_frames,
     scene_clip_window,
 )
+from src.pipeline.scene_motion import NEUTRAL_MOTION
 from src.pipeline.text_model import TextModel, TextModelPermanentError, TextModelResult
 from src.pipeline.timeline import milliseconds
 from src.pipeline.timeline_builder import (
@@ -112,6 +113,9 @@ from src.platform.task_runner import (
 log = structlog.get_logger(__name__)
 
 SCENE_ANIMATION_STEP_NAME = "animate-scenes-a5a"
+# With the clip review gate, each round is a step of its own (``draft-scenes-a5a-rN``);
+# the official step then only imports the clips of the approved round.
+SCENE_CLIPS_DRAFT_STEP_PREFIX = "draft-scenes-a5a-r"
 LTX23_QUALITY_TEST_BACKEND = "ltx23_quality_test"
 SCENE_ANIMATION_BUDGET_EXHAUSTED = "CONTENT_SCENE_ANIMATION_BUDGET_EXHAUSTED"
 SCENE_CLIPS_MANIFEST_ARTIFACT = "scene_clips_manifest"
@@ -203,6 +207,8 @@ class _Clip:
     seconds: Decimal
     peak_vram_mib: int | None
     peak_ram_bytes: int | None
+    # Copied from a reviewed round: made, measured and recorded by an earlier step.
+    carried: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +218,51 @@ class _Motions:
     text_model: str | None
     attempts: int
     written_now: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CarriedClip:
+    """A clip of a reviewed round that a later round or the official step reuses.
+
+    ``path`` is read and checked against ``sha256`` before it is copied.
+    """
+
+    index: int
+    image_sha256: str
+    path: Path
+    sha256: str
+    motion: str
+    seed: int
+    frames: int
+
+
+@dataclass(frozen=True, slots=True)
+class SceneRoundPlan:
+    """How one step of the clip review gate differs from a plain A5a run.
+
+    ``round_number`` is the draft round (``draft-scenes-a5a-rN``), or ``None`` for
+    the official step that publishes the approved round unchanged. Round 1 has
+    nothing else. A later round (and the official step) carries every scene it
+    does not redo: ``motions`` are the motions of the reviewed round, ``carried``
+    its clips, ``stills`` the scenes that stay a still image and why, and
+    ``redo`` the scenes whose motion is rewritten from a note and whose clip is
+    generated again. ``identity`` is the video model the reviewed round was made
+    by; a renderer that differs from it cannot add clips to the same manifest.
+    """
+
+    round_number: int | None
+    motions: tuple[str, ...] = ()
+    carried: tuple[CarriedClip, ...] = ()
+    stills: Mapping[int, StillReason] = field(default_factory=dict)
+    redo: Mapping[int, str] = field(default_factory=dict)
+    identity: Mapping[str, str] | None = None
+    # The reviewed round this step continues from, for the step's input record.
+    source_round: int | None = None
+    source_manifest_sha256: str | None = None
+
+
+class SceneRoundConflictError(ValueError):
+    """The reviewed round no longer matches the images, cuts or clips it was made from."""
 
 
 async def execute_scene_animation_step(
@@ -232,10 +283,13 @@ async def execute_scene_animation_step(
     gpu_power_watts: int,
     sleep: Sleeper = asyncio.sleep,
     clock: Callable[[], float] = time.monotonic,
+    round_plan: SceneRoundPlan | None = None,
 ) -> SceneAnimationResult:
     """Animate every scene of an A4-ready run and publish the clips and manifest.
 
-    Never finalizes the run: A5 follows. A failed step fails the run.
+    Never finalizes the run: A5 follows. A failed step fails the run. With
+    ``round_plan`` the step is one round of the clip review gate (or the import
+    of the approved round); without it, the plain A5a of the gate-off pipeline.
     """
     if gpu_power_watts < 1:
         raise ValueError("gpu_power_watts must be positive")
@@ -251,8 +305,16 @@ async def execute_scene_animation_step(
     )
     usage_scope = _usage_scope(context.visual_usage_scope)
     run_id = _persisted_id(run.id, "run")
-    directory = scene_clips_directory(storage_root, run_id=run_id)
-    step_key = f"{idempotency_key}:{SCENE_ANIMATION_STEP_NAME}"
+    plan = round_plan
+    if plan is not None and plan.round_number is not None:
+        step_name = f"{SCENE_CLIPS_DRAFT_STEP_PREFIX}{plan.round_number}"
+        directory = scene_clips_round_directory(
+            storage_root, run_id=run_id, round_number=plan.round_number
+        )
+    else:
+        step_name = SCENE_ANIMATION_STEP_NAME
+        directory = scene_clips_directory(storage_root, run_id=run_id)
+    step_key = f"{idempotency_key}:{step_name}"
     duration_ms = milliseconds(context.duration_seconds)
 
     async def operation(attempt: TaskAttemptContext) -> dict[str, object]:
@@ -271,15 +333,29 @@ async def execute_scene_animation_step(
         except (OSError, UnicodeError, ValueError) as exc:
             raise PermanentTaskError("CONTENT_SCENE_ANIMATION_CUTS_INVALID") from exc
         spans = [scene.span for scene in scenes]
+        if plan is not None and plan.motions and len(plan.motions) != len(scenes):
+            raise PermanentTaskError("CONTENT_SCENE_CLIPS_ROUND_CONFLICT")
+        # The text model counts time on the monotonic clock.
+        motion_deadline = time.monotonic() + (deadline - clock()) - limits.text_call_seconds
         try:
-            motions = await asyncio.to_thread(
-                _load_or_write_motions,
-                directory / "motion-plan.json",
-                scenes,
-                motion_model,
-                # The text model counts time on the monotonic clock.
-                time.monotonic() + (deadline - clock()) - limits.text_call_seconds,
-            )
+            if plan is not None and plan.motions:
+                motions = await asyncio.to_thread(
+                    _load_or_write_revised_motions,
+                    directory / "motion-plan.json",
+                    scenes,
+                    plan.motions,
+                    plan.redo,
+                    motion_model,
+                    motion_deadline,
+                )
+            else:
+                motions = await asyncio.to_thread(
+                    _load_or_write_motions,
+                    directory / "motion-plan.json",
+                    scenes,
+                    motion_model,
+                    motion_deadline,
+                )
         except MotionTimeError as exc:
             raise RetryableTaskError(SCENE_ANIMATION_BUDGET_EXHAUSTED) from exc
         except TextModelPermanentError as exc:
@@ -303,10 +379,14 @@ async def execute_scene_animation_step(
             limits=limits,
             deadline=deadline,
             clock=clock,
+            plan=plan,
         )
         failure: TaskOperationError | None = None
         try:
             await render.run()
+        except SceneRoundConflictError as exc:
+            log.warning("scene_animation_round_conflict", reason=str(exc))
+            failure = PermanentTaskError("CONTENT_SCENE_CLIPS_ROUND_CONFLICT")
         except SceneVideoMisconfiguredError as exc:
             failure = PermanentTaskError(exc.code)
         except SceneVideoUnavailableError as exc:
@@ -406,7 +486,7 @@ async def execute_scene_animation_step(
         session,
         run=run,
         spec=TaskStepSpec(
-            name=SCENE_ANIMATION_STEP_NAME,
+            name=step_name,
             queue=QueueClass.GPU,
             ordinal=5,
             idempotency_key=step_key,
@@ -420,6 +500,7 @@ async def execute_scene_animation_step(
                 "caption_artifact_id": caption_artifact.id,
                 "caption_artifact_sha256": caption_artifact.sha256,
                 "backend": LTX23_QUALITY_TEST_BACKEND,
+                **_round_input(plan),
             },
         ),
         policy=RetryPolicy(
@@ -518,9 +599,34 @@ def scene_clips_directory(storage_root: Path, *, run_id: int) -> Path:
     return root / "content-engine" / f"run-{run_id}" / "scene-clips"
 
 
-def scene_clip_seed(index: int, image_sha256: str, motion: str) -> int:
-    """Stable seed per scene, so the same approved content renders the same clip."""
-    return int(hashlib.sha256(f"{index}:{image_sha256}:{motion}".encode()).hexdigest()[:8], 16)
+def scene_clips_round_directory(storage_root: Path, *, run_id: int, round_number: int) -> Path:
+    """Where one draft round of the clip review gate keeps its clips and manifest."""
+    if round_number < 1:
+        raise ValueError("round_number must be at least 1")
+    return scene_clips_directory(storage_root, run_id=run_id) / "rounds" / f"r{round_number}"
+
+
+def scene_clip_seed(index: int, image_sha256: str, motion: str, salt: str = "") -> int:
+    """Stable seed per scene, so the same approved content renders the same clip.
+
+    ``salt`` makes a clip redone on request differ from the one it replaces even
+    when the rewritten motion comes out the same.
+    """
+    text = f"{index}:{image_sha256}:{motion}" + (f":{salt}" if salt else "")
+    return int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
+
+
+def _round_input(plan: SceneRoundPlan | None) -> dict[str, object]:
+    if plan is None:
+        return {}
+    return {
+        "round": plan.round_number,
+        "source_round": plan.source_round,
+        "source_manifest_sha256": plan.source_manifest_sha256,
+        "carried_scenes": sorted(clip.index for clip in plan.carried),
+        "redo": {str(index): note for index, note in sorted(plan.redo.items())},
+        "kept_still": sorted(plan.stills),
+    }
 
 
 def scene_clip_cache_key(
@@ -566,7 +672,11 @@ class _Rendering:
         limits: SceneAnimationLimits,
         deadline: float,
         clock: Callable[[], float],
+        plan: SceneRoundPlan | None = None,
     ) -> None:
+        self._plan = plan
+        self._carried = {clip.index: clip for clip in plan.carried} if plan else {}
+        self._fixed_stills: Mapping[int, StillReason] = plan.stills if plan else {}
         self._scenes = scenes
         self._motions = motions
         self._format = video_format
@@ -594,7 +704,22 @@ class _Rendering:
         self._seeds: dict[int, int] = {}
         self._keys: dict[int, str] = {}
 
+    def _needs_renderer(self) -> bool:
+        return any(
+            scene.frames is not None
+            and scene.index not in self._carried
+            and scene.index not in self._fixed_stills
+            for scene in self._scenes
+        )
+
     async def run(self) -> None:
+        known = self._plan.identity if self._plan is not None else None
+        if known is not None and not self._needs_renderer():
+            # Nothing to generate: the clips are copied, and the video model that
+            # made them is the one the reviewed round recorded.
+            self.identity = dict(known)
+            await asyncio.to_thread(self._sort_scenes, None)
+            return
         renderer = self._new_renderer()
         try:
             self.identity = {
@@ -604,6 +729,8 @@ class _Rendering:
                 "license_id": renderer.license_id,
                 "inventory_sha256": renderer.inventory_sha256,
             }
+            if known is not None and dict(known) != self.identity:
+                raise SceneVideoMisconfiguredError("CONTENT_SCENE_CLIPS_RUNTIME_CHANGED")
             await asyncio.to_thread(self._sort_scenes, renderer)
             for scene in list(self.pending):
                 if not await self._render_one(renderer, scene):
@@ -657,16 +784,68 @@ class _Rendering:
         self._workspace.mkdir()
         return self._factory(self._workspace)
 
-    def _sort_scenes(self, renderer: SceneVideoRenderer) -> None:
+    def _carry(self, scene: _Scene, carried: CarriedClip) -> None:
+        """Copy a clip of a reviewed round after checking its SHA-256 before and after."""
+        if (
+            carried.image_sha256 != scene.image.sha256
+            or carried.frames != scene.frames
+            or carried.motion != self._motions[scene.index - 1]
+        ):
+            raise SceneRoundConflictError(f"scene {scene.index} changed since the review")
+        name = f"scene-{scene.index:03d}-carried-{carried.sha256[:16]}.mp4"
+        final = self._clips_dir / name
+        try:
+            if _sha256_file(carried.path) != carried.sha256:
+                raise SceneRoundConflictError(f"clip of scene {scene.index} changed")
+            if not final.is_file() or _sha256_file(final) != carried.sha256:
+                temporary = self._clips_dir / f".{name}.{uuid4().hex}.partial"
+                try:
+                    shutil.copyfile(carried.path, temporary)
+                    if _sha256_file(temporary) != carried.sha256:
+                        raise SceneRoundConflictError(f"clip of scene {scene.index} changed")
+                    os.replace(temporary, final)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        except OSError as exc:
+            raise SceneRoundConflictError(f"clip of scene {scene.index} is unreadable") from exc
+        self._seeds[scene.index] = carried.seed
+        self.clips[scene.index] = _Clip(
+            index=scene.index,
+            key="carried",
+            path=final,
+            sha256=carried.sha256,
+            seconds=Decimal(0),
+            peak_vram_mib=None,
+            peak_ram_bytes=None,
+            carried=True,
+        )
+
+    def _sort_scenes(self, renderer: SceneVideoRenderer | None) -> None:
         """Split the scenes into still, cached, failed before, and still to render."""
         self._clips_dir.mkdir(parents=True, exist_ok=True)
         self._failed_dir.mkdir(parents=True, exist_ok=True)
         for scene in self._scenes:
+            fixed = self._fixed_stills.get(scene.index)
+            if fixed is not None:
+                self.stills[scene.index] = fixed
+                continue
+            carried = self._carried.get(scene.index)
+            if carried is not None:
+                self._carry(scene, carried)
+                continue
             if scene.frames is None:
                 self.stills[scene.index] = "too_long"
                 continue
+            if renderer is None:
+                raise SceneRoundConflictError(f"scene {scene.index} needs a renderer")
             motion = self._motions[scene.index - 1]
-            seed = scene_clip_seed(scene.index, scene.image.sha256, motion)
+            redone = self._plan is not None and scene.index in self._plan.redo
+            seed = scene_clip_seed(
+                scene.index,
+                scene.image.sha256,
+                motion,
+                f"r{self._plan.round_number}" if redone and self._plan is not None else "",
+            )
             key = scene_clip_cache_key(
                 image_sha256=scene.image.sha256,
                 motion=motion,
@@ -949,6 +1128,83 @@ def _load_or_write_motions(
     )
 
 
+def _load_or_write_revised_motions(
+    path: Path,
+    scenes: Sequence[_Scene],
+    previous: Sequence[str],
+    redo: Mapping[int, str],
+    model: TextModel,
+    deadline: float,
+) -> _Motions:
+    """The motions of a later round: the reviewed ones, with the noted scenes rewritten.
+
+    A rewrite the model never got accepted keeps the reviewed motion; the clip
+    still differs, because a redone clip is rendered with a seed of its own.
+    """
+    images = [scene.image.sha256 for scene in scenes]
+    redone = {str(index): note for index, note in sorted(redo.items())}
+    saved = _read_json(path)
+    if saved is not None and saved.get("images") == images and saved.get("redo") == redone:
+        motions = saved.get("motions")
+        if (
+            isinstance(motions, list)
+            and len(motions) == len(scenes)
+            and all(isinstance(item, str) for item in motions)
+        ):
+            text_model = saved.get("text_model")
+            attempts = saved.get("attempts")
+            return _Motions(
+                motions=tuple(motions),
+                neutral=tuple(i for i, m in enumerate(motions, 1) if m == NEUTRAL_MOTION),
+                text_model=text_model if isinstance(text_model, str) else None,
+                attempts=attempts if isinstance(attempts, int) else 0,
+                written_now=False,
+            )
+    result = list(previous)
+    label: str | None = None
+    attempts = 0
+    if redo:
+        order = sorted(redo)
+        written = write_scene_motions(
+            model,
+            [
+                MotionScene(
+                    index=position,
+                    description=scenes[index - 1].description,
+                    narration_text=scenes[index - 1].image.narration_text,
+                    previous_motion=previous[index - 1],
+                    note=redo[index],
+                )
+                for position, index in enumerate(order, 1)
+            ],
+            deadline=deadline,
+        )
+        for position, index in enumerate(order, 1):
+            if position not in written.neutral:
+                result[index - 1] = written.motions[position - 1]
+        label = _text_model_label(written.result) if written.result is not None else None
+        attempts = written.attempts
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(
+        path,
+        {
+            "schema_version": 1,
+            "images": images,
+            "redo": redone,
+            "motions": result,
+            "text_model": label,
+            "attempts": attempts,
+        },
+    )
+    return _Motions(
+        motions=tuple(result),
+        neutral=tuple(i for i, m in enumerate(result, 1) if m == NEUTRAL_MOTION),
+        text_model=label,
+        attempts=attempts,
+        written_now=bool(redo),
+    )
+
+
 async def _runtime_failure(
     session: AsyncSession,
     *,
@@ -1058,7 +1314,9 @@ async def _publish_attempt(
             elif existing.sha256 != clip.sha256:
                 raise ValueError("a published clip changed")
             prefix = f"run-{run_id}:a5a:clip-{clip.index:03d}-{clip.sha256[:16]}"
-            for name, kind, value, unit in _clip_observations(clip, gpu_power_watts):
+            for name, kind, value, unit in (
+                [] if clip.carried else _clip_observations(clip, gpu_power_watts)
+            ):
                 await observe(
                     f"{prefix}:{name}", name, kind, value, unit, {"scene_index": clip.index}
                 )

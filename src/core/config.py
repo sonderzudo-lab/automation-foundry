@@ -195,6 +195,9 @@ class Settings(BaseSettings):
     content_scene_animation_max_attempts: int = Field(default=6, ge=1, le=20)
     content_scene_animation_sage_attention: bool = False
     content_scene_animation_fp16_accumulation: bool = False
+    # Pausa após cada rodada do A5a para ver cada clipe ao lado do trecho narrado;
+    # desligado, o A5a segue direto para o A5 como antes.
+    content_scene_clip_review_enabled: bool = False
     # A6 usa comparação lexical determinística local; o escopo inicial é a automação.
     content_similarity_threshold: float = Field(default=0.85, gt=0, le=1)
     content_similarity_window: int = Field(default=20, ge=1, le=100)
@@ -402,6 +405,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 "A3 visual review requires A3 visuals, A4 captions and A5 assembly"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _scene_clip_review_requires_scene_animation(self) -> Settings:
+        if (
+            self.content_scene_clip_review_enabled
+            and self.content_scene_animation_backend == "disabled"
+        ):
+            raise ValueError("A5a scene clip review requires the A5a scene animation backend")
         return self
 
     @model_validator(mode="after")

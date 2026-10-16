@@ -91,6 +91,11 @@ from src.pipeline.quick_run import (
     quick_run_status,
 )
 from src.pipeline.readiness import ReadinessReport, collect_content_readiness
+from src.pipeline.scene_review import (
+    SceneClipReview,
+    SceneClipReviewGateError,
+)
+from src.pipeline.scene_review import redo_decision_payload as scene_redo_decision_payload
 from src.pipeline.thumbnail_review import (
     THUMBNAIL_REVIEW_APPROVAL_ACTION,
     ThumbnailReview,
@@ -142,6 +147,7 @@ _REVIEW_TEMPLATES: dict[type, str] = {
     ContentScriptReview: "content_script_review.html",
     NarrationReview: "content_narration_review.html",
     VisualReview: "content_visual_review.html",
+    SceneClipReview: "content_scene_clip_review.html",
     FinalVideoReview: "content_final_video_review.html",
     ThumbnailReview: "content_thumbnail_review.html",
     OperationsBriefReview: "operations_brief_review.html",
@@ -804,6 +810,74 @@ def create_app(
             },
         )
 
+    async def _scene_clip_review_for(
+        session: AsyncSession,
+        approval_id: int,
+    ) -> SceneClipReview:
+        """The verified A5a review of an approval; every file was just re-hashed."""
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        try:
+            review = await load_registered_approval_review(session, approval=approval)
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="approval has no reviewed clips") from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="approval review evidence is unavailable",
+            ) from exc
+        if not isinstance(review, SceneClipReview):
+            raise HTTPException(status_code=404, detail="approval has no reviewed clips")
+        return review
+
+    @application.get("/approvals/{approval_id}/scene-clips/{artifact_id}")
+    async def approval_scene_clip(
+        approval_id: int,
+        artifact_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> FileResponse:
+        review = await _scene_clip_review_for(session, approval_id)
+        scene = next(
+            (item for item in review.scenes if item.clip_artifact_id == artifact_id),
+            None,
+        )
+        if scene is None or scene.clip_path is None:
+            raise HTTPException(status_code=404, detail="reviewed clip not found")
+        # FileResponse answers Range requests, so the player can seek.
+        return FileResponse(
+            scene.clip_path,
+            media_type="video/mp4",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": f'inline; filename="artifact-{artifact_id}-clip.mp4"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @application.get("/approvals/{approval_id}/scene-clip-images/{artifact_id}")
+    async def approval_scene_clip_image(
+        approval_id: int,
+        artifact_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> FileResponse:
+        review = await _scene_clip_review_for(session, approval_id)
+        scene = next(
+            (item for item in review.scenes if item.image_artifact_id == artifact_id),
+            None,
+        )
+        if scene is None:
+            raise HTTPException(status_code=404, detail="source image not found")
+        return FileResponse(
+            scene.image_path,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": f'inline; filename="artifact-{artifact_id}-source.png"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     @application.get("/approvals/{approval_id}/thumbnails/{artifact_id}")
     async def approval_thumbnail_candidate(
         approval_id: int,
@@ -1386,6 +1460,80 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"invalid redo request: {exc}") from exc
         except AutomationExecutorNotFoundError as exc:
             raise HTTPException(status_code=404, detail="approval has no redoable images") from exc
+        except ValueError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail="redo cannot continue") from exc
+        except Exception:
+            await session.rollback()
+            raise
+        return RedirectResponse(url=f"/runs/{run_id}", status_code=303)
+
+    @application.post("/approvals/{approval_id}/scene-clip-redo", response_class=HTMLResponse)
+    async def redo_scene_clips(
+        request: Request,
+        approval_id: int,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> RedirectResponse:
+        """Send clips back with notes, or keep scenes still; the next round redoes them."""
+        approval = await session.get(Approval, approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        fields = await _parse_form_fields(request, maximum_fields=130, maximum_bytes=16_384)
+        submitted_token = _single_form_value(fields, "csrf_token", maximum_length=128)
+        confirmation = _single_form_value(fields, "confirmation", maximum_length=40)
+        if not _csrf_token_matches(submitted_token, control_token):
+            raise HTTPException(status_code=403, detail="invalid csrf token")
+        if confirmation != "redo-scene-clips":
+            raise HTTPException(status_code=400, detail="explicit confirmation required")
+        if ApprovalStatus(approval.status) is not ApprovalStatus.PENDING:
+            raise HTTPException(status_code=409, detail="approval already decided")
+        if any(
+            name not in {"csrf_token", "confirmation", "redo", "still"}
+            and not (name.startswith("note_") and name[5:].isdigit())
+            for name in fields
+        ):
+            raise HTTPException(status_code=400, detail="unexpected redo field")
+        try:
+            chosen = sorted({int(value) for value in fields.get("redo", [])})
+            kept_still = frozenset(int(value) for value in fields.get("still", []))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid redo field") from exc
+        notes = {
+            index: _optional_single_form_value(fields, f"note_{index}", maximum_length=1_000)
+            or ""
+            for index in chosen
+        }
+        run_id = approval.run_id
+        try:
+            review = await load_registered_approval_review(session, approval=approval)
+            if not isinstance(review, SceneClipReview):
+                raise HTTPException(status_code=404, detail="approval has no redoable clips")
+            decision_payload = scene_redo_decision_payload(review, notes, kept_still)
+            await approve_and_continue(
+                session,
+                approval=approval,
+                actor="local-owner",
+                reason=(
+                    "Ajustes pedidos nos clipes "
+                    + ", ".join(map(str, sorted({*chosen, *kept_still})))
+                ),
+                decision_payload=decision_payload,
+            )
+        except HTTPException:
+            raise
+        except DispatchPublishError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="redo persisted; continuation broker unavailable",
+            ) from exc
+        except (IdempotencyConflictError, InvalidRunTransitionError) as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail="clips cannot be redone") from exc
+        except SceneClipReviewGateError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=400, detail=f"invalid redo request: {exc}") from exc
+        except AutomationExecutorNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="approval has no redoable clips") from exc
         except ValueError as exc:
             await session.rollback()
             raise HTTPException(status_code=409, detail="redo cannot continue") from exc

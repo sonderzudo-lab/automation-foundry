@@ -64,7 +64,19 @@ from src.pipeline.scene_animation import (
     RendererFactory,
     SceneAnimationLimits,
     SceneAnimationResult,
+    SceneRoundPlan,
     execute_scene_animation_step,
+)
+from src.pipeline.scene_review import (
+    SCENE_CLIPS_REVIEW_APPROVAL_ACTION,
+    SceneClipReview,
+    finalize_scene_clip_approval,
+    import_plan,
+    load_reviewed_scene_clips,
+    load_scene_clip_review,
+    next_round_plan,
+    request_scene_clip_approval,
+    requested_changes,
 )
 from src.pipeline.script_gen import (
     LIST_ITEMS_RANGE,
@@ -852,7 +864,8 @@ async def execute_content_script_run(
                 storage_root=root,
                 renderer_factory=scene_renderer_factory,
             )
-            scene_animation_replayed = scene_animation.replayed
+            if scene_animation is not None:
+                scene_animation_replayed = scene_animation.replayed
         if (
             _assembly_enabled()
             and audio_artifact is not None
@@ -1021,6 +1034,7 @@ async def load_content_approval_review(
     ContentScriptReview
     | NarrationReview
     | VisualReview
+    | SceneClipReview
     | FinalVideoReview
     | ThumbnailReview
 ):
@@ -1028,6 +1042,12 @@ async def load_content_approval_review(
     root = Path(settings.storage_root) if storage_root is None else storage_root
     if approval.action == VISUAL_REVIEW_APPROVAL_ACTION:
         return await load_visual_review(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
+    if approval.action == SCENE_CLIPS_REVIEW_APPROVAL_ACTION:
+        return await load_scene_clip_review(
             session,
             approval=approval,
             storage_root=root,
@@ -1158,6 +1178,12 @@ async def finalize_content_script_approval(
         return continuation_required
     if approval.action == VISUAL_REVIEW_APPROVAL_ACTION:
         return await finalize_visual_approval(
+            session,
+            approval=approval,
+            storage_root=root,
+        )
+    if approval.action == SCENE_CLIPS_REVIEW_APPROVAL_ACTION:
+        return await finalize_scene_clip_approval(
             session,
             approval=approval,
             storage_root=root,
@@ -1629,6 +1655,12 @@ def _scene_animation_enabled() -> bool:
     return bool(backend == LTX23_QUALITY_TEST_BACKEND)
 
 
+def _scene_clip_review_enabled() -> bool:
+    return _scene_animation_enabled() and (
+        getattr(settings, "content_scene_clip_review_enabled", False) is True
+    )
+
+
 def _scene_animation_limits() -> SceneAnimationLimits:
     # The motion plan is asked inside the attempt: leave room for one call in
     # flight, as the animated edit of A5 does.
@@ -1712,8 +1744,13 @@ async def _animate_scenes(
     idempotency_key: str,
     storage_root: Path,
     renderer_factory: RendererFactory | None,
-) -> SceneAnimationResult:
-    """Run A5a on the A3 images and A4 words; return its manifest and clips."""
+) -> SceneAnimationResult | None:
+    """Run A5a on the A3 images and A4 words; return its manifest and clips.
+
+    With the clip review gate on, the clips are made in numbered rounds that a
+    person reviews, and None means a decision is still pending (or the run is
+    no longer running). Only the approved round is published for A5.
+    """
     manifest = (
         await session.get(Artifact, visual_manifest_artifact_id)
         if visual_manifest_artifact_id is not None
@@ -1736,23 +1773,64 @@ async def _animate_scenes(
         raise ContentScriptRunNotRunnableError(
             "completed A3/A4 steps are missing scene animation source artifacts"
         )
-    result = await execute_scene_animation_step(
-        session,
-        run=run,
-        approval=approval,
-        approval_input_payload=approval_input,
-        audio_artifact=audio_artifact,
-        visual_manifest_artifact=manifest,
-        visual_artifacts=tuple(visuals),
-        caption_artifact=caption,
-        idempotency_key=idempotency_key,
-        storage_root=storage_root,
-        renderer_factory=renderer_factory or _configured_scene_renderer_factory(),
-        motion_model=motion_text_model(),
-        limits=_scene_animation_limits(),
-        gpu_power_watts=int(getattr(settings, "gpu_power_watts", 400)),
-    )
-    return result
+
+    async def animate(plan: SceneRoundPlan | None) -> SceneAnimationResult:
+        return await execute_scene_animation_step(
+            session,
+            run=run,
+            approval=approval,
+            approval_input_payload=approval_input,
+            audio_artifact=audio_artifact,
+            visual_manifest_artifact=manifest,
+            visual_artifacts=tuple(visuals),
+            caption_artifact=caption,
+            idempotency_key=idempotency_key,
+            storage_root=storage_root,
+            renderer_factory=renderer_factory or _configured_scene_renderer_factory(),
+            motion_model=motion_text_model(),
+            limits=_scene_animation_limits(),
+            gpu_power_watts=int(getattr(settings, "gpu_power_watts", 400)),
+            round_plan=plan,
+        )
+
+    if not _scene_clip_review_enabled():
+        return await animate(None)
+    # Rounds until one is approved. Every delivery replays the rounds already
+    # decided, so the loop resumes at the first round without a decision; a round
+    # sent back with notes leads to the next one, with no limit on rounds.
+    plan = SceneRoundPlan(round_number=1)
+    round_number = 1
+    while True:
+        draft = await animate(plan)
+        if draft.manifest_artifact_id is None or RunStatus(run.status) is not RunStatus.RUNNING:
+            return None
+        await request_scene_clip_approval(
+            session,
+            run=run,
+            idempotency_key=idempotency_key,
+            storage_root=storage_root,
+            round_number=round_number,
+        )
+        if RunStatus(run.status) is not RunStatus.RUNNING:
+            return None
+        gate = await session.scalar(
+            select(Approval).where(
+                Approval.run_id == run.id,
+                Approval.idempotency_key
+                == f"{idempotency_key}:scene-clips-review-r{round_number}",
+            )
+        )
+        if gate is None:
+            raise ContentScriptRunNotRunnableError("A5a clip round is missing its review")
+        reviewed = await load_reviewed_scene_clips(
+            session, approval=gate, storage_root=storage_root
+        )
+        notes, keep_still = requested_changes(gate)
+        if not notes and not keep_still:
+            # Approved as it is: the official step publishes exactly this round.
+            return await animate(import_plan(reviewed))
+        plan = next_round_plan(reviewed, notes=notes, keep_still=keep_still)
+        round_number += 1
 
 
 async def _load_scene_clips(
@@ -1878,6 +1956,11 @@ async def _load_completed_evidence(
                     session,
                     run=run,
                     action=VISUAL_REVIEW_APPROVAL_ACTION,
+                )
+                or await _has_pending_gate(
+                    session,
+                    run=run,
+                    action=SCENE_CLIPS_REVIEW_APPROVAL_ACTION,
                 )
                 or await _has_pending_gate(
                     session,
