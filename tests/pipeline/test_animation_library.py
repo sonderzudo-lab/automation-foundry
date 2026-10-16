@@ -338,3 +338,23 @@ def test_a_single_moment_is_never_a_repeated_sequence() -> None:
     closing = [("closing_sentence", "typewriter")]
 
     assert variety_problem(art, closing, previous_art=[], previous_moments=[closing]) is None
+
+
+def test_committed_v4_schema_matches_the_model() -> None:
+    committed = json.loads((_SCHEMAS / "timeline-v4.schema.json").read_text(encoding="utf-8"))
+
+    assert committed == timeline_v4_json_schema()
+
+
+def test_the_committed_v4_example_is_a_valid_timeline() -> None:
+    example = json.loads((_SCHEMAS / "timeline-v4.example.json").read_text(encoding="utf-8"))
+
+    timeline = TimelineV4.model_validate(example)
+
+    assert {overlay.kind for overlay in timeline.overlays} == {
+        "title_card",
+        "list",
+        "comparison",
+        "number",
+        "closing_sentence",
+    }
