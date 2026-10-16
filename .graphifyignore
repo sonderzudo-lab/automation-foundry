@@ -1,0 +1,2 @@
+# Vendored third-party code adds thousands of nodes and says nothing about this project
+src/dashboard/static/htmx.min.js

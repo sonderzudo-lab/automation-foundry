@@ -7,6 +7,15 @@
 3. Inspecione a implementação e os testes afetados. Documentação e arquivos vazios não provam que uma funcionalidade existe.
 4. Trabalhe em uma fatia vertical pequena e verificável por vez.
 
+## Grafo do código
+
+`graphify-out/` (fora do Git) guarda um grafo do código gerado localmente por AST, sem LLM. Use-o para localizar dependências e impacto antes de abrir arquivos; ele não substitui a leitura de `ARQUITETURA.md` nem do código afetado.
+
+- Visão geral: `graphify-out/GRAPH_REPORT.md`; mapa interativo: `graphify-out/graph.html`.
+- Consultas: `graphify query "<pergunta>"`, `graphify explain "<símbolo>"`, `graphify affected "<símbolo>"`, `graphify path "A" "B"`.
+- Os hooks `post-commit`, `post-checkout` e `post-merge` do checkout principal reconstroem o grafo; à mão, `graphify update .`. Confira a seção "Graph Freshness" do relatório antes de confiar nele.
+- `graphify` vive num venv próprio, fora das dependências do projeto e do PATH: `D:\Projetos_Dev\.tools\graphify\Scripts\graphify.exe`. É ferramenta de desenvolvimento; o runtime nunca depende dele.
+
 ## Contexto do produto
 
 Automation Foundry é uma plataforma local para executar automações independentes por meio de um único control plane. O runtime deve funcionar no computador principal do proprietário sem depender de Codex, Cursor, Claude, plugins ou MCPs.
