@@ -2,7 +2,7 @@
 
 Proposta de 2026-10-15, a pedido do proprietário, depois do teste fora da pipeline em
 `D:\automation-foundry\labs\video-wan22-i2v\` (números e scripts no README de lá). A fatia 1
-(step A5a) foi juntada em 2026-10-15, desligada por padrão; o A5 ainda não lê o manifesto. As decisões do proprietário estão na seção 7; os
+(step A5a) foi juntada em 2026-10-15, desligada por padrão; as fatias 2 e 3 (o A5 lendo o manifesto e o `ExplainerV1` tocando os clipes) também, em 2026-10-15. As decisões do proprietário estão na seção 7; os
 contratos da seção 3 foram escritos com testes na fatia 0 (2026-10-15).
 
 ## 1. Resultado esperado
@@ -137,8 +137,8 @@ Mesmo desenho das rodadas de rascunho das imagens (`visual_drafts.py` e
 | --- | --- | --- |
 | 0 | Integradora | **Feita em 2026-10-15**: contratos da seção 3 com testes (seção 6 de `docs/reference/content-contracts-v1.md`), decisão 14 na arquitetura, faixa E em `lanes.md` |
 | 1 | E (nova, Claude) | **Juntada em 2026-10-15** (merge `e7d5dca`), desligada por padrão e sem geração real ainda: `src/pipeline/motion_generation.py` (pede as frases ao modelo de texto e reenvia o motivo da recusa), `src/pipeline/scene_animation.py` (step A5a, orçamento por tentativa, cache, fallback, métricas), `src/pipeline/comfyui_runtime.py` com fake, config e `.env.example` |
-| 2 | C (Codex) | `ExplainerV1` desenhando clipes de vídeo do timeline v3 |
-| 3 | D (Claude) | A5 Remotion lendo o manifesto de cenas, conferindo cortes e montando o timeline v3 |
+| 2 | C (Codex) | **Juntada em 2026-10-15** (merge `3f89ae1`, revisada pela sessão integradora): `ExplainerV1` aceita timeline v2 e v3 e toca o clipe com `<OffthreadVideo>` mudo na janela do clipe; conferido com um quadro parado e MP4 sintético, sem render completo |
+| 3 | D (Claude) | **Juntada em 2026-10-15** (merge `af4f055`, revisada pelo Codex em duas passadas): com o A5a ligado, o A5 confere o manifesto, os cortes e os MP4 e monta o timeline v3, aceitando clipes de tentativas anteriores do A5a; com o A5a desligado, segue no timeline v2 |
 | 4 | E (Claude) | Gate de clipes da seção 8: rodadas, approval, página e rota dos MP4 |
 | 5 | Integradora | Detalhe da run, verificação de preparação, teste opt-in real |
 | 6 | Proprietário + integradora | Uma run real A1→A7 com LTX na RTX 3090, medindo tempo, RAM e qualidade |
