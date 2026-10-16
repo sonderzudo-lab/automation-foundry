@@ -2144,6 +2144,82 @@ async def test_run_detail_projection_is_ordered_exact_and_redacted(
         assert private_value not in rendered
 
 
+async def test_run_detail_groups_attempts_by_step_not_by_shared_ordinal(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    observed_at = datetime(2026, 10, 14, 9, 0)
+    async with session_factory() as session:
+        automation = Automation(
+            slug="content-engine", name="Content Engine", owner="local-owner"
+        )
+        session.add(automation)
+        await session.flush()
+        run = Run(
+            automation_id=automation.id,
+            idempotency_key="run-17-shape",
+            trigger="manual",
+            status=RunStatus.FAILED.value,
+            queued_at=observed_at,
+        )
+        session.add(run)
+        await session.flush()
+        for name, ordinal, attempt, status in (
+            ("generate-script-a1", 1, 1, RunStatus.SUCCEEDED),
+            ("draft-visuals-a3-r1", 3, 1, RunStatus.SUCCEEDED),
+            ("prepare-visuals-a3", 3, 1, RunStatus.FAILED),
+            ("prepare-visuals-a3", 3, 2, RunStatus.SUCCEEDED),
+        ):
+            session.add(
+                StepRun(
+                    run_id=run.id,
+                    name=name,
+                    queue=QueueClass.GPU.value,
+                    ordinal=ordinal,
+                    attempt=attempt,
+                    idempotency_key=f"{name}-key",
+                    status=status.value,
+                    queued_at=observed_at,
+                )
+            )
+            await session.flush()
+        await session.commit()
+        run_id = run.id
+
+    async with session_factory() as session:
+        detail = await load_run_detail(session, run_id=run_id)
+
+    assert detail is not None
+    assert [
+        (group.ordinal, group.name, [step.attempt for step in group.attempts])
+        for group in detail.step_groups
+    ] == [
+        (1, "generate-script-a1", [1]),
+        (3, "draft-visuals-a3-r1", [1]),
+        (3, "prepare-visuals-a3", [1, 2]),
+    ]
+
+    application = create_app()
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with session_factory() as session:
+            yield session
+
+    application.dependency_overrides[get_session] = override_session
+    async with AsyncClient(
+        transport=ASGITransport(app=application),
+        base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.get(f"/runs/{run_id}/fragment")
+
+    assert response.status_code == 200
+    assert "3. <code>draft-visuals-a3-r1</code>" in response.text
+    assert "3. <code>prepare-visuals-a3</code>" in response.text
+    assert 'aria-label="Tentativas do step prepare-visuals-a3"' in response.text
+    assert 'aria-label="Tentativas do step draft-visuals-a3-r1"' not in response.text
+    assert response.text.count("<strong>Tentativa 1</strong>") == 1
+    assert response.text.count("<strong>Tentativa 2</strong>") == 1
+
+
 async def test_content_outcome_is_run_scoped_allowlisted_and_decimal_exact(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

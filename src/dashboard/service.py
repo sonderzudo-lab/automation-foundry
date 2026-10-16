@@ -342,6 +342,15 @@ class StepRunSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class StepGroupSummary:
+    """All attempts of one logical step; distinct steps may share an ordinal."""
+
+    ordinal: int
+    name: str
+    attempts: tuple[StepRunSummary, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RunApprovalSummary:
     """Approval lifecycle fields safe for a run detail page."""
 
@@ -440,6 +449,7 @@ class RunDetail:
     has_local_export: bool
     failure: FailureSummary | None
     steps: tuple[StepRunSummary, ...]
+    step_groups: tuple[StepGroupSummary, ...]
     approvals: tuple[RunApprovalSummary, ...]
     artifacts: tuple[RunArtifactSummary, ...]
     metrics: tuple[RunMetricSummary, ...]
@@ -1005,6 +1015,7 @@ async def load_run_detail(session: AsyncSession, *, run_id: int) -> RunDetail | 
         ),
         failure=_redacted_failure(run.error),
         steps=steps,
+        step_groups=_group_step_attempts(steps),
         approvals=approvals,
         artifacts=artifacts,
         metrics=metrics,
@@ -1108,6 +1119,28 @@ def _run_ledger_totals(
             ),
         )
         for currency, currency_totals in sorted(totals.items())
+    )
+
+
+def _group_step_attempts(
+    steps: tuple[StepRunSummary, ...],
+) -> tuple[StepGroupSummary, ...]:
+    # Retries reuse the step's name and ordinal, while separate steps such as draft rounds
+    # can share an ordinal, so the ordinal alone does not identify a step.
+    attempts_by_step: dict[tuple[int, str], list[StepRunSummary]] = {}
+    for step in steps:
+        attempts_by_step.setdefault((step.ordinal, step.name), []).append(step)
+    groups = sorted(
+        attempts_by_step.items(),
+        key=lambda item: (item[0][0], min(step.id for step in item[1])),
+    )
+    return tuple(
+        StepGroupSummary(
+            ordinal=ordinal,
+            name=name,
+            attempts=tuple(sorted(attempts, key=lambda step: (step.attempt, step.id))),
+        )
+        for (ordinal, name), attempts in groups
     )
 
 
