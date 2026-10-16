@@ -85,8 +85,9 @@
       <h3 style="margin-bottom:.75rem">Steps e tentativas</h3>
       {% if run.steps %}
       <ol class="timeline" aria-label="Steps da run">
-        {% for ordinal, grouped in run.steps|groupby("ordinal") %}
-        {% set attempts = grouped|sort(attribute="attempt") %}
+        {% for group in run.step_groups %}
+        {% set ordinal = group.ordinal %}
+        {% set attempts = group.attempts %}
         {% set last = attempts|last %}
         {% set tone = {"succeeded": "is-success", "failed": "is-danger", "awaiting_approval": "is-warning", "running": "is-info", "queued": "is-info", "cancelled": "is-neutral"}.get(last.status, "is-neutral") %}
         {% set icon_name = {"succeeded": "circle-check", "failed": "circle-x", "awaiting_approval": "clock", "running": "loader", "queued": "clock", "cancelled": "ban"}.get(last.status, "circle") %}
